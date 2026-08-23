@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Trace decisions and completed work
-The repository SHALL use focused OpenSpec changes to record accepted design decisions, normative behavior, and implementation tasks. Newly discovered work SHALL receive a stable task identifier. A task SHALL be marked complete only after applicable verification passes, then committed with its task identifier and pushed to the current non-production branch. `main` SHALL remain a protected production-release branch.
+The repository SHALL use focused OpenSpec changes to record accepted design decisions, normative behavior, and implementation tasks. Newly discovered work SHALL receive a stable task identifier. After applicable verification passes, the task SHALL be presented to the user for review. It SHALL be marked complete, committed with its task identifier, and pushed to the current non-production branch only after explicit user approval for those operations. `main` SHALL remain a protected production-release branch.
 
 #### Scenario: Discussion introduces additional implementation work
 - **WHEN** the team accepts work that is not represented by an existing incomplete task
@@ -9,7 +9,11 @@ The repository SHALL use focused OpenSpec changes to record accepted design deci
 
 #### Scenario: A task is completed
 - **WHEN** the implementation, documentation, and applicable checks for a task pass
-- **THEN** its checkbox is marked complete and its task-numbered commit is pushed without force to the current non-production branch
+- **THEN** the agent presents the diff and check results, asks for approval, and performs no commit or push until the user explicitly authorizes them
+
+#### Scenario: User approves only a commit
+- **WHEN** the user approves committing the reviewed task but does not approve pushing it
+- **THEN** the agent creates the task-numbered commit but does not push until the user separately approves the push
 
 ### Requirement: Provide reproducible development environments
 The platform SHALL provide documented commands and version-pinned dependencies for running the web application, API, worker, PostgreSQL, and required local service substitutes without production credentials or real patient data.

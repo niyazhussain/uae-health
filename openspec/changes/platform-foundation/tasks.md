@@ -1,6 +1,7 @@
 ## 0. Govern delivery and traceability
 
 - [x] 0.1 Establish the OpenSpec document map, evolved-task tracking rule, and task-numbered commit-and-push workflow.
+- [x] 0.1a Require explicit user review and approval before every task commit or push.
 - [ ] 0.2 Configure protected `develop` and `main` branch rules, required checks, and production environment approval without bypassing the documented release flow.
 
 ## 1. Confirm and record the foundation

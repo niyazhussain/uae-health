@@ -13,12 +13,14 @@ When discussion introduces work that is not already tracked, add a new task with
 
 ## Task completion and delivery
 
-A task is complete only when its implementation and relevant documentation are finished, the applicable checks pass, and its checkbox is marked complete. Then:
+A task is ready for review only when its implementation and relevant documentation are finished and the applicable checks pass. Then:
 
 1. Review the diff for secrets, credentials, real patient data, generated dependencies, build output, and unrelated user changes.
-2. Commit the completed task using `task <task-id>: <imperative summary>`.
-3. Push that commit to the current non-production branch.
+2. Show the user a concise summary of the changes, checks, and current diff, then explicitly ask for approval to commit and push.
+3. Stop and wait. Do not commit or push until the user gives explicit approval after that review. Approval from an earlier task does not carry forward.
+4. If the user approves only the commit, commit using `task <task-id>: <imperative summary>` and ask separately before pushing. If the user approves both, commit and push to the current non-production branch.
+5. Mark the task checkbox complete only as part of the user-approved task commit.
 
-Do not combine unrelated completed tasks in a commit after the initial repository baseline. Do not mark or push an incomplete or failing task. Never force-push. Never commit `.env` files, credentials, real patient data, `node_modules`, build output, coverage output, or local database volumes.
+Do not combine unrelated completed tasks in a commit after the initial repository baseline. Do not mark, commit, or push an incomplete or failing task. Never commit or push merely because checks passed or the implementation appears complete; explicit user approval is always required. Never force-push. Never commit `.env` files, credentials, real patient data, `node_modules`, build output, coverage output, or local database volumes.
 
 `develop` is the integration branch and deploys synthetic data to staging. `main` is the protected production-release branch and deploys to AWS UAE. Work on `develop` or a feature branch; do not push ordinary development directly to `main`. A production release requires its documented review and environment approval.
