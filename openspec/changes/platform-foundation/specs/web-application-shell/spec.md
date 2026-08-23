@@ -1,5 +1,16 @@
 ## ADDED Requirements
 
+### Requirement: Provide an owned and accessible design system
+The web application SHALL use repository-owned shadcn/ui component source built on Radix primitives and Tailwind CSS v4 semantic tokens. Shared primitives SHALL provide visible keyboard focus, sufficient text and control contrast, disabled and invalid states, reduced-motion behavior, logical RTL-aware layout, and consistent control sizing. Status meaning SHALL NOT be communicated by color alone.
+
+#### Scenario: Feature renders a shared control
+- **WHEN** a feature renders an interactive control through the shared design system
+- **THEN** the control uses semantic theme tokens, remains operable by keyboard, exposes its accessible name and state, and renders correctly in the supported light, dark, LTR, and RTL foundations
+
+#### Scenario: Operational status is presented
+- **WHEN** the interface presents a success, warning, information, destructive, or restricted status
+- **THEN** it provides visible text or an accessible label in addition to the semantic status color
+
 ### Requirement: Provide an authenticated application shell
 The web application SHALL provide a consistent shell for authenticated HIS modules, including the active facility context, primary navigation, page hierarchy, current-user controls, and session state.
 

@@ -12,8 +12,8 @@
 ## 2. Create local fake-data development
 
 - [x] 2.1 Bootstrap `web` with React, Vite, TypeScript, and Tailwind CSS v4.
-- [ ] 2.1a Establish accessible design tokens and reusable shadcn/ui primitives using the installed `design-taste-frontend` skill; keep component source in the repository.
-- [ ] 2.1b Add a local frontend container with Vite hot-module reload and a root Docker Compose workflow that starts the web, API, and PostgreSQL services together.
+- [x] 2.1a Establish accessible design tokens and reusable shadcn/ui primitives using the installed `design-taste-frontend` skill; keep component source in the repository.
+- [ ] 2.1b Add a local frontend container with Vite hot-module reload and a root Docker Compose workflow that starts the web, API, and PostgreSQL services together; provide pgAdmin through an optional local-tools profile.
 - [x] 2.2 Bootstrap `api` with NestJS, Express, TypeScript, validation, OpenAPI, health endpoints, and rate limiting.
 - [x] 2.2a Run the local API image through a Docker-compatible desktop runtime and verify `/health` and `/docs`.
 - [x] 2.3 Add local PostgreSQL through Docker with Kysely, `pg`, migration commands, and synthetic seed data.

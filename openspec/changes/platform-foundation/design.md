@@ -13,6 +13,20 @@ The HIS is a React frontend in `web` and a Node.js backend in `api`. It will han
 
 **Rationale:** NestJS with Express provides the least-surprising, well-supported foundation for a modular HIS. Fastify remains a later performance option, not an initial requirement.
 
+#### Frontend design system
+
+The frontend design read is an accessibility-critical regulated healthcare product for clinical and administrative users, with a calm, trust-first visual language. Its foundation dials are `DESIGN_VARIANCE: 3`, `MOTION_INTENSITY: 2`, and `VISUAL_DENSITY: 5`. The installed `design-taste-frontend` skill applies to the visual foundation and public-facing surfaces; it does not replace the specialized interaction design needed for dense HIS workflows, data tables, or multi-step clinical forms.
+
+The application SHALL use one customized shadcn/ui system with Radix primitives and Tailwind CSS v4. Generated component source SHALL live under `web/src/components/ui` and remain owned, reviewed, and adaptable in this repository. Feature modules SHALL consume these primitives and semantic tokens rather than copying generated components or introducing a second visual system. Headless utilities required for specialized controls, such as a future data-table engine, do not constitute another visual system when they render through the shared primitives and tokens.
+
+The token contract SHALL use semantic names for background, surface, foreground, muted content, border, input, focus ring, primary action, destructive action, and operational status. Teal is the provisional product accent until approved brand guidance replaces it through the semantic token layer. Success, warning, information, and destructive colors are reserved for meaning and SHALL also include visible text or accessible labels. Feature code SHALL NOT encode meaning through color alone.
+
+Light and dark palettes SHALL meet WCAG AA contrast for ordinary text and interactive labels. Theme selection MAY be stored locally because it is non-sensitive preference data. Motion SHALL be limited to feedback and state transitions and SHALL honor `prefers-reduced-motion`. The radius system SHALL use 8-pixel controls, 12-pixel surfaces, and pill shapes only for status or categorization.
+
+Geist Variable and Noto Sans Arabic Variable SHALL be bundled with the frontend rather than fetched from an external font service. The component configuration SHALL be RTL-ready, use logical layout properties, and use Phosphor as its single icon family. A later localization task will provide translated content and change the document language and direction at runtime.
+
+**Rationale:** Repository-owned primitives and semantic tokens make the design durable without freezing product workflows into a third-party theme. Self-hosted Latin and Arabic fonts, explicit focus states, predictable control sizes, and restrained motion support healthcare usability and future bilingual delivery.
+
 ### 2. PostgreSQL and Kysely
 
 PostgreSQL SHALL be the transactional system of record. Local and initial production environments SHALL use the PostgreSQL 17 major-version family so Docker development, backup/restore rehearsal, and AWS RDS production remain compatible. The API SHALL use `pg` and Kysely for type-safe, explicit SQL. Each module SHALL own its data-access services; SQL SHALL not be placed in controllers. Migrations SHALL be reviewable, ordered, forward-compatible Kysely migrations. Synthetic seed commands SHALL be idempotent and SHALL refuse to run when `NODE_ENV=production`.
@@ -44,6 +58,8 @@ This decision does not itself establish regulatory compliance. Before production
 ### 6. Staged deployment and cost control
 
 The pre-customer environment SHALL use only synthetic data. Developers MAY run React, NestJS, and PostgreSQL locally with Docker. A public fake-data demonstration MAY use the existing self-managed Singapore server for one API instance and one PostgreSQL instance without an Application Load Balancer.
+
+The root local Docker Compose workflow SHALL start the web application with Vite hot-module reload, the API with development reload, and PostgreSQL without requiring production credentials. pgAdmin MAY be enabled through an optional `tools` profile; it SHALL bind only to the local loopback interface, connect only to synthetic local databases, and SHALL NOT contain production endpoints or committed database passwords. The core application stack SHALL remain usable without pgAdmin.
 
 The smallest persistent public-demo database MAY be a self-managed PostgreSQL container on the same Singapore demo server, using an encrypted persistent volume. It is a temporary, single-host pattern and SHALL contain synthetic data only. It SHALL use the same PostgreSQL version family, Kysely migration history, schemas, and backup/restore commands as the later production service.
 
