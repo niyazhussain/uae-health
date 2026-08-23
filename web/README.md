@@ -12,7 +12,7 @@ npm run build
 npm run preview
 ```
 
-The Vite development server provides hot-module reload. Task `2.1b` will add the supported Docker-based frontend development workflow.
+The Vite development server provides hot-module reload. The supported Docker workflow starts the complete stack from the repository root with `docker compose up --build`; see the root [`README.md`](../README.md).
 
 ## Design-system structure
 

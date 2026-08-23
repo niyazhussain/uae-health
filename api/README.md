@@ -18,27 +18,28 @@ npm run start:dev
 
 ## Docker
 
-After a Docker-compatible desktop runtime such as Rancher Desktop is installed and running, start the local API with:
+The supported Docker workflow starts the complete local stack from the repository root:
 
 ```bash
-npm run docker:up
+cd ..
+docker compose up --build
 ```
 
-The API is bound to `127.0.0.1:3000`, not exposed to the local network. Stop it with `npm run docker:down`.
+The API is bound to `127.0.0.1:3000`, not exposed to the local network. Stop the stack with `docker compose down` from the root.
 
-Compose also runs PostgreSQL 17.11 on `127.0.0.1:5433`. Its named volume survives normal container restarts. On startup, the API waits for PostgreSQL, runs all pending Kysely migrations, applies the idempotent synthetic seed, and starts Nest watch mode.
+Compose also runs the web application and PostgreSQL 17.11. The existing `api_postgres_data` named volume survives normal container restarts and is reused by the root workflow. On startup, the API waits for PostgreSQL, runs all pending Kysely migrations, applies the idempotent synthetic seed, and starts Nest watch mode.
 
 Database commands can also be run manually inside the API container:
 
 ```bash
-docker compose exec api npm run db:migrate
-docker compose exec api npm run db:seed
-docker compose exec api npm run db:migrate:down
+docker compose -f ../compose.yaml exec api npm run db:migrate
+docker compose -f ../compose.yaml exec api npm run db:seed
+docker compose -f ../compose.yaml exec api npm run db:migrate:down
 ```
 
 Synthetic seeding refuses to run in production and requires `ALLOW_SYNTHETIC_SEED=true`.
 
-Rancher Desktop users whose shell reports `docker: command not found` should add `$HOME/.rd/bin` to their shell `PATH`, then open a new terminal.
+See the root [`README.md`](../README.md) for the full local workflow, hot reload, pgAdmin profile, service addresses, logs, and shutdown commands.
 
 ## Verification
 

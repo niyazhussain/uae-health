@@ -18,6 +18,18 @@ The platform SHALL provide documented commands and version-pinned dependencies f
 - **WHEN** a developer follows the documented setup from a clean supported workstation
 - **THEN** the platform starts with its required local dependencies and passes the documented smoke checks
 
+#### Scenario: Developer changes application source
+- **WHEN** a developer edits frontend or API source while the root Docker Compose environment is running
+- **THEN** Vite hot-updates the frontend and the NestJS development process recompiles and restarts without rebuilding the containers
+
+#### Scenario: Developer enables local database administration
+- **WHEN** a developer enables the optional `tools` Compose profile
+- **THEN** pgAdmin is available only on the local loopback interface with the synthetic local PostgreSQL server pre-registered and the core application remains usable without that profile
+
+#### Scenario: Developer stops the environment normally
+- **WHEN** a developer runs the documented normal shutdown command and later starts the environment again
+- **THEN** the named PostgreSQL volume and its synthetic development data are preserved
+
 ### Requirement: Verify changes continuously
 Continuous integration SHALL run formatting, linting, type checks, unit tests, integration tests, contract checks, migration checks, security checks, and production builds applicable to each change.
 

@@ -24,8 +24,8 @@
     "db:migrate:down": "tsx src/database/migrate.ts down",
     "db:migrate:prod": "node dist/database/migrate.js up",
     "db:seed": "tsx src/database/seed.ts",
-    "docker:up": "docker compose up --build",
-    "docker:down": "docker compose down"
+    "docker:up": "docker compose -f ../compose.yaml up --build",
+    "docker:down": "docker compose -f ../compose.yaml down"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",

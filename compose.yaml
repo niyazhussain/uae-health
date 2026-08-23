@@ -1,0 +1,123 @@
+name: uae-health
+
+services:
+  postgres:
+    image: postgres:17.11-alpine
+    environment:
+      POSTGRES_DB: uae_health
+      POSTGRES_USER: uae_health
+      POSTGRES_PASSWORD: local-development-only
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U uae_health -d uae_health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - application
+
+  api:
+    build:
+      context: ./api
+      target: development
+    init: true
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      CORS_ORIGIN: http://localhost:5173
+      ENABLE_API_DOCS: "true"
+      DATABASE_URL: postgresql://uae_health:local-development-only@postgres:5432/uae_health
+      DATABASE_MAX_CONNECTIONS: 5
+      DATABASE_SSL: "false"
+      ALLOW_SYNTHETIC_SEED: "true"
+      TSC_WATCHFILE: PriorityPollingInterval
+      TSC_WATCHDIRECTORY: DynamicPriorityPolling
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >-
+      sh -c "npm run db:migrate && npm run db:seed && npm run start:dev"
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - ./api/src:/app/src
+      - ./api/test:/app/test
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+    networks:
+      - application
+
+  web:
+    build:
+      context: ./web
+      target: development
+    init: true
+    environment:
+      VITE_USE_POLLING: "true"
+    depends_on:
+      api:
+        condition: service_healthy
+    command: ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "5173"]
+    ports:
+      - "127.0.0.1:5173:5173"
+    volumes:
+      - ./web/src:/app/src
+      - ./web/public:/app/public
+      - ./web/index.html:/app/index.html
+      - ./web/vite.config.ts:/app/vite.config.ts
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:5173').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - application
+
+  pgadmin:
+    image: dpage/pgadmin4:9.17
+    profiles:
+      - tools
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-developer@uaehealth.ae}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-local-pgadmin-only}
+      PGADMIN_DISABLE_POSTFIX: "true"
+      PGADMIN_CONFIG_UPGRADE_CHECK_ENABLED: "False"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:5050:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+      - ./docker/pgadmin/servers.json:/pgadmin4/servers.json:ro
+    networks:
+      - application
+
+networks:
+  application:
+
+volumes:
+  postgres_data:
+    name: api_postgres_data
+  pgadmin_data:
+    name: uae_health_pgadmin_data

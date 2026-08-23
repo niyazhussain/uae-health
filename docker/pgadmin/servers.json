@@ -1,0 +1,13 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "UAE Health Local",
+      "Group": "Local development",
+      "Host": "postgres",
+      "Port": 5432,
+      "MaintenanceDB": "uae_health",
+      "Username": "uae_health",
+      "SSLMode": "prefer"
+    }
+  }
+}
