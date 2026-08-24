@@ -23,6 +23,10 @@ The platform SHALL record policy-selected business audit events in one append-on
 - **WHEN** a validated Cognito identity is exchanged for an application session or the session is explicitly revoked
 - **THEN** the platform records safe session lifecycle evidence and correlation without recording the Cognito token, raw session identifier, CSRF value, password, TOTP value, or MFA secret
 
+#### Scenario: Native workforce invitation is committed
+- **WHEN** an authorized administrator creates practice access through a native workforce invitation
+- **THEN** the application-user, identity-binding, active membership, and safe `identity.workforce_invited` audit evidence commit atomically without storing a password, temporary password, token, or MFA secret
+
 ### Requirement: Protect audit-event integrity
 Ordinary application identities SHALL NOT update or delete committed audit events, and audit access SHALL itself be permission-controlled and auditable.
 

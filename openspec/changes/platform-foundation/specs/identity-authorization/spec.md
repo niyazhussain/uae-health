@@ -60,6 +60,18 @@ Native workforce users SHALL sign in with real verified email addresses compared
 - **WHEN** an authenticated caller requests a workforce directory outside their current database-backed permission and organization scope
 - **THEN** the API denies the request without trusting the frontend selection or any Cognito group claim
 
+#### Scenario: Authorized administrator invites a native workforce user
+- **WHEN** an administrator with `tenant.memberships.manage` invites a native workforce user into an organization inside the assignment's active scope
+- **THEN** the platform creates or reuses the Cognito account by immutable subject, creates an active practice membership with no implicit role, sends the initial Cognito email when the account is new, and records the access-authority change in the same database transaction
+
+#### Scenario: Caller attempts an invitation outside authorized scope
+- **WHEN** a caller submits a native workforce invitation for an organization outside their current database-backed permission and organization scope
+- **THEN** the API denies the request before creating, changing, or deleting a Cognito account or HIS membership
+
+#### Scenario: HIS persistence fails after Cognito account creation
+- **WHEN** a native invitation creates a Cognito account but the application-user, identity-binding, membership, and audit transaction cannot commit
+- **THEN** the platform reports no successful invitation and attempts best-effort deletion only for that newly created account when the failure is not a known concurrency or identity conflict and an immediate database check confirms the subject remains unbound
+
 ### Requirement: Support approved identity federation without replacing authorization
 Cognito MAY broker approved tenant-specific OIDC or SAML workforce providers and UAE PASS after approved service-provider onboarding. Cognito SHALL provide authentication while the HIS retains the application user profile, identity bindings, tenant and facility memberships, roles, permissions, and approval limits. The HIS SHALL not grant access solely because an external identity is authenticated or because a token contains an external group claim.
 
@@ -73,6 +85,14 @@ The platform SHALL represent one person with one global application-user record 
 #### Scenario: Existing user accepts access to another practice
 - **WHEN** a user accepts an authorized invitation to another practice while authenticated
 - **THEN** the platform adds a separate scoped membership to the existing application user without creating a second password or implicitly sharing access between practices
+
+#### Scenario: Administrator invites an existing native identity to another practice
+- **WHEN** an authorized administrator invites an email that resolves to an existing Cognito account whose immutable subject is already bound to one application user
+- **THEN** the platform reuses that application user, adds the explicit practice membership without sending another initial-password invitation, and does not create a second password
+
+#### Scenario: Invitation email matches an unbound application user
+- **WHEN** an administrator invites a Cognito account whose email matches an application user but whose immutable subject is not bound to that user
+- **THEN** the platform does not merge by email and creates a separately bound application user pending an approved account-linking workflow
 
 #### Scenario: Federated email matches another user
 - **WHEN** a new federated identity presents an email address already present on an application user but has not completed an approved linking flow

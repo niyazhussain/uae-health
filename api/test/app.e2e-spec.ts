@@ -74,6 +74,25 @@ describe('AppController (e2e)', () => {
       });
   });
 
+  it('/v1/admin/workforce-directory/invitations rejects an unauthenticated request', () => {
+    const server = app.getHttpServer() as Server;
+
+    return request(server)
+      .post('/v1/admin/workforce-directory/invitations')
+      .send({
+        organizationId: '20000000-0000-4000-8000-000000000001',
+        displayName: 'Synthetic Invited Clinician',
+        email: 'invited.clinician@example.invalid',
+        reason: 'Approved synthetic staging access.',
+      })
+      .expect(401)
+      .expect({
+        message: 'Active workforce session required.',
+        error: 'Unauthorized',
+        statusCode: 401,
+      });
+  });
+
   afterEach(async () => {
     await app.close();
   });

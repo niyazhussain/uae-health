@@ -1,6 +1,8 @@
-import { Controller, Get, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
 import {
   ApiCookieAuth,
+  ApiConflictResponse,
+  ApiCreatedResponse,
   ApiForbiddenResponse,
   ApiOkResponse,
   ApiOperation,
@@ -11,9 +13,13 @@ import {
 import { WorkforceSessionAuthenticationGuard } from '../auth/workforce-session-authentication.guard.js';
 import { CurrentPrincipal } from '../auth/current-principal.decorator.js';
 import type { AuthenticatedPrincipal } from '../auth/auth.types.js';
+import { CreateWorkforceInvitationDto } from './dto/create-workforce-invitation.dto.js';
 import { WorkforceDirectoryQueryDto } from './dto/workforce-directory-query.dto.js';
 import { WorkforceDirectoryService } from './workforce-directory.service.js';
-import type { WorkforceDirectoryResponse } from './workforce-directory.types.js';
+import type {
+  WorkforceDirectoryResponse,
+  WorkforceInvitationResponse,
+} from './workforce-directory.types.js';
 
 @ApiTags('Workforce administration')
 @ApiCookieAuth()
@@ -39,5 +45,29 @@ export class WorkforceDirectoryController {
     @Query() query: WorkforceDirectoryQueryDto,
   ): Promise<WorkforceDirectoryResponse> {
     return this.directory.getDirectory(principal, query.organizationId);
+  }
+
+  @Post('invitations')
+  @ApiOperation({
+    summary: 'Invite a native workforce user into an authorized practice',
+  })
+  @ApiCreatedResponse({
+    description: 'The Cognito account and active practice membership.',
+  })
+  @ApiUnauthorizedResponse({ description: 'An active session is required.' })
+  @ApiForbiddenResponse({
+    description: 'The caller cannot manage the requested organization.',
+  })
+  @ApiConflictResponse({
+    description: 'The identity is disabled, conflicting, or already a member.',
+  })
+  @ApiServiceUnavailableResponse({
+    description: 'Cognito or HIS persistence is temporarily unavailable.',
+  })
+  createInvitation(
+    @CurrentPrincipal() principal: AuthenticatedPrincipal,
+    @Body() input: CreateWorkforceInvitationDto,
+  ): Promise<WorkforceInvitationResponse> {
+    return this.directory.createInvitation(principal, input);
   }
 }

@@ -3,11 +3,16 @@ import {
   SignOutIcon,
   UserCircleIcon,
 } from "@phosphor-icons/react";
+import { lazy, Suspense } from "react";
 import { SignInPanel } from "@/components/sign-in-panel";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
-import { WorkforceDirectory } from "@/components/workforce-directory";
 import { useCognitoSession } from "@/lib/cognito-session";
+
+const WorkforceDirectory = lazy(async () => {
+  const module = await import("@/components/workforce-directory");
+  return { default: module.WorkforceDirectory };
+});
 
 function App() {
   const session = useCognitoSession();
@@ -50,7 +55,21 @@ function App() {
       </header>
 
       {session.step.kind === "signed-in" ? (
-        <WorkforceDirectory onSessionExpired={session.handleUnauthorized} />
+        <Suspense
+          fallback={
+            <main
+              className="mx-auto w-full max-w-7xl px-4 py-10 text-sm text-muted-foreground sm:px-6 lg:px-8"
+              role="status"
+            >
+              Loading workforce directory…
+            </main>
+          }
+        >
+          <WorkforceDirectory
+            csrfToken={session.step.csrfToken}
+            onSessionExpired={session.handleUnauthorized}
+          />
+        </Suspense>
       ) : (
         <SignInPanel
           configured={session.configured}

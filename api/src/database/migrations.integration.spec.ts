@@ -1,6 +1,7 @@
 import { Kysely, sql } from 'kysely';
 import { ConfigService } from '@nestjs/config';
 import { WorkforceSessionService } from '../auth/workforce-session.service.js';
+import { WorkforceDirectoryRepository } from '../workforce-directory/workforce-directory.repository.js';
 import { createDatabaseClient } from './create-database-client.js';
 import type { DatabaseService } from './database.service.js';
 import type { DatabaseSchema } from './database.types.js';
@@ -232,6 +233,160 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
       { action: 'identity.session_created' },
       { action: 'identity.session_revoked' },
     ]);
+  });
+
+  it('persists an authorized invitation without merging by email or assigning a role', async () => {
+    const issuer =
+      'https://cognito-idp.ap-south-1.amazonaws.com/ap-south-1_synthetic';
+    const tenant = await database
+      .insertInto('tenants')
+      .values({
+        code: 'INVITE-TEST',
+        name: 'Synthetic Invitation Tenant',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const organization = await database
+      .insertInto('organizations')
+      .values({
+        tenant_id: tenant.id,
+        parent_organization_id: null,
+        kind: 'practice',
+        code: 'INVITE-PRACTICE',
+        name: 'Synthetic Invitation Practice',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const connection = await database
+      .insertInto('identity_connections')
+      .values({
+        tenant_id: tenant.id,
+        code: 'native-cognito',
+        name: 'Synthetic Native Cognito',
+        protocol: 'cognito',
+        issuer,
+        jit_provisioning_enabled: false,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const administrator = await database
+      .insertInto('application_users')
+      .values({
+        display_name: 'Synthetic Invitation Administrator',
+        primary_email: 'invite.admin@example.invalid',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const sameEmailUnboundUser = await database
+      .insertInto('application_users')
+      .values({
+        display_name: 'Synthetic Unbound Same Email',
+        primary_email: 'same.invitation@example.invalid',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+
+    await database
+      .insertInto('user_identities')
+      .values({
+        application_user_id: administrator.id,
+        identity_connection_id: connection.id,
+        subject: 'synthetic-invitation-admin-subject',
+        last_authenticated_at: null,
+      })
+      .execute();
+    const administratorMembership = await database
+      .insertInto('organization_memberships')
+      .values({
+        tenant_id: tenant.id,
+        organization_id: organization.id,
+        application_user_id: administrator.id,
+        status: 'active',
+        provisioning_method: 'admin_invite',
+        external_id: null,
+        valid_until: null,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const practiceAdminRole = await database
+      .selectFrom('roles')
+      .select('id')
+      .where('code', '=', 'PRACTICE_ADMIN')
+      .where('tenant_id', 'is', null)
+      .executeTakeFirstOrThrow();
+
+    await database
+      .insertInto('role_assignments')
+      .values({
+        tenant_id: tenant.id,
+        membership_id: administratorMembership.id,
+        role_id: practiceAdminRole.id,
+        scope_organization_id: organization.id,
+        facility_id: null,
+        include_descendants: false,
+        assignment_source: 'admin',
+        assigned_by_user_id: administrator.id,
+        source_role_request_id: null,
+        valid_until: null,
+        revoked_at: null,
+        revoked_by_user_id: null,
+        revocation_reason: null,
+      })
+      .execute();
+
+    const configValues: Record<string, string> = {
+      COGNITO_REGION: 'ap-south-1',
+      COGNITO_USER_POOL_ID: 'ap-south-1_synthetic',
+    };
+    const repository = new WorkforceDirectoryRepository(
+      { client: database } as DatabaseService,
+      {
+        getOrThrow: (name: string) => configValues[name],
+      } as ConfigService,
+    );
+    const authorization = await repository.authorizeInvitation(
+      'synthetic-invitation-admin-subject',
+      organization.id,
+    );
+
+    expect(authorization).not.toBeNull();
+    const invitation = await repository.persistInvitation({
+      actorCognitoSubject: 'synthetic-invitation-admin-subject',
+      authorization: authorization!,
+      account: {
+        subject: 'synthetic-new-invitation-subject',
+        username: 'synthetic-cognito-username',
+        enabled: true,
+        status: 'FORCE_CHANGE_PASSWORD',
+        created: true,
+      },
+      displayName: 'Synthetic Invited Clinician',
+      email: 'same.invitation@example.invalid',
+      reason: 'Approved synthetic invitation integration test.',
+    });
+
+    expect(invitation.applicationUserId).not.toBe(sameEmailUnboundUser.id);
+    await expect(
+      database
+        .selectFrom('role_assignments')
+        .select('id')
+        .where('membership_id', '=', invitation.membershipId)
+        .execute(),
+    ).resolves.toHaveLength(0);
+    await expect(
+      database
+        .selectFrom('audit_events')
+        .select(['action', 'reason'])
+        .where('target_entity_id', '=', invitation.membershipId)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({
+      action: 'identity.workforce_invited',
+      reason: 'Approved synthetic invitation integration test.',
+    });
   });
 
   it('prevents organization cycles', async () => {

@@ -1,7 +1,9 @@
 import {
+  ConflictException,
   ForbiddenException,
   Inject,
   Injectable,
+  Logger,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import type { AuthenticatedPrincipal } from '../auth/auth.types.js';
@@ -10,13 +12,22 @@ import {
   WORKFORCE_DIRECTORY_REPOSITORY,
 } from './workforce-directory.constants.js';
 import type {
+  CreateWorkforceInvitationInput,
   CognitoWorkforceDirectoryPort,
   WorkforceDirectoryRepositoryPort,
   WorkforceDirectoryResponse,
+  WorkforceInvitationResponse,
+} from './workforce-directory.types.js';
+import {
+  WorkforceIdentityConflictError,
+  WorkforceInvitationAuthorizationLostError,
+  WorkforceMembershipConflictError,
 } from './workforce-directory.types.js';
 
 @Injectable()
 export class WorkforceDirectoryService {
+  private readonly logger = new Logger(WorkforceDirectoryService.name);
+
   constructor(
     @Inject(WORKFORCE_DIRECTORY_REPOSITORY)
     private readonly repository: WorkforceDirectoryRepositoryPort,
@@ -84,5 +95,116 @@ export class WorkforceDirectoryService {
         };
       }),
     };
+  }
+
+  async createInvitation(
+    principal: AuthenticatedPrincipal,
+    input: CreateWorkforceInvitationInput,
+  ): Promise<WorkforceInvitationResponse> {
+    const authorization = await this.repository.authorizeInvitation(
+      principal.subject,
+      input.organizationId,
+    );
+
+    if (!authorization) {
+      throw new ForbiddenException(
+        'Workforce invitation is not permitted for this organization.',
+      );
+    }
+
+    let account;
+
+    try {
+      account = await this.cognito.provisionAccount(
+        input.email,
+        input.displayName,
+      );
+    } catch {
+      throw new ServiceUnavailableException(
+        'Workforce authentication provisioning is temporarily unavailable.',
+      );
+    }
+
+    if (!account.enabled) {
+      throw new ConflictException(
+        'The existing Cognito account is disabled and cannot be invited.',
+      );
+    }
+
+    if (
+      !['FORCE_CHANGE_PASSWORD', 'CONFIRMED', 'RESET_REQUIRED'].includes(
+        account.status,
+      )
+    ) {
+      throw new ConflictException(
+        'The existing Cognito account is not a reusable native workforce account.',
+      );
+    }
+
+    try {
+      return await this.repository.persistInvitation({
+        actorCognitoSubject: principal.subject,
+        authorization,
+        account,
+        displayName: input.displayName,
+        email: input.email,
+        reason: input.reason,
+      });
+    } catch (error) {
+      if (
+        account.created &&
+        !(error instanceof WorkforceMembershipConflictError) &&
+        !(error instanceof WorkforceIdentityConflictError)
+      ) {
+        await this.compensateNewAccount(account.subject, account.username);
+      }
+
+      if (error instanceof WorkforceInvitationAuthorizationLostError) {
+        throw new ForbiddenException(
+          'Workforce invitation permission changed before completion.',
+        );
+      }
+
+      if (
+        error instanceof WorkforceMembershipConflictError ||
+        error instanceof WorkforceIdentityConflictError
+      ) {
+        throw new ConflictException(error.message);
+      }
+
+      throw new ServiceUnavailableException(
+        'The workforce invitation could not be completed.',
+      );
+    }
+  }
+
+  private async compensateNewAccount(
+    cognitoSubject: string,
+    cognitoUsername: string,
+  ): Promise<void> {
+    try {
+      if (await this.repository.isCognitoSubjectBound(cognitoSubject)) {
+        this.logger.warn(
+          'event=workforce_invitation_compensation outcome=skipped classification=identity_bound',
+        );
+        return;
+      }
+    } catch {
+      this.logger.error(
+        'event=workforce_invitation_compensation outcome=skipped classification=binding_check_failed',
+      );
+      return;
+    }
+
+    try {
+      await this.cognito.deleteAccount(cognitoUsername);
+      this.logger.log(
+        'event=workforce_invitation_compensation outcome=success',
+      );
+    } catch {
+      this.logger.error(
+        'event=workforce_invitation_compensation outcome=failure classification=cognito_delete_failed',
+      );
+    }
   }
 }

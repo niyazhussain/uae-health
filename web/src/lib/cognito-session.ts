@@ -39,6 +39,7 @@ export type SessionStep =
       expiresAt: Date;
       absoluteExpiresAt: Date;
       username: string;
+      csrfToken: string;
     }
   | { kind: "error"; message: string };
 
@@ -122,6 +123,7 @@ export function useCognitoSession() {
         expiresAt: new Date(session.expiresAt),
         absoluteExpiresAt: new Date(session.absoluteExpiresAt),
         username: session.username ?? fallbackUsername ?? "Workforce user",
+        csrfToken: session.csrfToken,
       });
     },
     [],
