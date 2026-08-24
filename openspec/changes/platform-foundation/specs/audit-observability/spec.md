@@ -19,6 +19,10 @@ The platform SHALL record policy-selected business audit events in one append-on
 - **WHEN** an identity is linked, a membership changes state, a role is requested or decided, or a role assignment changes
 - **THEN** the platform records the actor, effective user, tenant and facility scope where applicable, action, target, outcome, correlation identifier, and required reason
 
+#### Scenario: Workforce session is created or revoked
+- **WHEN** a validated Cognito identity is exchanged for an application session or the session is explicitly revoked
+- **THEN** the platform records safe session lifecycle evidence and correlation without recording the Cognito token, raw session identifier, CSRF value, password, TOTP value, or MFA secret
+
 ### Requirement: Protect audit-event integrity
 Ordinary application identities SHALL NOT update or delete committed audit events, and audit access SHALL itself be permission-controlled and auditable.
 

@@ -41,10 +41,20 @@ describe('AppController (e2e)', () => {
       });
   });
 
-  it('/v1/auth/session rejects a missing Cognito access token', () => {
+  it('/v1/auth/session rejects a missing workforce session', () => {
     const server = app.getHttpServer() as Server;
 
     return request(server).get('/v1/auth/session').expect(401).expect({
+      message: 'Active workforce session required.',
+      error: 'Unauthorized',
+      statusCode: 401,
+    });
+  });
+
+  it('/v1/auth/session exchange rejects a missing Cognito access token', () => {
+    const server = app.getHttpServer() as Server;
+
+    return request(server).post('/v1/auth/session').expect(401).expect({
       message: 'Valid Cognito access token required.',
       error: 'Unauthorized',
       statusCode: 401,
@@ -58,7 +68,7 @@ describe('AppController (e2e)', () => {
       .get('/v1/admin/workforce-directory')
       .expect(401)
       .expect({
-        message: 'Valid Cognito access token required.',
+        message: 'Active workforce session required.',
         error: 'Unauthorized',
         statusCode: 401,
       });

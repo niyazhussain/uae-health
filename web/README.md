@@ -29,10 +29,14 @@ The current page is a synthetic workforce-administration interface. It must not 
 
 Copy `.env.example` to `.env.local` and set the non-secret staging User Pool
 and app-client identifiers. The sign-in flow uses Cognito SRP and handles the
-temporary-password, authenticator setup, and TOTP challenge states. Only the
-15-minute access token is retained in React memory; the Cognito refresh and ID
-token cache is cleared and no authentication token is persisted in browser
-storage.
+temporary-password, authenticator setup, and TOTP challenge states. The
+browser presents the resulting access token once to the API session-exchange
+endpoint, then signs out the Cognito SDK object and clears all access, refresh,
+and ID tokens from memory.
 
-After authentication, the workforce directory calls the API with the access
-token. The API—not the browser—decides which practices the user may manage.
+The API sets a host-only HttpOnly cookie backed by a hashed PostgreSQL session.
+The UI restores that session after a reload with `credentials: "include"` and
+never reads the cookie. Authenticated API activity extends the 15-minute idle
+expiry while the fixed 8-hour absolute expiry never moves. A `401` clears the
+UI session; a `403` preserves the session and displays the authorization
+failure. The API, not the browser, decides which practices the user may manage.

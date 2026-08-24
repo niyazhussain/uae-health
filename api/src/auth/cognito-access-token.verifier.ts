@@ -32,7 +32,8 @@ export class CognitoAccessTokenVerifierAdapter implements CognitoAccessTokenVeri
     if (
       payload.token_use !== 'access' ||
       typeof payload.sub !== 'string' ||
-      typeof payload.client_id !== 'string'
+      typeof payload.client_id !== 'string' ||
+      typeof payload.exp !== 'number'
     ) {
       throw new Error('Cognito token is not an access token.');
     }
@@ -41,6 +42,7 @@ export class CognitoAccessTokenVerifierAdapter implements CognitoAccessTokenVeri
       sub: payload.sub,
       client_id: payload.client_id,
       token_use: 'access',
+      exp: payload.exp,
       ...(typeof payload.username === 'string'
         ? { username: payload.username }
         : {}),

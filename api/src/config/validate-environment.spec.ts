@@ -77,4 +77,26 @@ describe('validateEnvironment authentication', () => {
       }),
     ).toThrow('SYNTHETIC_ADMIN_COGNITO_SUBJECT is prohibited in production.');
   });
+
+  it('configures a bounded local workforce session by default', () => {
+    expect(validateEnvironment({})).toMatchObject({
+      SESSION_COOKIE_SECURE: 'false',
+      SESSION_IDLE_MINUTES: 15,
+      SESSION_ABSOLUTE_MINUTES: 480,
+      SESSION_RENEWAL_MINUTES: 5,
+    });
+  });
+
+  it('requires secure workforce cookies in staging', () => {
+    expect(() =>
+      validateEnvironment({
+        AUTH_MODE: 'cognito',
+        DEPLOYMENT_ENVIRONMENT: 'staging',
+        COGNITO_REGION: 'ap-south-1',
+        COGNITO_USER_POOL_ID: 'ap-south-1_example',
+        COGNITO_USER_POOL_CLIENT_ID: 'client-id',
+        SESSION_COOKIE_SECURE: 'false',
+      }),
+    ).toThrow('SESSION_COOKIE_SECURE must be true for staging and production.');
+  });
 });

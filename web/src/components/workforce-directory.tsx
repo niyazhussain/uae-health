@@ -24,12 +24,13 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   getWorkforceDirectory,
+  WorkforceApiError,
   type WorkforceDirectoryResponse,
   type WorkforceDirectoryUser,
 } from "@/lib/workforce-directory";
 
 interface WorkforceDirectoryProps {
-  accessToken: string;
+  onSessionExpired: () => void;
 }
 
 function statusBadge(user: WorkforceDirectoryUser) {
@@ -66,7 +67,9 @@ function statusBadge(user: WorkforceDirectoryUser) {
   return <Badge variant="outline">{user.membershipStatus}</Badge>;
 }
 
-export function WorkforceDirectory({ accessToken }: WorkforceDirectoryProps) {
+export function WorkforceDirectory({
+  onSessionExpired,
+}: WorkforceDirectoryProps) {
   const [directory, setDirectory] = useState<WorkforceDirectoryResponse | null>(
     null,
   );
@@ -80,13 +83,17 @@ export function WorkforceDirectory({ accessToken }: WorkforceDirectoryProps) {
   useEffect(() => {
     const controller = new AbortController();
 
-    getWorkforceDirectory(accessToken, selectedOrganizationId)
+    getWorkforceDirectory(selectedOrganizationId)
       .then((response) => {
         if (controller.signal.aborted) return;
         setDirectory(response);
       })
       .catch((reason: unknown) => {
         if (controller.signal.aborted) return;
+        if (reason instanceof WorkforceApiError && reason.status === 401) {
+          onSessionExpired();
+          return;
+        }
         setError(
           reason instanceof Error
             ? reason.message
@@ -98,7 +105,7 @@ export function WorkforceDirectory({ accessToken }: WorkforceDirectoryProps) {
       });
 
     return () => controller.abort();
-  }, [accessToken, reloadVersion, selectedOrganizationId]);
+  }, [onSessionExpired, reloadVersion, selectedOrganizationId]);
 
   const selectOrganization = (organizationId: string) => {
     setLoading(true);

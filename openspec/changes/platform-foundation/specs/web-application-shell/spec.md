@@ -22,6 +22,10 @@ The web application SHALL provide a consistent shell for authenticated HIS modul
 - **WHEN** a user without a valid session opens a protected application route
 - **THEN** the system initiates the configured sign-in flow without rendering protected content
 
+#### Scenario: Authenticated user reloads the application
+- **WHEN** a user reloads the browser with an active backend session
+- **THEN** the application restores the authenticated shell through a credentialed session request without reading or persisting a Cognito token in JavaScript storage
+
 ### Requirement: Enforce accessible and responsive interaction patterns
 The web application SHALL support keyboard operation, visible focus, semantic structure, accessible names, sufficient status communication, and responsive layouts for supported viewport sizes.
 

@@ -166,6 +166,49 @@ export function validateEnvironment(
     throw new Error('PORT must be at most 65535.');
   }
 
+  const sessionCookieSecure = readBooleanString(
+    environment.SESSION_COOKIE_SECURE,
+    deploymentEnvironment === 'staging' ||
+      deploymentEnvironment === 'production'
+      ? 'true'
+      : 'false',
+    'SESSION_COOKIE_SECURE',
+  );
+  const sessionIdleMinutes = readPositiveInteger(
+    environment.SESSION_IDLE_MINUTES ?? 15,
+    'SESSION_IDLE_MINUTES',
+  );
+  const sessionAbsoluteMinutes = readPositiveInteger(
+    environment.SESSION_ABSOLUTE_MINUTES ?? 480,
+    'SESSION_ABSOLUTE_MINUTES',
+  );
+  const sessionRenewalMinutes = readPositiveInteger(
+    environment.SESSION_RENEWAL_MINUTES ?? 5,
+    'SESSION_RENEWAL_MINUTES',
+  );
+
+  if (
+    (deploymentEnvironment === 'staging' ||
+      deploymentEnvironment === 'production') &&
+    sessionCookieSecure !== 'true'
+  ) {
+    throw new Error(
+      'SESSION_COOKIE_SECURE must be true for staging and production.',
+    );
+  }
+
+  if (sessionAbsoluteMinutes < sessionIdleMinutes) {
+    throw new Error(
+      'SESSION_ABSOLUTE_MINUTES must be at least SESSION_IDLE_MINUTES.',
+    );
+  }
+
+  if (sessionRenewalMinutes >= sessionIdleMinutes) {
+    throw new Error(
+      'SESSION_RENEWAL_MINUTES must be less than SESSION_IDLE_MINUTES.',
+    );
+  }
+
   return {
     ...environment,
     NODE_ENV: nodeEnv,
@@ -204,6 +247,10 @@ export function validateEnvironment(
       'false',
       'DATABASE_SSL',
     ),
+    SESSION_COOKIE_SECURE: sessionCookieSecure,
+    SESSION_IDLE_MINUTES: sessionIdleMinutes,
+    SESSION_ABSOLUTE_MINUTES: sessionAbsoluteMinutes,
+    SESSION_RENEWAL_MINUTES: sessionRenewalMinutes,
     ALLOW_SYNTHETIC_SEED: readBooleanString(
       environment.ALLOW_SYNTHETIC_SEED,
       'false',

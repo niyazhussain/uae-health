@@ -208,6 +208,21 @@ export interface AuditEventTable {
   occurred_at: Generated<Date>;
 }
 
+export interface WorkforceSessionTable {
+  id: Generated<string>;
+  session_token_hash: string;
+  csrf_token_hash: string;
+  cognito_subject: string;
+  cognito_client_id: string;
+  cognito_username: string | null;
+  idle_expires_at: Date;
+  absolute_expires_at: Date;
+  last_seen_at: Generated<Date>;
+  revoked_at: Date | null;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+}
+
 export interface DatabaseSchema {
   tenants: TenantTable;
   organizations: OrganizationTable;
@@ -224,4 +239,5 @@ export interface DatabaseSchema {
   role_assignments: RoleAssignmentTable;
   approval_limits: ApprovalLimitTable;
   audit_events: AuditEventTable;
+  workforce_sessions: WorkforceSessionTable;
 }

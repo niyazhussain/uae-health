@@ -28,8 +28,17 @@ interface ErrorResponse {
   message?: string;
 }
 
+export class WorkforceApiError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "WorkforceApiError";
+    this.status = status;
+  }
+}
+
 export async function getWorkforceDirectory(
-  accessToken: string,
   organizationId?: string,
 ): Promise<WorkforceDirectoryResponse> {
   const apiBaseUrl =
@@ -41,7 +50,7 @@ export async function getWorkforceDirectory(
   }
 
   const response = await fetch(url, {
-    headers: { Authorization: `Bearer ${accessToken}` },
+    credentials: "include",
   });
 
   if (!response.ok) {
@@ -53,8 +62,9 @@ export async function getWorkforceDirectory(
       // The status-based fallback below is safe for non-JSON upstream errors.
     }
 
-    throw new Error(
+    throw new WorkforceApiError(
       error.message ?? `Directory request failed (${response.status}).`,
+      response.status,
     );
   }
 

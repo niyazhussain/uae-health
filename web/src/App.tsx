@@ -3,8 +3,6 @@ import {
   SignOutIcon,
   UserCircleIcon,
 } from "@phosphor-icons/react";
-import { useEffect } from "react";
-
 import { SignInPanel } from "@/components/sign-in-panel";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
@@ -13,14 +11,6 @@ import { useCognitoSession } from "@/lib/cognito-session";
 
 function App() {
   const session = useCognitoSession();
-
-  useEffect(() => {
-    if (session.step.kind !== "signed-in") return;
-
-    const remaining = session.step.expiresAt.getTime() - Date.now();
-    const timer = window.setTimeout(session.signOut, Math.max(remaining, 0));
-    return () => window.clearTimeout(timer);
-  }, [session.step, session.signOut]);
 
   return (
     <div className="min-h-[100dvh] bg-background">
@@ -60,7 +50,7 @@ function App() {
       </header>
 
       {session.step.kind === "signed-in" ? (
-        <WorkforceDirectory accessToken={session.step.accessToken} />
+        <WorkforceDirectory onSessionExpired={session.handleUnauthorized} />
       ) : (
         <SignInPanel
           configured={session.configured}

@@ -92,7 +92,7 @@ export function SignInPanel({
             <LockKeyIcon className="size-5 text-primary" /> TOTP required
           </span>
           <span className="flex items-center gap-2">
-            <KeyIcon className="size-5 text-info" /> 15-minute session
+            <KeyIcon className="size-5 text-info" /> 15-minute idle timeout
           </span>
         </div>
       </section>

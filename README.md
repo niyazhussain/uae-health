@@ -34,6 +34,11 @@ Local services:
 
 Edits under `web/src` trigger Vite hot-module reload. Edits under `api/src` restart the NestJS development process. The API waits for PostgreSQL, applies pending Kysely migrations, and runs the idempotent synthetic seed before it starts.
 
+Workforce authentication uses Cognito in browser memory only for the initial
+password and authenticator challenges. The UI exchanges the resulting access
+token once for a PostgreSQL-backed opaque API session, clears every Cognito
+token, and restores the HttpOnly cookie-backed session after a page reload.
+
 ### Rancher Desktop command path
 
 If Rancher Desktop is running but `docker` is not found, add its command directory for the current terminal:

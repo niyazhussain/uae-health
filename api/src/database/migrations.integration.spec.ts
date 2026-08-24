@@ -1,8 +1,12 @@
 import { Kysely, sql } from 'kysely';
+import { ConfigService } from '@nestjs/config';
+import { WorkforceSessionService } from '../auth/workforce-session.service.js';
 import { createDatabaseClient } from './create-database-client.js';
+import type { DatabaseService } from './database.service.js';
 import type { DatabaseSchema } from './database.types.js';
 import * as createFacilities from './migrations/2026-08-23T000000_create_facilities.js';
 import * as createIdentityAuthorizationAudit from './migrations/2026-08-24T000000_create_identity_authorization_audit.js';
+import * as createWorkforceSessions from './migrations/2026-08-24T010000_create_workforce_sessions.js';
 
 const databaseUrl = process.env.DATABASE_URL;
 const describeWithDatabase = databaseUrl ? describe : describe.skip;
@@ -30,10 +34,12 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
     );
     await createFacilities.up(database);
     await createIdentityAuthorizationAudit.up(database);
+    await createWorkforceSessions.up(database);
   });
 
   afterAll(async () => {
     if (database) {
+      await createWorkforceSessions.down(database);
       await createIdentityAuthorizationAudit.down(database);
       await createFacilities.down(database);
       await database.destroy();
@@ -126,6 +132,106 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
 
     expect(memberships).toHaveLength(2);
     expect(new Set(memberships.map(({ tenant_id }) => tenant_id)).size).toBe(2);
+  });
+
+  it('stores only hashed browser session values with bounded expiry', async () => {
+    const now = new Date();
+    const idleExpiry = new Date(now.getTime() + 15 * 60_000);
+    const absoluteExpiry = new Date(now.getTime() + 8 * 60 * 60_000);
+    const session = await database
+      .insertInto('workforce_sessions')
+      .values({
+        session_token_hash: 'a'.repeat(64),
+        csrf_token_hash: 'b'.repeat(64),
+        cognito_subject: 'synthetic-session-subject',
+        cognito_client_id: 'synthetic-client',
+        cognito_username: 'synthetic-user',
+        idle_expires_at: idleExpiry,
+        absolute_expires_at: absoluteExpiry,
+        revoked_at: null,
+      })
+      .returning([
+        'session_token_hash',
+        'csrf_token_hash',
+        'idle_expires_at',
+        'absolute_expires_at',
+      ])
+      .executeTakeFirstOrThrow();
+
+    expect(session).toMatchObject({
+      session_token_hash: 'a'.repeat(64),
+      csrf_token_hash: 'b'.repeat(64),
+      idle_expires_at: idleExpiry,
+      absolute_expires_at: absoluteExpiry,
+    });
+  });
+
+  it('creates, restores, slides, and revokes an opaque workforce session', async () => {
+    const configValues: Record<string, string | number> = {
+      SESSION_IDLE_MINUTES: 15,
+      SESSION_ABSOLUTE_MINUTES: 480,
+      SESSION_RENEWAL_MINUTES: 5,
+      COGNITO_REGION: 'ap-south-1',
+      COGNITO_USER_POOL_ID: 'ap-south-1_synthetic',
+    };
+    const config = {
+      getOrThrow: (name: string) => configValues[name],
+    } as ConfigService;
+    const sessions = new WorkforceSessionService(
+      { client: database } as DatabaseService,
+      config,
+    );
+    const created = await sessions.create({
+      subject: 'synthetic-opaque-session-subject',
+      clientId: 'synthetic-client',
+      username: 'synthetic-user',
+      providerExpiresAt: new Date(Date.now() + 10 * 60_000),
+    });
+    const stored = await database
+      .selectFrom('workforce_sessions')
+      .select([
+        'session_token_hash',
+        'csrf_token_hash',
+        'last_seen_at',
+        'idle_expires_at',
+      ])
+      .where('id', '=', created.sessionId)
+      .executeTakeFirstOrThrow();
+
+    expect(stored.session_token_hash).not.toContain(created.sessionToken);
+    expect(stored.csrf_token_hash).not.toContain(created.csrfToken);
+
+    await database
+      .updateTable('workforce_sessions')
+      .set({ last_seen_at: new Date(Date.now() - 6 * 60_000) })
+      .where('id', '=', created.sessionId)
+      .execute();
+
+    const restored = await sessions.authenticate(created.sessionToken);
+    expect(restored).toMatchObject({
+      sessionId: created.sessionId,
+      csrfToken: created.csrfToken,
+      renewed: true,
+    });
+    expect(restored!.idleExpiresAt.getTime()).toBeGreaterThan(
+      stored.idle_expires_at.getTime(),
+    );
+
+    await sessions.revoke(restored!);
+    await expect(
+      sessions.authenticate(created.sessionToken),
+    ).resolves.toBeNull();
+    await expect(
+      database
+        .selectFrom('audit_events')
+        .select('action')
+        .where('target_entity_id', '=', created.sessionId)
+        .orderBy('occurred_at')
+        .execute(),
+    ).resolves.toEqual([
+      { action: 'identity.session_created' },
+      { action: 'identity.session_revoked' },
+    ]);
   });
 
   it('prevents organization cycles', async () => {

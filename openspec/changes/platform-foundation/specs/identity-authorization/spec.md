@@ -169,8 +169,32 @@ The authorization platform SHALL support user or role approval limits for config
 - **THEN** the platform prevents approval and returns the operation to the configured escalation path
 
 ### Requirement: Protect browser sessions
-Browser authentication SHALL use a session approach that prevents JavaScript from reading reusable long-lived credentials and SHALL apply secure transport, same-site, expiry, and sign-out controls appropriate to the chosen hostname architecture.
+Browser authentication SHALL use a backend-for-frontend session that prevents JavaScript from retaining Cognito tokens or reading reusable session credentials. After native Cognito SRP, password-change, software-token setup, and TOTP challenges complete in memory, the browser SHALL present the short-lived access token once to the API. The API SHALL validate and exchange it for a server-side session, then the browser SHALL clear every Cognito token. The API SHALL expose only a cryptographically random opaque session identifier in a host-only HttpOnly cookie and a non-secret session-bound CSRF value. The database SHALL store only hashes of both browser values plus the immutable principal and session lifecycle metadata. Cookie-authenticated mutations SHALL validate the allowed Origin and CSRF value. Session lookup, sliding idle expiry, fixed absolute expiry, revocation, and sign-out SHALL fail closed. Federated identity-provider authentication SHALL use standards-based redirects and SHALL NOT proxy customer identity-provider passwords through the HIS.
+
+#### Scenario: User reloads an authenticated UI
+- **WHEN** a workforce user reloads the application while the server-side session remains active
+- **THEN** the browser presents only its HttpOnly session cookie, the API restores the immutable principal and returns a non-secret CSRF value, and no Cognito token is exposed to frontend JavaScript
+
+#### Scenario: Cognito token is exchanged after native authentication
+- **WHEN** the custom workforce UI completes Cognito authentication and presents the resulting access token to the session-exchange endpoint
+- **THEN** the API validates the token, creates a hashed opaque server session, returns the HttpOnly cookie and non-secret CSRF value, and the browser clears all Cognito SDK tokens from memory
+
+#### Scenario: Cookie-authenticated mutation lacks CSRF proof
+- **WHEN** a request that can change state has a missing or invalid allowed Origin or session-bound CSRF value
+- **THEN** the API rejects the request without executing the protected operation
+
+#### Scenario: Session reaches its idle or absolute expiry
+- **WHEN** a workforce session exceeds either configured expiry boundary
+- **THEN** the API revokes or removes the server-side session, clears the cookie where applicable, and requires a new Cognito authentication
+
+#### Scenario: Active use approaches idle expiry
+- **WHEN** valid authenticated API activity occurs before idle expiry and before the fixed absolute expiry
+- **THEN** the API may extend the server-side idle expiry and renew the cookie without extending the absolute expiry
 
 #### Scenario: User signs out
 - **WHEN** a user completes sign-out
-- **THEN** the application invalidates its session according to provider capabilities and protected API calls no longer succeed with that session
+- **THEN** the application revokes the server-side session, clears the browser cookie, and protected API calls no longer succeed with that session
+
+#### Scenario: Static UI is delivered through CloudFront
+- **WHEN** CloudFront serves the workforce application assets
+- **THEN** session resolution and HIS authorization remain at the API backend and no Lambda@Edge function receives provider refresh credentials or grants application permissions

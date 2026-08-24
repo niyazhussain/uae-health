@@ -6,7 +6,7 @@ import {
   type IAuthenticationCallback,
   type ICognitoStorage,
 } from "amazon-cognito-identity-js";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 class MemoryStorage implements ICognitoStorage {
   private readonly values = new Map<string, string>();
@@ -36,8 +36,8 @@ export type SessionStep =
   | { kind: "totp-challenge" }
   | {
       kind: "signed-in";
-      accessToken: string;
       expiresAt: Date;
+      absoluteExpiresAt: Date;
       username: string;
     }
   | { kind: "error"; message: string };
@@ -50,9 +50,54 @@ function errorMessage(error: unknown): string {
   return "Authentication could not be completed. Please try again.";
 }
 
+interface ServerSessionResponse {
+  subject: string;
+  username?: string;
+  csrfToken: string;
+  expiresAt: string;
+  absoluteExpiresAt: string;
+}
+
+class SessionApiError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "SessionApiError";
+    this.status = status;
+  }
+}
+
+const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3000";
+
+async function sessionRequest(
+  path: string,
+  init?: RequestInit,
+): Promise<ServerSessionResponse> {
+  const response = await fetch(new URL(path, apiBaseUrl), {
+    credentials: "include",
+    ...init,
+  });
+
+  if (!response.ok) {
+    throw new SessionApiError(
+      response.status === 401
+        ? "The secure session has expired. Sign in again."
+        : `Secure session request failed (${response.status}).`,
+      response.status,
+    );
+  }
+
+  return (await response.json()) as ServerSessionResponse;
+}
+
 export function useCognitoSession() {
-  const [step, setStep] = useState<SessionStep>({ kind: "signed-out" });
+  const [step, setStep] = useState<SessionStep>({
+    kind: "submitting",
+    message: "Restoring secure session…",
+  });
   const activeUser = useRef<CognitoUser | null>(null);
+  const csrfToken = useRef<string | null>(null);
   const storage = useMemo(() => new MemoryStorage(), []);
   const pool = useMemo(() => {
     const userPoolId = import.meta.env.VITE_COGNITO_USER_POOL_ID;
@@ -69,27 +114,75 @@ export function useCognitoSession() {
     });
   }, [storage]);
 
+  const applyServerSession = useCallback(
+    (session: ServerSessionResponse, fallbackUsername?: string) => {
+      csrfToken.current = session.csrfToken;
+      setStep({
+        kind: "signed-in",
+        expiresAt: new Date(session.expiresAt),
+        absoluteExpiresAt: new Date(session.absoluteExpiresAt),
+        username: session.username ?? fallbackUsername ?? "Workforce user",
+      });
+    },
+    [],
+  );
+
+  const clearProviderCredentials = useCallback(() => {
+    activeUser.current?.signOut();
+    activeUser.current = null;
+    storage.clear();
+  }, [storage]);
+
+  const clearLocalSession = useCallback(() => {
+    clearProviderCredentials();
+    csrfToken.current = null;
+    setStep({ kind: "signed-out" });
+  }, [clearProviderCredentials]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    sessionRequest("/v1/auth/session", { signal: controller.signal })
+      .then((session) => {
+        if (!controller.signal.aborted) applyServerSession(session);
+      })
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) return;
+        if (error instanceof SessionApiError && error.status === 401) {
+          clearLocalSession();
+          return;
+        }
+        setStep({ kind: "error", message: errorMessage(error) });
+      });
+
+    return () => controller.abort();
+  }, [applyServerSession, clearLocalSession]);
+
   const finishAuthentication = useCallback(
     (session: CognitoUserSession) => {
       const token = session.getAccessToken();
       const authenticatedUser = activeUser.current;
       const username = authenticatedUser?.getUsername() ?? "Workforce user";
-
-      // Discard the CognitoUser object because its completed session also
-      // contains ID and refresh tokens. The access token below is the only
-      // credential retained by application state.
-      authenticatedUser?.signOut();
-      activeUser.current = null;
-      storage.clear();
-
+      const accessToken = token.getJwtToken();
       setStep({
-        kind: "signed-in",
-        accessToken: token.getJwtToken(),
-        expiresAt: new Date(token.getExpiration() * 1000),
-        username,
+        kind: "submitting",
+        message: "Establishing secure session…",
       });
+
+      void sessionRequest("/v1/auth/session", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${accessToken}` },
+      })
+        .then((serverSession) => {
+          clearProviderCredentials();
+          applyServerSession(serverSession, username);
+        })
+        .catch((error: unknown) => {
+          clearProviderCredentials();
+          setStep({ kind: "error", message: errorMessage(error) });
+        });
     },
-    [storage],
+    [applyServerSession, clearProviderCredentials],
   );
 
   const callbacks = useCallback((): IAuthenticationCallback => {
@@ -186,11 +279,19 @@ export function useCognitoSession() {
   );
 
   const signOut = useCallback(() => {
-    activeUser.current?.signOut();
-    activeUser.current = null;
-    storage.clear();
-    setStep({ kind: "signed-out" });
-  }, [storage]);
+    const currentCsrfToken = csrfToken.current;
+
+    if (!currentCsrfToken) {
+      clearLocalSession();
+      return;
+    }
+
+    void fetch(new URL("/v1/auth/logout", apiBaseUrl), {
+      method: "POST",
+      credentials: "include",
+      headers: { "X-CSRF-Token": currentCsrfToken },
+    }).finally(clearLocalSession);
+  }, [clearLocalSession]);
 
   return {
     step,
@@ -200,5 +301,6 @@ export function useCognitoSession() {
     verifyTotpSetup,
     submitTotp,
     signOut,
+    handleUnauthorized: clearLocalSession,
   };
 }

@@ -15,15 +15,28 @@ npm run start:dev
 - Readiness check: `http://localhost:3000/health/ready`
 - OpenAPI UI: `http://localhost:3000/docs`
 - OpenAPI JSON: `http://localhost:3000/docs/openapi.json`
-- Protected token check: `http://localhost:3000/v1/auth/session`
+- Workforce session restore: `http://localhost:3000/v1/auth/session`
 - Authorized workforce directory: `http://localhost:3000/v1/admin/workforce-directory`
 
 Authentication defaults to `AUTH_MODE=disabled`, in which protected endpoints
 reject every request. Set `AUTH_MODE=cognito`, `DEPLOYMENT_ENVIRONMENT`, `COGNITO_REGION`,
 `COGNITO_USER_POOL_ID`, and `COGNITO_USER_POOL_CLIENT_ID` to the non-secret
-Terraform outputs for a deployed environment. The API accepts only Cognito
-access tokens for that exact pool and client; ID tokens are not API bearer
-tokens. Cognito groups are not treated as HIS authorization.
+Terraform outputs for a deployed environment. After the browser completes
+Cognito SRP, password-change, and TOTP challenges in memory, it presents the
+access token once to `POST /v1/auth/session`. The API accepts only an access
+token for that exact pool and client; ID tokens cannot create a session. It
+then stores only a SHA-256 hash of a random session identifier and sends the
+raw identifier as a host-only HttpOnly cookie. The browser clears all Cognito
+tokens and uses credentialed cookie requests from that point onward. Cognito
+groups are not treated as HIS authorization.
+
+The default session has a 15-minute sliding idle timeout and a fixed 8-hour
+absolute timeout. Valid authenticated API activity renews idle expiry at most
+once every five minutes; static UI assets do not renew it. Staging and
+production require `SESSION_COOKIE_SECURE=true`. State-changing requests also
+require the exact allowed Origin and the session-bound `X-CSRF-Token` returned
+by the session endpoint. A `401` means the UI must sign out; a `403` means the
+session is valid but the requested permission was denied.
 
 `local`, `development`, and `staging` require Cognito in `ap-south-1`;
 `production` requires `me-central-1`. The same API artifact runs in both

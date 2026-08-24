@@ -33,6 +33,7 @@ export class CognitoAuthenticationGuard implements CanActivate {
       request.principal = {
         subject: claims.sub,
         clientId: claims.client_id,
+        providerExpiresAt: new Date(claims.exp * 1000),
         ...(claims.username ? { username: claims.username } : {}),
       };
 

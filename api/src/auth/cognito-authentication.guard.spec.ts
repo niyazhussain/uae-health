@@ -22,6 +22,7 @@ describe('CognitoAuthenticationGuard', () => {
       client_id: 'client-123',
       token_use: 'access',
       username: 'workforce-user',
+      exp: 1787590800,
     });
     const verifier: CognitoAccessTokenVerifierPort = {
       verify,
@@ -37,6 +38,7 @@ describe('CognitoAuthenticationGuard', () => {
       subject: 'subject-123',
       clientId: 'client-123',
       username: 'workforce-user',
+      providerExpiresAt: new Date(1787590800 * 1000),
     });
   });
 

@@ -14,6 +14,8 @@ async function bootstrap() {
       .split(',')
       .map((origin) => origin.trim()),
     methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+    credentials: true,
+    allowedHeaders: ['Authorization', 'Content-Type', 'X-CSRF-Token'],
   });
   app.useGlobalPipes(
     new ValidationPipe({
@@ -24,11 +26,16 @@ async function bootstrap() {
   );
 
   if (config.getOrThrow<string>('ENABLE_API_DOCS') === 'true') {
+    const sessionCookieName =
+      config.getOrThrow<string>('SESSION_COOKIE_SECURE') === 'true'
+        ? '__Host-uae_health_session'
+        : 'uae_health_session_local';
     const documentConfig = new DocumentBuilder()
       .setTitle('UAE Health API')
       .setDescription('Development API contract for the UAE Health platform.')
       .setVersion('0.1')
       .addBearerAuth()
+      .addCookieAuth(sessionCookieName)
       .build();
     const documentFactory = () =>
       SwaggerModule.createDocument(app, documentConfig);
