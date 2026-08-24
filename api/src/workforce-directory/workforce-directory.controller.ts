@@ -1,4 +1,14 @@
-import { Body, Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  ParseUUIDPipe,
+  Patch,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import {
   ApiCookieAuth,
   ApiConflictResponse,
@@ -13,12 +23,14 @@ import {
 import { WorkforceSessionAuthenticationGuard } from '../auth/workforce-session-authentication.guard.js';
 import { CurrentPrincipal } from '../auth/current-principal.decorator.js';
 import type { AuthenticatedPrincipal } from '../auth/auth.types.js';
+import { ChangeWorkforceMembershipStatusDto } from './dto/change-workforce-membership-status.dto.js';
 import { CreateWorkforceInvitationDto } from './dto/create-workforce-invitation.dto.js';
 import { WorkforceDirectoryQueryDto } from './dto/workforce-directory-query.dto.js';
 import { WorkforceDirectoryService } from './workforce-directory.service.js';
 import type {
   WorkforceDirectoryResponse,
   WorkforceInvitationResponse,
+  WorkforceMembershipStatusResponse,
 } from './workforce-directory.types.js';
 
 @ApiTags('Workforce administration')
@@ -69,5 +81,32 @@ export class WorkforceDirectoryController {
     @Body() input: CreateWorkforceInvitationDto,
   ): Promise<WorkforceInvitationResponse> {
     return this.directory.createInvitation(principal, input);
+  }
+
+  @Patch('memberships/:membershipId/status')
+  @ApiOperation({
+    summary:
+      'Suspend or restore a workforce membership in an authorized practice',
+  })
+  @ApiOkResponse({
+    description: 'The practice membership state was changed.',
+  })
+  @ApiUnauthorizedResponse({ description: 'An active session is required.' })
+  @ApiForbiddenResponse({
+    description: 'The caller cannot manage the target organization.',
+  })
+  @ApiConflictResponse({
+    description: 'The membership state cannot be changed.',
+  })
+  changeMembershipStatus(
+    @CurrentPrincipal() principal: AuthenticatedPrincipal,
+    @Param('membershipId', new ParseUUIDPipe()) membershipId: string,
+    @Body() input: ChangeWorkforceMembershipStatusDto,
+  ): Promise<WorkforceMembershipStatusResponse> {
+    return this.directory.changeMembershipStatus(
+      principal,
+      membershipId,
+      input,
+    );
   }
 }

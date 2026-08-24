@@ -5,17 +5,21 @@ import { sql, type Kysely, type Transaction } from 'kysely';
 import { DatabaseService } from '../database/database.service.js';
 import type { DatabaseSchema } from '../database/database.types.js';
 import type {
+  ChangeWorkforceMembershipStatusRepositoryInput,
   PersistWorkforceInvitationInput,
   WorkforceDirectoryContext,
   WorkforceDirectoryMember,
   WorkforceDirectoryRepositoryPort,
   WorkforceInvitationAuthorization,
   WorkforceInvitationResponse,
+  WorkforceMembershipStatusResponse,
 } from './workforce-directory.types.js';
 import {
   WorkforceIdentityConflictError,
   WorkforceInvitationAuthorizationLostError,
   WorkforceMembershipConflictError,
+  WorkforceMembershipManagementAuthorizationLostError,
+  WorkforceMembershipStateConflictError,
 } from './workforce-directory.types.js';
 
 interface ContextRow {
@@ -26,6 +30,7 @@ interface ContextRow {
 }
 
 interface MemberRow {
+  membership_id: string;
   application_user_id: string;
   display_name: string;
   primary_email: string | null;
@@ -88,7 +93,14 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
         select
           assignment.tenant_id,
           assignment.scope_organization_id as organization_id,
-          assignment.include_descendants
+          assignment.include_descendants and exists (
+            select 1
+            from role_permissions descendant_role_permission
+            join permissions descendant_permission
+              on descendant_permission.id = descendant_role_permission.permission_id
+            where descendant_role_permission.role_id = assignment.role_id
+              and descendant_permission.code = 'tenant.memberships.manage_descendants'
+          ) as include_descendants
         from resolved_actors actor
         join organization_memberships membership
           on membership.application_user_id = actor.application_user_id
@@ -153,6 +165,7 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
   ): Promise<WorkforceDirectoryMember[]> {
     const result = await sql<MemberRow>`
       select
+        membership.id as membership_id,
         application_user.id as application_user_id,
         application_user.display_name,
         application_user.primary_email,
@@ -175,6 +188,7 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
     `.execute(this.database.client);
 
     return result.rows.map((row) => ({
+      membershipId: row.membership_id,
       applicationUserId: row.application_user_id,
       displayName: row.display_name,
       email: row.primary_email,
@@ -420,6 +434,140 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
     }
   }
 
+  async changeMembershipStatus(
+    input: ChangeWorkforceMembershipStatusRepositoryInput,
+  ): Promise<WorkforceMembershipStatusResponse> {
+    return this.database.client
+      .transaction()
+      .setIsolationLevel('serializable')
+      .execute(async (trx) => {
+        const authorization = await this.findInvitationAuthorization(
+          trx,
+          input.actorCognitoSubject,
+          input.organizationId,
+        );
+
+        if (!authorization) {
+          throw new WorkforceMembershipManagementAuthorizationLostError();
+        }
+
+        const membership = await trx
+          .selectFrom('organization_memberships as membership')
+          .select([
+            'membership.id as membership_id',
+            'membership.application_user_id as application_user_id',
+            'membership.tenant_id as tenant_id',
+            'membership.organization_id as organization_id',
+            'membership.status as membership_status',
+          ])
+          .where('membership.id', '=', input.membershipId)
+          .forUpdate()
+          .executeTakeFirst();
+
+        if (
+          !membership ||
+          membership.tenant_id !== authorization.tenantId ||
+          membership.organization_id !== authorization.organizationId
+        ) {
+          throw new WorkforceMembershipManagementAuthorizationLostError();
+        }
+
+        if (membership.application_user_id === authorization.actorUserId) {
+          throw new WorkforceMembershipStateConflictError(
+            'Administrators cannot change their own membership state.',
+          );
+        }
+
+        if (
+          membership.membership_status !== 'active' &&
+          membership.membership_status !== 'suspended'
+        ) {
+          throw new WorkforceMembershipStateConflictError(
+            'Only active or suspended memberships can be changed.',
+          );
+        }
+
+        if (membership.membership_status === input.status) {
+          throw new WorkforceMembershipStateConflictError(
+            `This membership is already ${input.status}.`,
+          );
+        }
+
+        const now = new Date();
+        await trx
+          .updateTable('organization_memberships')
+          .set({ status: input.status, updated_at: now })
+          .where('id', '=', membership.membership_id)
+          .executeTakeFirstOrThrow();
+
+        let sessionsRevoked = 0;
+
+        if (input.status === 'suspended') {
+          const identities = await trx
+            .selectFrom('user_identities as identity')
+            .innerJoin(
+              'identity_connections as connection',
+              'connection.id',
+              'identity.identity_connection_id',
+            )
+            .select('identity.subject')
+            .distinct()
+            .where(
+              'identity.application_user_id',
+              '=',
+              membership.application_user_id,
+            )
+            .where('connection.issuer', '=', this.cognitoIssuer)
+            .execute();
+          const subjects = identities.map((identity) => identity.subject);
+
+          if (subjects.length > 0) {
+            const revoked = await trx
+              .updateTable('workforce_sessions')
+              .set({ revoked_at: now, updated_at: now })
+              .where('revoked_at', 'is', null)
+              .where('cognito_subject', 'in', subjects)
+              .executeTakeFirst();
+            sessionsRevoked = Number(revoked.numUpdatedRows);
+          }
+        }
+
+        await trx
+          .insertInto('audit_events')
+          .values({
+            actor_type: 'user',
+            actor_identifier: input.actorCognitoSubject,
+            actor_user_id: authorization.actorUserId,
+            effective_user_id: authorization.actorUserId,
+            tenant_id: authorization.tenantId,
+            organization_id: authorization.organizationId,
+            facility_id: null,
+            action:
+              input.status === 'suspended'
+                ? 'identity.membership_suspended'
+                : 'identity.membership_restored',
+            target_entity_type: 'organization_membership',
+            target_entity_id: membership.membership_id,
+            outcome: 'success',
+            correlation_id: randomUUID(),
+            reason: input.reason,
+            before_data: { membershipStatus: membership.membership_status },
+            after_data: {
+              membershipStatus: input.status,
+              sessionsRevoked,
+            },
+          })
+          .execute();
+
+        return {
+          membershipId: membership.membership_id,
+          organizationId: authorization.organizationId,
+          membershipStatus: input.status,
+          sessionsRevoked,
+        };
+      });
+  }
+
   private async findInvitationAuthorization(
     executor: DatabaseExecutor,
     cognitoSubject: string,
@@ -443,7 +591,14 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
         select
           assignment.tenant_id,
           assignment.scope_organization_id as organization_id,
-          assignment.include_descendants
+          assignment.include_descendants and exists (
+            select 1
+            from role_permissions descendant_role_permission
+            join permissions descendant_permission
+              on descendant_permission.id = descendant_role_permission.permission_id
+            where descendant_role_permission.role_id = assignment.role_id
+              and descendant_permission.code = 'tenant.memberships.manage_descendants'
+          ) as include_descendants
         from resolved_actors actor
         join organization_memberships membership
           on membership.application_user_id = actor.application_user_id

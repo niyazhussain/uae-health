@@ -12,16 +12,20 @@ import {
   WORKFORCE_DIRECTORY_REPOSITORY,
 } from './workforce-directory.constants.js';
 import type {
+  ChangeWorkforceMembershipStatusInput,
   CreateWorkforceInvitationInput,
   CognitoWorkforceDirectoryPort,
   WorkforceDirectoryRepositoryPort,
   WorkforceDirectoryResponse,
   WorkforceInvitationResponse,
+  WorkforceMembershipStatusResponse,
 } from './workforce-directory.types.js';
 import {
   WorkforceIdentityConflictError,
   WorkforceInvitationAuthorizationLostError,
   WorkforceMembershipConflictError,
+  WorkforceMembershipManagementAuthorizationLostError,
+  WorkforceMembershipStateConflictError,
 } from './workforce-directory.types.js';
 
 @Injectable()
@@ -82,7 +86,9 @@ export class WorkforceDirectoryService {
           : undefined;
 
         return {
+          membershipId: member.membershipId,
           applicationUserId: member.applicationUserId,
+          canChangeMembership: member.cognitoSubject !== principal.subject,
           displayName: member.displayName,
           email: member.email,
           membershipStatus: member.membershipStatus,
@@ -174,6 +180,38 @@ export class WorkforceDirectoryService {
 
       throw new ServiceUnavailableException(
         'The workforce invitation could not be completed.',
+      );
+    }
+  }
+
+  async changeMembershipStatus(
+    principal: AuthenticatedPrincipal,
+    membershipId: string,
+    input: ChangeWorkforceMembershipStatusInput,
+  ): Promise<WorkforceMembershipStatusResponse> {
+    try {
+      return await this.repository.changeMembershipStatus({
+        actorCognitoSubject: principal.subject,
+        membershipId,
+        organizationId: input.organizationId,
+        status: input.status,
+        reason: input.reason,
+      });
+    } catch (error) {
+      if (
+        error instanceof WorkforceMembershipManagementAuthorizationLostError
+      ) {
+        throw new ForbiddenException(
+          'Workforce membership management is not permitted for this organization.',
+        );
+      }
+
+      if (error instanceof WorkforceMembershipStateConflictError) {
+        throw new ConflictException(error.message);
+      }
+
+      throw new ServiceUnavailableException(
+        'The workforce membership could not be changed.',
       );
     }
   }

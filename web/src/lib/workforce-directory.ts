@@ -6,7 +6,9 @@ export interface WorkforceDirectoryContext {
 }
 
 export interface WorkforceDirectoryUser {
+  membershipId: string;
   applicationUserId: string;
+  canChangeMembership: boolean;
   displayName: string;
   email: string | null;
   membershipStatus: "pending" | "active" | "suspended" | "revoked";
@@ -39,6 +41,19 @@ export interface WorkforceInvitationResponse {
   membershipStatus: "active";
   accountCreated: boolean;
   delivery: "email" | "existing-account";
+}
+
+export interface ChangeWorkforceMembershipStatusInput {
+  organizationId: string;
+  status: "active" | "suspended";
+  reason: string;
+}
+
+export interface WorkforceMembershipStatusResponse {
+  membershipId: string;
+  organizationId: string;
+  membershipStatus: "active" | "suspended";
+  sessionsRevoked: number;
 }
 
 interface ErrorResponse {
@@ -134,4 +149,48 @@ export async function createWorkforceInvitation(
   }
 
   return (await response.json()) as WorkforceInvitationResponse;
+}
+
+export async function changeWorkforceMembershipStatus(
+  csrfToken: string,
+  membershipId: string,
+  input: ChangeWorkforceMembershipStatusInput,
+): Promise<WorkforceMembershipStatusResponse> {
+  const apiBaseUrl =
+    import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3000";
+  const response = await fetch(
+    new URL(
+      `/v1/admin/workforce-directory/memberships/${membershipId}/status`,
+      apiBaseUrl,
+    ),
+    {
+      method: "PATCH",
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": csrfToken,
+      },
+      body: JSON.stringify(input),
+    },
+  );
+
+  if (!response.ok) {
+    let error: ErrorResponse = {};
+
+    try {
+      error = (await response.json()) as ErrorResponse;
+    } catch {
+      // The status-based fallback below is safe for non-JSON upstream errors.
+    }
+
+    throw new WorkforceApiError(
+      errorMessage(
+        error,
+        `Membership status request failed (${response.status}).`,
+      ),
+      response.status,
+    );
+  }
+
+  return (await response.json()) as WorkforceMembershipStatusResponse;
 }

@@ -4,6 +4,8 @@ import {
   CheckCircleIcon,
   EnvelopeSimpleIcon,
   MagnifyingGlassIcon,
+  PauseCircleIcon,
+  PlayCircleIcon,
   ShieldCheckIcon,
   UserCircleIcon,
   UserPlusIcon,
@@ -34,6 +36,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  changeWorkforceMembershipStatus,
   createWorkforceInvitation,
   getWorkforceDirectory,
   WorkforceApiError,
@@ -104,6 +107,17 @@ export function WorkforceDirectory({
   const [inviteDisplayName, setInviteDisplayName] = useState("");
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteReason, setInviteReason] = useState("");
+  const [membershipChangeTarget, setMembershipChangeTarget] =
+    useState<WorkforceDirectoryUser | null>(null);
+  const [membershipChangeReason, setMembershipChangeReason] = useState("");
+  const [membershipChangeSubmitting, setMembershipChangeSubmitting] =
+    useState(false);
+  const [membershipChangeError, setMembershipChangeError] = useState<
+    string | null
+  >(null);
+  const [membershipChangeSuccess, setMembershipChangeSuccess] = useState<
+    string | null
+  >(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -214,6 +228,71 @@ export function WorkforceDirectory({
     }
   };
 
+  const setMembershipChangeDialogOpen = (open: boolean) => {
+    if (membershipChangeSubmitting) return;
+
+    if (!open) {
+      setMembershipChangeTarget(null);
+      setMembershipChangeReason("");
+      setMembershipChangeError(null);
+    }
+  };
+
+  const openMembershipChangeDialog = (user: WorkforceDirectoryUser) => {
+    setMembershipChangeError(null);
+    setMembershipChangeReason("");
+    setMembershipChangeTarget(user);
+  };
+
+  const submitMembershipChange = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    if (!activeOrganizationId || !membershipChangeTarget) {
+      setMembershipChangeError("Select a practice and user before continuing.");
+      return;
+    }
+
+    const nextStatus =
+      membershipChangeTarget.membershipStatus === "active"
+        ? "suspended"
+        : "active";
+    setMembershipChangeSubmitting(true);
+    setMembershipChangeError(null);
+    setMembershipChangeSuccess(null);
+
+    try {
+      const result = await changeWorkforceMembershipStatus(
+        csrfToken,
+        membershipChangeTarget.membershipId,
+        {
+          organizationId: activeOrganizationId,
+          status: nextStatus,
+          reason: membershipChangeReason.trim(),
+        },
+      );
+      setMembershipChangeSuccess(
+        result.membershipStatus === "suspended"
+          ? `${membershipChangeTarget.displayName}'s practice access was suspended. ${result.sessionsRevoked} active session${result.sessionsRevoked === 1 ? "" : "s"} revoked.`
+          : `${membershipChangeTarget.displayName}'s practice access was restored. Existing valid roles remain unchanged.`,
+      );
+      setMembershipChangeTarget(null);
+      setMembershipChangeReason("");
+      retry();
+    } catch (reason: unknown) {
+      if (reason instanceof WorkforceApiError && reason.status === 401) {
+        onSessionExpired();
+        return;
+      }
+      setMembershipChangeError(
+        reason instanceof Error
+          ? reason.message
+          : "The workforce membership could not be changed.",
+      );
+    } finally {
+      setMembershipChangeSubmitting(false);
+    }
+  };
+
   return (
     <main className="mx-auto w-full max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
       <section className="flex flex-col gap-5 border-b pb-7 lg:flex-row lg:items-end lg:justify-between">
@@ -280,6 +359,29 @@ export function WorkforceDirectory({
             size="sm"
             variant="ghost"
             onClick={() => setInviteSuccess(null)}
+          >
+            Dismiss
+          </Button>
+        </div>
+      )}
+
+      {membershipChangeSuccess && (
+        <div
+          className="mt-6 flex items-start gap-3 rounded-xl border border-success/30 bg-success/10 p-4 text-sm"
+          role="status"
+        >
+          <CheckCircleIcon className="mt-0.5 size-5 shrink-0 text-success" />
+          <div className="flex-1">
+            <p className="font-medium text-foreground">Access updated</p>
+            <p className="mt-1 text-muted-foreground">
+              {membershipChangeSuccess}
+            </p>
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            onClick={() => setMembershipChangeSuccess(null)}
           >
             Dismiss
           </Button>
@@ -376,13 +478,14 @@ export function WorkforceDirectory({
 
         {!loading && !error && visibleUsers.length > 0 && (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[46rem] text-start text-sm">
+            <table className="w-full min-w-[54rem] text-start text-sm">
               <thead className="bg-muted/60 text-xs text-muted-foreground">
                 <tr>
                   <th className="px-5 py-3 text-start font-medium">User</th>
                   <th className="px-5 py-3 text-start font-medium">Access</th>
                   <th className="px-5 py-3 text-start font-medium">Cognito</th>
                   <th className="px-5 py-3 text-start font-medium">Data</th>
+                  <th className="px-5 py-3 text-end font-medium">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y">
@@ -421,6 +524,31 @@ export function WorkforceDirectory({
                         </Badge>
                       ) : (
                         <Badge variant="outline">Production</Badge>
+                      )}
+                    </td>
+                    <td className="px-5 py-4 text-end">
+                      {user.canChangeMembership &&
+                        user.membershipStatus === "active" && (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => openMembershipChangeDialog(user)}
+                        >
+                          <PauseCircleIcon />
+                          Suspend
+                        </Button>
+                      )}
+                      {user.canChangeMembership &&
+                        user.membershipStatus === "suspended" && (
+                        <Button
+                          type="button"
+                          size="sm"
+                          onClick={() => openMembershipChangeDialog(user)}
+                        >
+                          <PlayCircleIcon />
+                          Restore
+                        </Button>
                       )}
                     </td>
                   </tr>
@@ -526,6 +654,92 @@ export function WorkforceDirectory({
                 {inviteSubmitting
                   ? "Creating invitation"
                   : "Create invitation"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={membershipChangeTarget !== null}
+        onOpenChange={setMembershipChangeDialogOpen}
+      >
+        <DialogContent className="sm:max-w-lg">
+          <form className="grid gap-5" onSubmit={submitMembershipChange}>
+            <DialogHeader>
+              <DialogTitle>
+                {membershipChangeTarget?.membershipStatus === "active"
+                  ? "Suspend practice access"
+                  : "Restore practice access"}
+              </DialogTitle>
+              <DialogDescription>
+                {membershipChangeTarget?.membershipStatus === "active"
+                  ? "This removes access to this practice and immediately revokes the user's active application sessions. Their Cognito account and other practice access are unchanged."
+                  : "This restores access only to this practice. It does not create any new roles or facility access."}
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="rounded-lg border bg-muted/45 p-3">
+              <p className="text-xs font-medium text-muted-foreground">User</p>
+              <p className="mt-1 font-medium">
+                {membershipChangeTarget?.displayName}
+              </p>
+              <p className="mt-0.5 text-sm text-muted-foreground">
+                {membershipChangeTarget?.email ?? "No primary email"}
+              </p>
+            </div>
+
+            <div className="grid gap-2">
+              <Label htmlFor="membership-change-reason">
+                Reason for access change
+              </Label>
+              <Textarea
+                id="membership-change-reason"
+                name="reason"
+                minLength={3}
+                maxLength={500}
+                required
+                value={membershipChangeReason}
+                onChange={(event) =>
+                  setMembershipChangeReason(event.target.value)
+                }
+              />
+              <p className="text-xs leading-5 text-muted-foreground">
+                This reason is stored in the audit trail. Do not include
+                patient or clinical details.
+              </p>
+            </div>
+
+            {membershipChangeError && (
+              <div
+                className="flex gap-2 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive"
+                role="alert"
+              >
+                <WarningCircleIcon className="mt-0.5 size-4 shrink-0" />
+                <p>{membershipChangeError}</p>
+              </div>
+            )}
+
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setMembershipChangeDialogOpen(false)}
+                disabled={membershipChangeSubmitting}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" disabled={membershipChangeSubmitting}>
+                {membershipChangeTarget?.membershipStatus === "active" ? (
+                  <PauseCircleIcon />
+                ) : (
+                  <PlayCircleIcon />
+                )}
+                {membershipChangeSubmitting
+                  ? "Updating access"
+                  : membershipChangeTarget?.membershipStatus === "active"
+                    ? "Suspend access"
+                    : "Restore access"}
               </Button>
             </DialogFooter>
           </form>

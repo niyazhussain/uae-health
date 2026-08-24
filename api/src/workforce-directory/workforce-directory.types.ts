@@ -6,6 +6,7 @@ export interface WorkforceDirectoryContext {
 }
 
 export interface WorkforceDirectoryMember {
+  membershipId: string;
   applicationUserId: string;
   displayName: string;
   email: string | null;
@@ -66,6 +67,26 @@ export interface WorkforceInvitationResponse {
   delivery: 'email' | 'existing-account';
 }
 
+export type WorkforceMembershipMutableStatus = 'active' | 'suspended';
+
+export interface ChangeWorkforceMembershipStatusInput {
+  organizationId: string;
+  status: WorkforceMembershipMutableStatus;
+  reason: string;
+}
+
+export interface ChangeWorkforceMembershipStatusRepositoryInput extends ChangeWorkforceMembershipStatusInput {
+  actorCognitoSubject: string;
+  membershipId: string;
+}
+
+export interface WorkforceMembershipStatusResponse {
+  membershipId: string;
+  organizationId: string;
+  membershipStatus: WorkforceMembershipMutableStatus;
+  sessionsRevoked: number;
+}
+
 export class WorkforceMembershipConflictError extends Error {
   constructor(message = 'This user already has membership in the practice.') {
     super(message);
@@ -87,8 +108,24 @@ export class WorkforceIdentityConflictError extends Error {
   }
 }
 
+export class WorkforceMembershipStateConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'WorkforceMembershipStateConflictError';
+  }
+}
+
+export class WorkforceMembershipManagementAuthorizationLostError extends Error {
+  constructor() {
+    super('Workforce membership-management authorization is no longer active.');
+    this.name = 'WorkforceMembershipManagementAuthorizationLostError';
+  }
+}
+
 export interface WorkforceDirectoryUser {
+  membershipId: string;
   applicationUserId: string;
+  canChangeMembership: boolean;
   displayName: string;
   email: string | null;
   membershipStatus: WorkforceDirectoryMember['membershipStatus'];
@@ -122,6 +159,9 @@ export interface WorkforceDirectoryRepositoryPort {
   persistInvitation(
     input: PersistWorkforceInvitationInput,
   ): Promise<WorkforceInvitationResponse>;
+  changeMembershipStatus(
+    input: ChangeWorkforceMembershipStatusRepositoryInput,
+  ): Promise<WorkforceMembershipStatusResponse>;
 }
 
 export interface CognitoWorkforceDirectoryPort {

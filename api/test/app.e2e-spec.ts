@@ -93,6 +93,26 @@ describe('AppController (e2e)', () => {
       });
   });
 
+  it('/v1/admin/workforce-directory membership state changes reject an unauthenticated request', () => {
+    const server = app.getHttpServer() as Server;
+
+    return request(server)
+      .patch(
+        '/v1/admin/workforce-directory/memberships/60000000-0000-4000-8000-000000000001/status',
+      )
+      .send({
+        organizationId: '20000000-0000-4000-8000-000000000001',
+        status: 'suspended',
+        reason: 'Synthetic access suspension test.',
+      })
+      .expect(401)
+      .expect({
+        message: 'Active workforce session required.',
+        error: 'Unauthorized',
+        statusCode: 401,
+      });
+  });
+
   afterEach(async () => {
     await app.close();
   });

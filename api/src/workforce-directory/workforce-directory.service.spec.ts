@@ -8,6 +8,9 @@ import type { AuthenticatedPrincipal } from '../auth/auth.types.js';
 import { WorkforceDirectoryService } from './workforce-directory.service.js';
 import {
   WorkforceMembershipConflictError,
+  WorkforceMembershipManagementAuthorizationLostError,
+  WorkforceMembershipStateConflictError,
+  WorkforceInvitationAuthorizationLostError,
   type CognitoWorkforceDirectoryPort,
   type WorkforceDirectoryRepositoryPort,
 } from './workforce-directory.types.js';
@@ -35,6 +38,7 @@ function createDependencies() {
   ]);
   const listMembers = jest.fn().mockResolvedValue([
     {
+      membershipId: '60000000-0000-4000-8000-000000000001',
       applicationUserId: '30000000-0000-4000-8000-000000000001',
       displayName: 'Synthetic Practice Administrator',
       email: 'practice.admin@example.invalid',
@@ -44,6 +48,7 @@ function createDependencies() {
       isSynthetic: true,
     },
     {
+      membershipId: '60000000-0000-4000-8000-000000000002',
       applicationUserId: '30000000-0000-4000-8000-000000000002',
       displayName: 'Pending Synthetic User',
       email: 'pending.user@example.invalid',
@@ -71,12 +76,19 @@ function createDependencies() {
     accountCreated: true,
     delivery: 'email',
   });
+  const changeMembershipStatus = jest.fn().mockResolvedValue({
+    membershipId: '60000000-0000-4000-8000-000000000002',
+    organizationId: invitationInput.organizationId,
+    membershipStatus: 'suspended',
+    sessionsRevoked: 2,
+  });
   const repository: WorkforceDirectoryRepositoryPort = {
     listManageableContexts,
     listMembers,
     authorizeInvitation,
     isCognitoSubjectBound,
     persistInvitation,
+    changeMembershipStatus,
   };
   const listAccounts = jest.fn().mockResolvedValue([
     {
@@ -110,6 +122,7 @@ function createDependencies() {
     authorizeInvitation,
     isCognitoSubjectBound,
     persistInvitation,
+    changeMembershipStatus,
     provisionAccount,
     deleteAccount,
   };
@@ -140,7 +153,9 @@ describe('WorkforceDirectoryService', () => {
       },
       users: [
         {
+          membershipId: '60000000-0000-4000-8000-000000000001',
           applicationUserId: '30000000-0000-4000-8000-000000000001',
+          canChangeMembership: false,
           displayName: 'Synthetic Practice Administrator',
           email: 'practice.admin@example.invalid',
           membershipStatus: 'active',
@@ -152,7 +167,9 @@ describe('WorkforceDirectoryService', () => {
           isSynthetic: true,
         },
         {
+          membershipId: '60000000-0000-4000-8000-000000000002',
           applicationUserId: '30000000-0000-4000-8000-000000000002',
+          canChangeMembership: true,
           displayName: 'Pending Synthetic User',
           email: 'pending.user@example.invalid',
           membershipStatus: 'pending',
@@ -314,6 +331,18 @@ describe('WorkforceDirectoryService', () => {
     expect(deleteAccount).not.toHaveBeenCalled();
   });
 
+  it('rejects an invitation when its database authorization changed', async () => {
+    const { repository, cognito, persistInvitation } = createDependencies();
+    persistInvitation.mockRejectedValue(
+      new WorkforceInvitationAuthorizationLostError(),
+    );
+    const service = new WorkforceDirectoryService(repository, cognito);
+
+    await expect(
+      service.createInvitation(principal, invitationInput),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
   it('rejects an external-provider account in the native invitation flow', async () => {
     const { repository, cognito, provisionAccount, persistInvitation } =
       createDependencies();
@@ -330,5 +359,86 @@ describe('WorkforceDirectoryService', () => {
       service.createInvitation(principal, invitationInput),
     ).rejects.toBeInstanceOf(ConflictException);
     expect(persistInvitation).not.toHaveBeenCalled();
+  });
+
+  it("changes another user's scoped membership without calling Cognito", async () => {
+    const {
+      repository,
+      cognito,
+      changeMembershipStatus,
+      provisionAccount,
+      deleteAccount,
+    } = createDependencies();
+    const service = new WorkforceDirectoryService(repository, cognito);
+
+    await expect(
+      service.changeMembershipStatus(
+        principal,
+        '60000000-0000-4000-8000-000000000002',
+        {
+          organizationId: invitationInput.organizationId,
+          status: 'suspended',
+          reason: 'Synthetic access suspension for testing.',
+        },
+      ),
+    ).resolves.toEqual({
+      membershipId: '60000000-0000-4000-8000-000000000002',
+      organizationId: invitationInput.organizationId,
+      membershipStatus: 'suspended',
+      sessionsRevoked: 2,
+    });
+    expect(changeMembershipStatus).toHaveBeenCalledWith({
+      actorCognitoSubject: principal.subject,
+      membershipId: '60000000-0000-4000-8000-000000000002',
+      organizationId: invitationInput.organizationId,
+      status: 'suspended',
+      reason: 'Synthetic access suspension for testing.',
+    });
+    expect(provisionAccount).not.toHaveBeenCalled();
+    expect(deleteAccount).not.toHaveBeenCalled();
+  });
+
+  it('maps an invalid membership-state transition to a conflict', async () => {
+    const { repository, cognito, changeMembershipStatus } =
+      createDependencies();
+    changeMembershipStatus.mockRejectedValue(
+      new WorkforceMembershipStateConflictError(
+        'Administrators cannot change their own membership state.',
+      ),
+    );
+    const service = new WorkforceDirectoryService(repository, cognito);
+
+    await expect(
+      service.changeMembershipStatus(
+        principal,
+        '60000000-0000-4000-8000-000000000001',
+        {
+          organizationId: invitationInput.organizationId,
+          status: 'suspended',
+          reason: 'Synthetic test reason.',
+        },
+      ),
+    ).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('rejects a membership state change when its database authorization changed', async () => {
+    const { repository, cognito, changeMembershipStatus } =
+      createDependencies();
+    changeMembershipStatus.mockRejectedValue(
+      new WorkforceMembershipManagementAuthorizationLostError(),
+    );
+    const service = new WorkforceDirectoryService(repository, cognito);
+
+    await expect(
+      service.changeMembershipStatus(
+        principal,
+        '60000000-0000-4000-8000-000000000002',
+        {
+          organizationId: invitationInput.organizationId,
+          status: 'suspended',
+          reason: 'Synthetic authorization rejection test.',
+        },
+      ),
+    ).rejects.toBeInstanceOf(ForbiddenException);
   });
 });

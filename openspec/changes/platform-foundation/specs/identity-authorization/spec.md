@@ -72,6 +72,22 @@ Native workforce users SHALL sign in with real verified email addresses compared
 - **WHEN** a native invitation creates a Cognito account but the application-user, identity-binding, membership, and audit transaction cannot commit
 - **THEN** the platform reports no successful invitation and attempts best-effort deletion only for that newly created account when the failure is not a known concurrency or identity conflict and an immediate database check confirms the subject remains unbound
 
+#### Scenario: Authorized administrator suspends a practice membership
+- **WHEN** an administrator with `tenant.memberships.manage` suspends another user's active membership inside the administrator's current organization scope
+- **THEN** the platform suspends only that membership, revokes the target user's active server sessions, records the access-authority change transactionally, and does not disable the global user, Cognito account, or memberships in other practices
+
+#### Scenario: Authorized administrator restores a practice membership
+- **WHEN** an administrator with `tenant.memberships.manage` restores another user's suspended membership inside the administrator's current organization scope
+- **THEN** the platform restores only that membership and its still-valid pre-existing role assignments without creating a role or facility assignment
+
+#### Scenario: Administrator changes own membership state
+- **WHEN** an administrator attempts to suspend or restore their own membership through workforce administration
+- **THEN** the platform rejects the change without altering the membership or session state
+
+#### Scenario: Caller changes a membership outside current scope
+- **WHEN** a caller attempts to suspend or restore a membership outside current database-backed permission and organization scope
+- **THEN** the platform rejects the request without changing the membership, Cognito account, or server session state
+
 ### Requirement: Support approved identity federation without replacing authorization
 Cognito MAY broker approved tenant-specific OIDC or SAML workforce providers and UAE PASS after approved service-provider onboarding. Cognito SHALL provide authentication while the HIS retains the application user profile, identity bindings, tenant and facility memberships, roles, permissions, and approval limits. The HIS SHALL not grant access solely because an external identity is authenticated or because a token contains an external group claim.
 

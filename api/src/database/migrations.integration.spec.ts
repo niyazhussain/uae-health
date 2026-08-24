@@ -389,6 +389,454 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
     });
   });
 
+  it('requires the explicit descendant permission before managing a child practice', async () => {
+    const issuer =
+      'https://cognito-idp.ap-south-1.amazonaws.com/ap-south-1_synthetic';
+    const tenant = await database
+      .insertInto('tenants')
+      .values({
+        code: 'DESCENDANT-SCOPE-TEST',
+        name: 'Synthetic Descendant Scope Tenant',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const parent = await database
+      .insertInto('organizations')
+      .values({
+        tenant_id: tenant.id,
+        parent_organization_id: null,
+        kind: 'group',
+        code: 'DESCENDANT-PARENT',
+        name: 'Synthetic Parent Group',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const child = await database
+      .insertInto('organizations')
+      .values({
+        tenant_id: tenant.id,
+        parent_organization_id: parent.id,
+        kind: 'practice',
+        code: 'DESCENDANT-CHILD',
+        name: 'Synthetic Child Practice',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const connection = await database
+      .insertInto('identity_connections')
+      .values({
+        tenant_id: tenant.id,
+        code: 'descendant-native-cognito',
+        name: 'Synthetic Descendant Native Cognito',
+        protocol: 'cognito',
+        issuer,
+        jit_provisioning_enabled: false,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const administrator = await database
+      .insertInto('application_users')
+      .values({
+        display_name: 'Synthetic Scoped Access Administrator',
+        primary_email: 'descendant.admin@example.invalid',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const administratorSubject = 'synthetic-descendant-admin-subject';
+    await database
+      .insertInto('user_identities')
+      .values({
+        application_user_id: administrator.id,
+        identity_connection_id: connection.id,
+        subject: administratorSubject,
+        last_authenticated_at: null,
+      })
+      .execute();
+    const membership = await database
+      .insertInto('organization_memberships')
+      .values({
+        tenant_id: tenant.id,
+        organization_id: parent.id,
+        application_user_id: administrator.id,
+        status: 'active',
+        provisioning_method: 'admin_invite',
+        external_id: null,
+        valid_until: null,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const accessAdminRole = await database
+      .selectFrom('roles')
+      .select('id')
+      .where('tenant_id', 'is', null)
+      .where('code', '=', 'ACCESS_ADMIN')
+      .executeTakeFirstOrThrow();
+    await database
+      .insertInto('role_assignments')
+      .values({
+        tenant_id: tenant.id,
+        membership_id: membership.id,
+        role_id: accessAdminRole.id,
+        scope_organization_id: parent.id,
+        facility_id: null,
+        include_descendants: true,
+        assignment_source: 'admin',
+        assigned_by_user_id: administrator.id,
+        source_role_request_id: null,
+        valid_until: null,
+        revoked_at: null,
+        revoked_by_user_id: null,
+        revocation_reason: null,
+      })
+      .execute();
+    const repository = new WorkforceDirectoryRepository(
+      { client: database } as DatabaseService,
+      {
+        getOrThrow: (name: string) =>
+          ({
+            COGNITO_REGION: 'ap-south-1',
+            COGNITO_USER_POOL_ID: 'ap-south-1_synthetic',
+          })[name],
+      } as ConfigService,
+    );
+
+    await expect(
+      repository.listManageableContexts(administratorSubject),
+    ).resolves.toEqual([
+      {
+        tenantId: tenant.id,
+        tenantName: 'Synthetic Descendant Scope Tenant',
+        organizationId: parent.id,
+        organizationName: 'Synthetic Parent Group',
+      },
+    ]);
+    await expect(
+      repository.authorizeInvitation(administratorSubject, child.id),
+    ).resolves.toBeNull();
+  });
+
+  it('suspends only one practice membership and revokes the target user sessions', async () => {
+    const issuer =
+      'https://cognito-idp.ap-south-1.amazonaws.com/ap-south-1_synthetic';
+    const tenant = await database
+      .insertInto('tenants')
+      .values({
+        code: 'SUSPEND-TEST',
+        name: 'Synthetic Suspension Tenant',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const firstPractice = await database
+      .insertInto('organizations')
+      .values({
+        tenant_id: tenant.id,
+        parent_organization_id: null,
+        kind: 'practice',
+        code: 'SUSPEND-PRACTICE-A',
+        name: 'Synthetic Suspension Practice A',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const secondPractice = await database
+      .insertInto('organizations')
+      .values({
+        tenant_id: tenant.id,
+        parent_organization_id: null,
+        kind: 'practice',
+        code: 'SUSPEND-PRACTICE-B',
+        name: 'Synthetic Suspension Practice B',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const connection = await database
+      .insertInto('identity_connections')
+      .values({
+        tenant_id: tenant.id,
+        code: 'suspension-native-cognito',
+        name: 'Synthetic Suspension Native Cognito',
+        protocol: 'cognito',
+        issuer,
+        jit_provisioning_enabled: false,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const administrator = await database
+      .insertInto('application_users')
+      .values({
+        display_name: 'Synthetic Suspension Administrator',
+        primary_email: 'suspension.admin@example.invalid',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const target = await database
+      .insertInto('application_users')
+      .values({
+        display_name: 'Synthetic Multi Practice Target',
+        primary_email: 'suspension.target@example.invalid',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const administratorSubject = 'synthetic-suspension-admin-subject';
+    const targetSubject = 'synthetic-suspension-target-subject';
+
+    await database
+      .insertInto('user_identities')
+      .values([
+        {
+          application_user_id: administrator.id,
+          identity_connection_id: connection.id,
+          subject: administratorSubject,
+          last_authenticated_at: null,
+        },
+        {
+          application_user_id: target.id,
+          identity_connection_id: connection.id,
+          subject: targetSubject,
+          last_authenticated_at: null,
+        },
+      ])
+      .execute();
+    const administratorMembership = await database
+      .insertInto('organization_memberships')
+      .values({
+        tenant_id: tenant.id,
+        organization_id: firstPractice.id,
+        application_user_id: administrator.id,
+        status: 'active',
+        provisioning_method: 'admin_invite',
+        external_id: null,
+        valid_until: null,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const targetFirstMembership = await database
+      .insertInto('organization_memberships')
+      .values({
+        tenant_id: tenant.id,
+        organization_id: firstPractice.id,
+        application_user_id: target.id,
+        status: 'active',
+        provisioning_method: 'admin_invite',
+        external_id: null,
+        valid_until: null,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const targetSecondMembership = await database
+      .insertInto('organization_memberships')
+      .values({
+        tenant_id: tenant.id,
+        organization_id: secondPractice.id,
+        application_user_id: target.id,
+        status: 'active',
+        provisioning_method: 'admin_invite',
+        external_id: null,
+        valid_until: null,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const roles = await database
+      .selectFrom('roles')
+      .select(['id', 'code'])
+      .where('tenant_id', 'is', null)
+      .where('code', 'in', ['PRACTICE_ADMIN', 'RECEPTION'])
+      .execute();
+    const practiceAdminRole = roles.find(
+      (role) => role.code === 'PRACTICE_ADMIN',
+    )!;
+    const receptionRole = roles.find((role) => role.code === 'RECEPTION')!;
+
+    await database
+      .insertInto('role_assignments')
+      .values([
+        {
+          tenant_id: tenant.id,
+          membership_id: administratorMembership.id,
+          role_id: practiceAdminRole.id,
+          scope_organization_id: firstPractice.id,
+          facility_id: null,
+          include_descendants: false,
+          assignment_source: 'admin',
+          assigned_by_user_id: administrator.id,
+          source_role_request_id: null,
+          valid_until: null,
+          revoked_at: null,
+          revoked_by_user_id: null,
+          revocation_reason: null,
+        },
+        {
+          tenant_id: tenant.id,
+          membership_id: targetFirstMembership.id,
+          role_id: receptionRole.id,
+          scope_organization_id: firstPractice.id,
+          facility_id: null,
+          include_descendants: false,
+          assignment_source: 'admin',
+          assigned_by_user_id: administrator.id,
+          source_role_request_id: null,
+          valid_until: null,
+          revoked_at: null,
+          revoked_by_user_id: null,
+          revocation_reason: null,
+        },
+      ])
+      .execute();
+    const future = new Date(Date.now() + 60 * 60_000);
+    await database
+      .insertInto('workforce_sessions')
+      .values([
+        {
+          session_token_hash: `${'a'.repeat(63)}1`,
+          csrf_token_hash: `${'b'.repeat(63)}1`,
+          cognito_subject: targetSubject,
+          cognito_client_id: 'synthetic-client',
+          cognito_username: 'synthetic-target',
+          idle_expires_at: future,
+          absolute_expires_at: future,
+          revoked_at: null,
+        },
+        {
+          session_token_hash: `${'a'.repeat(63)}2`,
+          csrf_token_hash: `${'b'.repeat(63)}2`,
+          cognito_subject: targetSubject,
+          cognito_client_id: 'synthetic-client',
+          cognito_username: 'synthetic-target',
+          idle_expires_at: future,
+          absolute_expires_at: future,
+          revoked_at: null,
+        },
+      ])
+      .execute();
+    const repository = new WorkforceDirectoryRepository(
+      { client: database } as DatabaseService,
+      {
+        getOrThrow: (name: string) =>
+          ({
+            COGNITO_REGION: 'ap-south-1',
+            COGNITO_USER_POOL_ID: 'ap-south-1_synthetic',
+          })[name],
+      } as ConfigService,
+    );
+
+    await expect(
+      repository.changeMembershipStatus({
+        actorCognitoSubject: administratorSubject,
+        membershipId: targetFirstMembership.id,
+        organizationId: firstPractice.id,
+        status: 'suspended',
+        reason: 'Synthetic practice access suspension test.',
+      }),
+    ).resolves.toEqual({
+      membershipId: targetFirstMembership.id,
+      organizationId: firstPractice.id,
+      membershipStatus: 'suspended',
+      sessionsRevoked: 2,
+    });
+    await expect(
+      database
+        .selectFrom('organization_memberships')
+        .select(['id', 'status'])
+        .where('id', 'in', [
+          targetFirstMembership.id,
+          targetSecondMembership.id,
+        ])
+        .orderBy('id')
+        .execute(),
+    ).resolves.toEqual(
+      [
+        { id: targetFirstMembership.id, status: 'suspended' },
+        { id: targetSecondMembership.id, status: 'active' },
+      ].sort((first, second) => first.id.localeCompare(second.id)),
+    );
+    const revokedSessions = await database
+      .selectFrom('workforce_sessions')
+      .select('revoked_at')
+      .where('cognito_subject', '=', targetSubject)
+      .execute();
+    expect(revokedSessions).toHaveLength(2);
+    expect(
+      revokedSessions.every((session) => session.revoked_at !== null),
+    ).toBe(true);
+    await expect(
+      database
+        .selectFrom('role_assignments')
+        .select('id')
+        .where('membership_id', '=', targetFirstMembership.id)
+        .where('role_id', '=', receptionRole.id)
+        .execute(),
+    ).resolves.toHaveLength(1);
+    await expect(
+      database
+        .selectFrom('audit_events')
+        .select(['action', 'reason', 'after_data'])
+        .where('target_entity_id', '=', targetFirstMembership.id)
+        .where('action', '=', 'identity.membership_suspended')
+        .executeTakeFirstOrThrow(),
+    ).resolves.toMatchObject({
+      action: 'identity.membership_suspended',
+      reason: 'Synthetic practice access suspension test.',
+      after_data: { membershipStatus: 'suspended', sessionsRevoked: 2 },
+    });
+    await expect(
+      repository.changeMembershipStatus({
+        actorCognitoSubject: administratorSubject,
+        membershipId: targetSecondMembership.id,
+        organizationId: firstPractice.id,
+        status: 'suspended',
+        reason: 'Synthetic out-of-scope suspension rejection test.',
+      }),
+    ).rejects.toThrow(
+      'Workforce membership-management authorization is no longer active.',
+    );
+    await expect(
+      database
+        .selectFrom('application_users')
+        .select('status')
+        .where('id', '=', target.id)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({ status: 'active' });
+
+    await expect(
+      repository.changeMembershipStatus({
+        actorCognitoSubject: administratorSubject,
+        membershipId: targetFirstMembership.id,
+        organizationId: firstPractice.id,
+        status: 'active',
+        reason: 'Synthetic practice access restoration test.',
+      }),
+    ).resolves.toMatchObject({
+      membershipStatus: 'active',
+      sessionsRevoked: 0,
+    });
+    await expect(
+      repository.changeMembershipStatus({
+        actorCognitoSubject: administratorSubject,
+        membershipId: administratorMembership.id,
+        organizationId: firstPractice.id,
+        status: 'suspended',
+        reason: 'Synthetic self-suspension rejection test.',
+      }),
+    ).rejects.toThrow(
+      'Administrators cannot change their own membership state.',
+    );
+    await expect(
+      database
+        .selectFrom('organization_memberships')
+        .select('status')
+        .where('id', '=', administratorMembership.id)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({ status: 'active' });
+  });
+
   it('prevents organization cycles', async () => {
     const tenant = await database
       .insertInto('tenants')
