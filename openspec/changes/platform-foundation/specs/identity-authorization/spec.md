@@ -1,7 +1,11 @@
 ## ADDED Requirements
 
 ### Requirement: Authenticate through an external identity boundary
-The platform SHALL use Amazon Cognito User Pools in AWS UAE as its initial authentication boundary. It SHALL authenticate workforce users through Cognito or an approved federated OpenID Connect or SAML provider, and SHALL validate token issuer, audience, signature, expiry, and required authentication context.
+The platform SHALL use Amazon Cognito User Pools as its initial authentication boundary. One shared staging pool in `ap-south-1` SHALL contain only synthetic identities and serve local, development, and staging. When production identity is resumed and approved, its separate pool SHALL reside in `me-central-1`; a failed production creation attempt SHALL NOT prevent staging-only application development. The platform SHALL authenticate workforce users through Cognito or an approved federated OpenID Connect or SAML provider, and SHALL validate token issuer, applicable client identifier or audience, signature, expiry, token use, and required authentication context.
+
+#### Scenario: Production creation is deferred after a provider failure
+- **WHEN** the production Cognito creation attempt fails and the user elects to continue staging development
+- **THEN** reviewed Terraform disables the production caller, the staging pool remains the only active development identity boundary, and production is not retried until explicitly resumed
 
 #### Scenario: Valid user session is presented
 - **WHEN** a request carries a valid session from the configured identity provider
@@ -11,16 +15,50 @@ The platform SHALL use Amazon Cognito User Pools in AWS UAE as its initial authe
 - **WHEN** a request carries expired or otherwise invalid authentication
 - **THEN** the platform rejects it without executing protected behavior
 
+#### Scenario: ID token is presented to a protected API
+- **WHEN** a request presents a valid Cognito ID token instead of an access token
+- **THEN** the API rejects it without executing protected behavior
+
+#### Scenario: Access token targets another application client
+- **WHEN** a validly signed Cognito access token was issued for an app client other than the configured HIS client
+- **THEN** the API rejects it without executing protected behavior
+
+#### Scenario: Production is configured with a non-UAE pool
+- **WHEN** the production API is configured with a Cognito pool outside `me-central-1`
+- **THEN** environment validation rejects the configuration before the API accepts traffic
+
+#### Scenario: Lower environments share the synthetic staging identity boundary
+- **WHEN** local, development, or staging enables workforce Cognito authentication
+- **THEN** it uses the shared staging User Pool and app client in `ap-south-1`, contains only synthetic identities, and cannot accept a production access token
+
 ### Requirement: Provision and strongly authenticate workforce identities
 Non-federated workforce users SHALL be invited or approved through an HIS administrator workflow and SHALL NOT publicly self-register. Approved federated connections MAY create and update a user and tenant membership just in time. Workforce users SHALL use required multi-factor authentication with an authenticator app until an approved stronger factor is available. The HIS SHALL NOT store workforce passwords.
+
+Native workforce users SHALL sign in with real verified email addresses compared case-insensitively. Provider category, tenant, practice, facility, and authorization role SHALL NOT be encoded into the username.
 
 #### Scenario: Provider attempts first sign-in
 - **WHEN** an administrator-provisioned workforce user signs in for the first time
 - **THEN** the identity service requires enrollment of the configured multi-factor authenticator before protected access is granted
 
+#### Scenario: Public user attempts self-registration
+- **WHEN** an unauthenticated caller attempts to register a native workforce account directly with Cognito
+- **THEN** Cognito rejects the attempt because only administrators may create native users
+
+#### Scenario: Administrator creates a workforce account
+- **WHEN** an administrator provisions a native workforce user
+- **THEN** the identity uses the user's real verified email sign-in without manufacturing a provider namespace or embedding authorization scope in the username
+
 #### Scenario: Federated user signs in for the first time
 - **WHEN** a user authenticates through an approved tenant connection with JIT provisioning enabled
 - **THEN** the platform creates or resolves the application user and tenant membership without granting any role solely because authentication succeeded
+
+#### Scenario: Authorized administrator opens the workforce directory
+- **WHEN** an authenticated administrator with `tenant.memberships.manage` opens the workforce directory for an organization inside the assignment's active scope
+- **THEN** the API returns only users with memberships in that organization and reconciles their HIS membership state with safe Cognito account status fields
+
+#### Scenario: Caller asserts an unauthorized directory scope
+- **WHEN** an authenticated caller requests a workforce directory outside their current database-backed permission and organization scope
+- **THEN** the API denies the request without trusting the frontend selection or any Cognito group claim
 
 ### Requirement: Support approved identity federation without replacing authorization
 Cognito MAY broker approved tenant-specific OIDC or SAML workforce providers and UAE PASS after approved service-provider onboarding. Cognito SHALL provide authentication while the HIS retains the application user profile, identity bindings, tenant and facility memberships, roles, permissions, and approval limits. The HIS SHALL not grant access solely because an external identity is authenticated or because a token contains an external group claim.
@@ -90,6 +128,17 @@ Patient phone verification, including WhatsApp-delivered OTP, SHALL be treated a
 #### Scenario: Patient verifies a phone number
 - **WHEN** a patient successfully completes a phone OTP challenge
 - **THEN** the platform records verified phone control but requires approved identity-matching rules before linking a clinical record
+
+### Requirement: Separate patient and workforce identity boundaries
+Patient portal identities SHALL use a Cognito User Pool, app client, and trusted token issuer separate from workforce identities. The API SHALL determine whether a principal is a patient or workforce user from the validated issuer and immutable subject rather than from email, username format, or untrusted claims. Matching email addresses across the pools SHALL NOT automatically link the identities.
+
+#### Scenario: Provider is also a patient
+- **WHEN** a workforce user creates or receives access to a patient portal account using the same real email address
+- **THEN** Cognito issues distinct subjects from distinct pools and neither identity inherits the other's sessions, roles, memberships, or record access
+
+#### Scenario: Patient identity has not been linked to a clinical record
+- **WHEN** a valid patient-pool principal requests clinical information before completing the approved record-linking workflow
+- **THEN** the API denies access without searching for or linking a patient solely by email or phone number
 
 ### Requirement: Enforce authorization in the API
 The API SHALL deny protected operations by default and SHALL enforce permissions independently of frontend navigation or visibility.

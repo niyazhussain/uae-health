@@ -41,6 +41,29 @@ describe('AppController (e2e)', () => {
       });
   });
 
+  it('/v1/auth/session rejects a missing Cognito access token', () => {
+    const server = app.getHttpServer() as Server;
+
+    return request(server).get('/v1/auth/session').expect(401).expect({
+      message: 'Valid Cognito access token required.',
+      error: 'Unauthorized',
+      statusCode: 401,
+    });
+  });
+
+  it('/v1/admin/workforce-directory rejects an unauthenticated request', () => {
+    const server = app.getHttpServer() as Server;
+
+    return request(server)
+      .get('/v1/admin/workforce-directory')
+      .expect(401)
+      .expect({
+        message: 'Valid Cognito access token required.',
+        error: 'Unauthorized',
+        statusCode: 401,
+      });
+  });
+
   afterEach(async () => {
     await app.close();
   });

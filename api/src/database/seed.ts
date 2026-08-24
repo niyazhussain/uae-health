@@ -24,6 +24,14 @@ async function seed(): Promise<void> {
     maxConnections: 1,
     ssl: process.env.DATABASE_SSL === 'true',
   });
+  const cognitoRegion = process.env.COGNITO_REGION ?? 'ap-south-1';
+  const cognitoPoolId = process.env.COGNITO_USER_POOL_ID;
+  const cognitoIssuer = cognitoPoolId
+    ? `https://cognito-idp.${cognitoRegion}.amazonaws.com/${cognitoPoolId}`
+    : 'https://cognito-idp.ap-south-1.amazonaws.com/synthetic';
+  const syntheticAdminSubject =
+    process.env.SYNTHETIC_ADMIN_COGNITO_SUBJECT?.trim() ||
+    'synthetic-practice-admin';
 
   try {
     const tenant = await database
@@ -119,14 +127,14 @@ async function seed(): Promise<void> {
         code: 'synthetic-cognito',
         name: 'Synthetic Cognito Connection',
         protocol: 'cognito',
-        issuer: 'https://cognito-idp.me-central-1.amazonaws.com/synthetic',
+        issuer: cognitoIssuer,
         status: 'active',
         jit_provisioning_enabled: false,
       })
       .onConflict((conflict) =>
         conflict.columns(['tenant_id', 'code']).doUpdateSet({
           name: 'Synthetic Cognito Connection',
-          issuer: 'https://cognito-idp.me-central-1.amazonaws.com/synthetic',
+          issuer: cognitoIssuer,
           status: 'active',
           jit_provisioning_enabled: false,
           updated_at: new Date(),
@@ -141,13 +149,15 @@ async function seed(): Promise<void> {
         id: '50000000-0000-4000-8000-000000000001',
         application_user_id: user.id,
         identity_connection_id: identityConnection.id,
-        subject: 'synthetic-practice-admin',
+        subject: syntheticAdminSubject,
         status: 'active',
         last_authenticated_at: null,
       })
       .onConflict((conflict) =>
-        conflict.columns(['identity_connection_id', 'subject']).doUpdateSet({
+        conflict.column('id').doUpdateSet({
           application_user_id: user.id,
+          identity_connection_id: identityConnection.id,
+          subject: syntheticAdminSubject,
           status: 'active',
           updated_at: new Date(),
         }),

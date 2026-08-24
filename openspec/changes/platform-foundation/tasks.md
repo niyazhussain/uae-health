@@ -26,11 +26,15 @@
 
 ## 3. Establish authentication and authorization
 
-- [ ] 3.1 Define the static Cognito, IAM, encryption, logging, and secret-management resources in `/Users/niyazshafrina/Github/infrastructure/terraform`, create a native non-SSO Cognito User Pool in AWS UAE for development, configure API token validation, and verify a protected request with a native test user.
+- [x] 3.1 Define a reusable static Cognito/IAM workforce-identity module in `/Users/niyazshafrina/Github/infrastructure/terraform`, instantiate one synthetic staging identity boundary in `ap-south-1` for local/development/staging use, gate the production `me-central-1` instantiation behind production approval, document the service-managed encryption, account-level logging, and no-client-secret decisions, configure environment-aware API access-token validation, and verify a protected request against the staging pool with an ephemeral native test user.
+- [ ] 3.1a Retire the empty local and development Cognito pools, clients, and administration policies through reviewed GitHub Actions plans by first disabling deletion protection and then removing those Terraform instances, leaving the staging identity boundary intact.
+- [ ] 3.1b When explicitly resumed, create the production workforce Cognito pool, app client, and scoped administration policy in `me-central-1` through the regional Terraform state, without creating production application, data, patient-identity, or network resources; the first attempt failed with an AWS Cognito internal error and production is currently deferred.
 - [ ] 3.2 Implement administrator-only native workforce user creation, invitation, update, suspension, first-login password setup, and required TOTP MFA through the HIS administration boundary.
+- [x] 3.2a Implement the first authenticated Workforce Directory vertical slice across API and UI, resolving the Cognito subject to current HIS authorization and returning only practice-scoped membership and safe Cognito account status data.
 - [ ] 3.3 Implement facility-scoped API authorization, confidential-record controls, approval limits, and access-denied auditing.
 - [ ] 3.4 Implement administrator-managed tenant OIDC/SAML connections, federated JIT provisioning, non-SSO invitation/approval, and immutable-issuer/subject account linking for Entra ID, Okta, and future approved providers without email-based automatic merging.
 - [ ] 3.4a Implement an HIS-owned, tenant-scoped SCIM 2.0 user and group provisioning service with membership-specific suspension, idempotent synchronization, protected credentials, and no direct permission grant from SCIM claims.
+- [ ] 3.5 Define and implement a separate patient Cognito identity boundary and an auditable patient-portal-account-to-clinical-record linking workflow, supporting real email or phone sign-in and optional WhatsApp phone-control verification without email-based workforce/patient merging.
 
 ## 4. Deploy a disposable fake-data demonstration
 

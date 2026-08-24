@@ -33,6 +33,12 @@ services:
       DATABASE_MAX_CONNECTIONS: 5
       DATABASE_SSL: "false"
       ALLOW_SYNTHETIC_SEED: "true"
+      AUTH_MODE: ${AUTH_MODE:-disabled}
+      DEPLOYMENT_ENVIRONMENT: ${DEPLOYMENT_ENVIRONMENT:-local}
+      COGNITO_REGION: ${COGNITO_REGION:-ap-south-1}
+      COGNITO_USER_POOL_ID: ${COGNITO_USER_POOL_ID:-}
+      COGNITO_USER_POOL_CLIENT_ID: ${COGNITO_USER_POOL_CLIENT_ID:-}
+      SYNTHETIC_ADMIN_COGNITO_SUBJECT: ${SYNTHETIC_ADMIN_COGNITO_SUBJECT:-}
       TSC_WATCHFILE: PriorityPollingInterval
       TSC_WATCHDIRECTORY: DynamicPriorityPolling
     depends_on:
@@ -67,6 +73,9 @@ services:
     init: true
     environment:
       VITE_USE_POLLING: "true"
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:3000}
+      VITE_COGNITO_USER_POOL_ID: ${COGNITO_USER_POOL_ID:-}
+      VITE_COGNITO_USER_POOL_CLIENT_ID: ${COGNITO_USER_POOL_CLIENT_ID:-}
     depends_on:
       api:
         condition: service_healthy

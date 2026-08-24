@@ -1,4 +1,13 @@
 const validNodeEnvironments = new Set(['development', 'test', 'production']);
+const validAuthModes = new Set(['disabled', 'cognito']);
+const cognitoRegionByDeploymentEnvironment = {
+  local: 'ap-south-1',
+  development: 'ap-south-1',
+  staging: 'ap-south-1',
+  production: 'me-central-1',
+} as const;
+
+type DeploymentEnvironment = keyof typeof cognitoRegionByDeploymentEnvironment;
 
 function readString(
   value: unknown,
@@ -57,6 +66,16 @@ function readDatabaseUrl(value: unknown): string {
   return databaseUrl;
 }
 
+function readRequiredString(value: unknown, name: string): string {
+  const parsed = readString(value, '', name).trim();
+
+  if (parsed.length === 0) {
+    throw new Error(`${name} is required.`);
+  }
+
+  return parsed;
+}
+
 export function validateEnvironment(
   environment: Record<string, unknown>,
 ): Record<string, unknown> {
@@ -66,7 +85,82 @@ export function validateEnvironment(
     throw new Error('NODE_ENV must be development, test, or production.');
   }
 
+  const authMode = readString(environment.AUTH_MODE, 'disabled', 'AUTH_MODE');
+
+  if (!validAuthModes.has(authMode)) {
+    throw new Error('AUTH_MODE must be disabled or cognito.');
+  }
+
+  const defaultDeploymentEnvironment =
+    nodeEnv === 'production' ? 'production' : 'local';
+  const deploymentEnvironment = readString(
+    environment.DEPLOYMENT_ENVIRONMENT,
+    defaultDeploymentEnvironment,
+    'DEPLOYMENT_ENVIRONMENT',
+  );
+
+  if (!(deploymentEnvironment in cognitoRegionByDeploymentEnvironment)) {
+    throw new Error(
+      'DEPLOYMENT_ENVIRONMENT must be local, development, staging, or production.',
+    );
+  }
+
+  const expectedCognitoRegion =
+    cognitoRegionByDeploymentEnvironment[
+      deploymentEnvironment as DeploymentEnvironment
+    ];
+  const cognitoRegion = readString(
+    environment.COGNITO_REGION,
+    expectedCognitoRegion,
+    'COGNITO_REGION',
+  );
+  const cognitoUserPoolId =
+    authMode === 'cognito'
+      ? readRequiredString(
+          environment.COGNITO_USER_POOL_ID,
+          'COGNITO_USER_POOL_ID',
+        )
+      : readString(
+          environment.COGNITO_USER_POOL_ID,
+          '',
+          'COGNITO_USER_POOL_ID',
+        );
+  const cognitoUserPoolClientId =
+    authMode === 'cognito'
+      ? readRequiredString(
+          environment.COGNITO_USER_POOL_CLIENT_ID,
+          'COGNITO_USER_POOL_CLIENT_ID',
+        )
+      : readString(
+          environment.COGNITO_USER_POOL_CLIENT_ID,
+          '',
+          'COGNITO_USER_POOL_CLIENT_ID',
+        );
+
+  if (authMode === 'cognito') {
+    if (cognitoRegion !== expectedCognitoRegion) {
+      throw new Error(
+        `COGNITO_REGION must be ${expectedCognitoRegion} for ${deploymentEnvironment}.`,
+      );
+    }
+
+    if (!cognitoUserPoolId.startsWith(`${cognitoRegion}_`)) {
+      throw new Error('COGNITO_USER_POOL_ID must belong to COGNITO_REGION.');
+    }
+  }
+
   const port = readPositiveInteger(environment.PORT ?? 3000, 'PORT');
+  const syntheticAdminCognitoSubject = readString(
+    environment.SYNTHETIC_ADMIN_COGNITO_SUBJECT,
+    '',
+    'SYNTHETIC_ADMIN_COGNITO_SUBJECT',
+  ).trim();
+
+  if (deploymentEnvironment === 'production' && syntheticAdminCognitoSubject) {
+    throw new Error(
+      'SYNTHETIC_ADMIN_COGNITO_SUBJECT is prohibited in production.',
+    );
+  }
 
   if (port > 65535) {
     throw new Error('PORT must be at most 65535.');
@@ -76,6 +170,12 @@ export function validateEnvironment(
     ...environment,
     NODE_ENV: nodeEnv,
     PORT: port,
+    AUTH_MODE: authMode,
+    DEPLOYMENT_ENVIRONMENT: deploymentEnvironment,
+    COGNITO_REGION: cognitoRegion,
+    COGNITO_USER_POOL_ID: cognitoUserPoolId,
+    COGNITO_USER_POOL_CLIENT_ID: cognitoUserPoolClientId,
+    SYNTHETIC_ADMIN_COGNITO_SUBJECT: syntheticAdminCognitoSubject,
     CORS_ORIGIN: readString(
       environment.CORS_ORIGIN,
       'http://localhost:5173',

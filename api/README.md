@@ -15,6 +15,34 @@ npm run start:dev
 - Readiness check: `http://localhost:3000/health/ready`
 - OpenAPI UI: `http://localhost:3000/docs`
 - OpenAPI JSON: `http://localhost:3000/docs/openapi.json`
+- Protected token check: `http://localhost:3000/v1/auth/session`
+- Authorized workforce directory: `http://localhost:3000/v1/admin/workforce-directory`
+
+Authentication defaults to `AUTH_MODE=disabled`, in which protected endpoints
+reject every request. Set `AUTH_MODE=cognito`, `DEPLOYMENT_ENVIRONMENT`, `COGNITO_REGION`,
+`COGNITO_USER_POOL_ID`, and `COGNITO_USER_POOL_CLIENT_ID` to the non-secret
+Terraform outputs for a deployed environment. The API accepts only Cognito
+access tokens for that exact pool and client; ID tokens are not API bearer
+tokens. Cognito groups are not treated as HIS authorization.
+
+`local`, `development`, and `staging` require Cognito in `ap-south-1`;
+`production` requires `me-central-1`. The same API artifact runs in both
+regions. Local, development, and staging use the shared synthetic staging User
+Pool and app client; production uses its own separately approved boundary.
+
+The workforce-directory endpoint resolves the validated Cognito `sub` to an
+active HIS identity binding and evaluates the current
+`tenant.memberships.manage` assignment and organization scope in PostgreSQL.
+It never trusts Cognito groups or a practice identifier supplied by the UI.
+The API runtime also needs AWS permission to call `cognito-idp:ListUsers` on
+the configured pool; the infrastructure repository defines the scoped policy,
+but deployment must attach it to the API workload identity.
+
+For synthetic local/staging verification, set
+`SYNTHETIC_ADMIN_COGNITO_SUBJECT` to the non-secret `sub` of the controlled
+staging administrator account before running `npm run db:seed`. This updates
+the deterministic synthetic administrator binding. The setting is rejected
+when `DEPLOYMENT_ENVIRONMENT=production`.
 
 ## Docker
 

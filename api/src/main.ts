@@ -28,6 +28,7 @@ async function bootstrap() {
       .setTitle('UAE Health API')
       .setDescription('Development API contract for the UAE Health platform.')
       .setVersion('0.1')
+      .addBearerAuth()
       .build();
     const documentFactory = () =>
       SwaggerModule.createDocument(app, documentConfig);

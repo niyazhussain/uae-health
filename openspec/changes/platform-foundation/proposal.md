@@ -7,7 +7,7 @@ The HIS capability modules depend on a consistent, secure, and deployable applic
 - Establish a React, Vite, and TypeScript application shell for authenticated HIS workflows.
 - Establish a NestJS and TypeScript REST API with generated OpenAPI contracts and frontend client types.
 - Establish PostgreSQL persistence, Kysely query-builder, and migration conventions.
-- Establish Cognito-based authentication in AWS UAE, tenant-specific OIDC/SAML federation, JIT and SCIM workforce provisioning, facility-aware application authorization, confidential-record controls, and financial approval limits.
+- Establish Cognito-based authentication with one shared synthetic staging identity boundary for local, development, and staging use in AWS Mumbai and a separate production identity boundary in AWS UAE, tenant-specific OIDC/SAML federation, JIT and SCIM workforce provisioning, facility-aware application authorization, confidential-record controls, and financial approval limits.
 - Establish append-only business audit events and privacy-safe operational observability.
 - Establish private S3-compatible document storage and durable asynchronous job processing.
 - Establish repeatable local development, automated testing, container builds, cost-aware AWS UAE deployment, versioned releases, and rollback.
@@ -36,6 +36,7 @@ None. The archived OpenSpec baseline does not yet contain implementation capabil
 - Adds local PostgreSQL, object-storage substitutes, API, and worker development services.
 - Introduces shared contracts used by every later HIS module.
 - Records AWS Middle East (UAE) as the production location for health-data workloads, including PostgreSQL, object storage, backups, and health-data logs.
+- Records AWS Asia Pacific (Mumbai) as the only region for the shared synthetic staging identity boundary used by local, development, and staging.
 - Records Amazon Cognito as the initial authentication boundary; it can federate with workforce OIDC/SAML providers and UAE PASS after approved onboarding.
 - Requires infrastructure decisions for hostnames, object storage, secrets, certificates, monitoring, backup, and deployment targets.
 - Does not implement patient registration, scheduling, ADT, insurance, packages, billing, or communication business workflows.

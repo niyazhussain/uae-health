@@ -1,5 +1,16 @@
 ## ADDED Requirements
 
+### Requirement: Mutate Terraform infrastructure only through reviewed automation
+Terraform state mutation and cloud resource changes SHALL run only through a manually dispatched infrastructure-repository GitHub Actions workflow using a reviewed, commit-pinned plan artifact. Local Terraform execution SHALL be limited to non-mutating formatting, validation, planning, plan display, and read-only state inspection.
+
+#### Scenario: Engineer is ready to provision reviewed infrastructure
+- **WHEN** Terraform source and its checks are ready for delivery
+- **THEN** the engineer commits and pushes the reviewed source, runs the matching GitHub Actions plan workflow, reviews its immutable plan artifact, and supplies that plan run identifier to the apply workflow
+
+#### Scenario: Local Terraform plan is available
+- **WHEN** a developer or agent produces a local Terraform plan
+- **THEN** the plan is treated as advisory and is not applied or used to mutate remote state from the local environment
+
 ### Requirement: Trace decisions and completed work
 The repository SHALL use focused OpenSpec changes to record accepted design decisions, normative behavior, and implementation tasks. Newly discovered work SHALL receive a stable task identifier. After applicable verification passes, the task SHALL be presented to the user for review. It SHALL be marked complete, committed with its task identifier, and pushed to the current non-production branch only after explicit user approval for those operations. `main` SHALL remain a protected production-release branch.
 
@@ -107,7 +118,7 @@ Deployments SHALL verify artifacts and health before directing traffic to a new 
 - **THEN** deployment stops and restores or retains the prior compatible API release
 
 ### Requirement: Separate environments and secrets
-Development, staging, and production SHALL use separate hostnames, databases, object namespaces, credentials, provider environments, and runtime secrets. Production data SHALL NOT enter lower environments without an approved anonymization process.
+Development, staging, and production SHALL use separate hostnames, databases, object namespaces, credentials, provider environments, and runtime secrets, except that local, development, and staging MAY use the explicitly shared synthetic staging Cognito workforce boundary. Production data SHALL NOT enter lower environments without an approved anonymization process.
 
 #### Scenario: Staging application starts
 - **WHEN** the staging release starts with its approved configuration
