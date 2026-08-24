@@ -37,11 +37,19 @@ PostgreSQL SHALL be the transactional system of record. Local and initial produc
 
 Amazon Cognito User Pools in AWS Middle East (UAE) SHALL be the initial authentication boundary. The HIS SHALL retain its own application user profile, organization/facility membership, permissions, and approval limits, but SHALL not store workforce passwords.
 
-- Workforce accounts SHALL be administrator-provisioned; self-registration is prohibited.
+- A person SHALL have one global application-user record. The user MAY have multiple identity bindings and multiple independently scoped tenant, organization, practice, and facility memberships. Identity bindings SHALL use the configured connection and immutable provider issuer/subject identifiers; email addresses SHALL NOT be used to automatically merge accounts.
+- A tenant SHALL be the independent customer security boundary. A tenant MAY contain a parent organization or practice group, child practices, and facilities. Parent administrators MAY manage descendant memberships only through an explicit delegated permission. Clinical or financial record access SHALL NOT be inherited merely because a user belongs to a parent organization.
+- Non-federated workforce accounts SHALL be invited or approved through the HIS administrator workflow; public self-registration is prohibited. Approved federated connections MAY create and update users and tenant memberships just in time. Authentication alone SHALL NOT grant a role or permission.
 - Workforce accounts SHALL require phishing-resistant authentication when approved or, initially, password plus TOTP authenticator-app MFA. SMS, WhatsApp, and email are not acceptable as the sole provider factor.
-- Cognito MAY federate approved OIDC or SAML workforce providers such as Microsoft Entra ID.
+- Cognito MAY federate approved tenant-specific OIDC or SAML workforce providers such as Microsoft Entra ID and Okta. Cognito SHALL authenticate identities only; the API SHALL make authorization decisions from current HIS memberships, roles, permissions, approval limits, and record context.
+- Site administrators SHALL own the global permission catalogue and immutable, clonable global role templates. Authorized practice administrators MAY assign global roles and create tenant-local roles from delegable permissions. Role assignments SHALL be scoped to a membership and, where applicable, an organization or facility. Administrators SHALL NOT grant permissions outside their administrative scope or delegation ceiling.
+- Roles MAY be marked requestable. Role requests SHALL require an authorized approval when configured, SHALL prevent self-approval where separation of duties applies, and SHALL produce an audit trail. Neither external IdP group claims nor SCIM group membership SHALL directly grant HIS authorization; a configured mapping MAY create a pending role request.
+- A tenant MAY configure SCIM 2.0 provisioning against an HIS-owned, tenant-scoped API. SCIM MAY create, update, suspend, and restore the tenant membership and approved profile fields, but SHALL NOT supply application permissions. Suspending one tenant membership SHALL NOT disable the global user or memberships in other tenants.
+- Static Cognito, IAM, encryption, logging, and secret-management infrastructure SHALL be defined in the infrastructure Terraform repository. Tenant-specific identity-provider connections created or updated through the HIS administrator UI are runtime resources owned by the application control plane and SHALL NOT be simultaneously managed as static Terraform resources.
 - UAE PASS MAY be offered as an optional patient or provider identity provider only after service-provider onboarding and approval.
 - Patient WhatsApp OTP is a convenience proof of phone control, not verified clinical identity. It SHALL NOT automatically link a person to a patient record or grant provider access.
+
+**Rationale:** Keeping authentication at Cognito and authorization in the HIS permits immediate membership suspension, practice-local roles, approval workflows, multi-practice users, and record-aware enforcement without relying on stale token claims. Separate identity bindings preserve one person-level user while preventing unsafe email-based account merging. An explicit tenant hierarchy supports practice groups without allowing parent membership to imply access to child patient data.
 
 ### 4. Audit design
 
@@ -104,6 +112,8 @@ The repository SHALL use `develop` as the integration branch that deploys synthe
 
 - The former MariaDB/TypeORM approach is superseded by PostgreSQL/Kysely.
 - Cognito provides the initial low-operations identity service while preserving future OIDC/SAML and UAE PASS integration paths.
+- One global application user can work across approved practices while every membership, role assignment, and authorization decision remains tenant- and facility-scoped.
+- Practice-specific IdP and SCIM onboarding becomes application control-plane behavior; Terraform owns the shared AWS foundation rather than dynamic customer configuration.
 - CloudFront reduces static-site operations but does not proxy or cache protected API data.
 - A public demo on the existing Singapore server is permitted only with fake data; it is not a healthcare production deployment.
 - New decisions and evolved work remain traceable through focused OpenSpec design, specs, tasks, and task-numbered commits.

@@ -18,7 +18,7 @@
 - [x] 2.2 Bootstrap `api` with NestJS, Express, TypeScript, validation, OpenAPI, health endpoints, and rate limiting.
 - [x] 2.2a Run the local API image through a Docker-compatible desktop runtime and verify `/health` and `/docs`.
 - [x] 2.3 Add local PostgreSQL through Docker with Kysely, `pg`, migration commands, and synthetic seed data.
-- [ ] 2.4 Implement application user, facility membership, permission, and append-only audit-event schemas.
+- [x] 2.4 Implement the global application-user, identity-binding, tenant and practice hierarchy, scoped membership, global/local role, permission, role-request/approval, assignment, and append-only audit-event schemas.
 - [ ] 2.5 Verify tests never use customer health data, production credentials, or production endpoints.
 - [ ] 2.6 Document and test PostgreSQL backup, restore, and forward-compatible migration commands against synthetic data.
 - [ ] 2.7 Add root workspace commands and consistent format, lint, type-check, unit, integration, migration, and production-build checks for `web` and `api`.
@@ -26,10 +26,11 @@
 
 ## 3. Establish authentication and authorization
 
-- [ ] 3.1 Create a Cognito User Pool in AWS UAE for development and configure OIDC token validation in the API.
-- [ ] 3.2 Implement administrator-only provider provisioning and required TOTP MFA.
+- [ ] 3.1 Define the static Cognito, IAM, encryption, logging, and secret-management resources in `/Users/niyazshafrina/Github/infrastructure/terraform`, create a native non-SSO Cognito User Pool in AWS UAE for development, configure API token validation, and verify a protected request with a native test user.
+- [ ] 3.2 Implement administrator-only native workforce user creation, invitation, update, suspension, first-login password setup, and required TOTP MFA through the HIS administration boundary.
 - [ ] 3.3 Implement facility-scoped API authorization, confidential-record controls, approval limits, and access-denied auditing.
-- [ ] 3.4 Define account-linking rules for future Entra ID, UAE PASS, and patient WhatsApp OTP flows.
+- [ ] 3.4 Implement administrator-managed tenant OIDC/SAML connections, federated JIT provisioning, non-SSO invitation/approval, and immutable-issuer/subject account linking for Entra ID, Okta, and future approved providers without email-based automatic merging.
+- [ ] 3.4a Implement an HIS-owned, tenant-scoped SCIM 2.0 user and group provisioning service with membership-specific suspension, idempotent synchronization, protected credentials, and no direct permission grant from SCIM claims.
 
 ## 4. Deploy a disposable fake-data demonstration
 
@@ -38,6 +39,7 @@
 - [ ] 4.2 Implement the Portal-style `develop` deployment to the existing Singapore Linux server using immutable artifacts, SSH, atomic activation, readiness checks, and rollback without compiling source on the server.
 - [ ] 4.3 Run one self-managed NestJS API and synthetic PostgreSQL service on the Singapore server with private database networking and an encrypted persistent volume.
 - [ ] 4.4 Publish the staging React artifact through its own CloudFront distribution, custom hostname and certificate, HTTPS-only delivery, SPA fallback, security headers, and safe cache policies.
+- [ ] 4.4a Implement verified tenant-owned application domains and constrained tenant branding through the administrator UI, including DNS ownership and TLS validation, safe hostname-to-tenant resolution, accessible logo/name/favicon/accent customization, and a shared Cognito login domain rather than one Cognito custom domain per tenant.
 - [ ] 4.5 Document and verify staging database backup/restore, deployment rollback, and complete synthetic-environment recovery before public demonstration.
 - [ ] 4.6 Configure cost budgets and alerts at $1, $3, and $5; document the remaining charges when EC2 or RDS is stopped and when ALBs, snapshots, EBS volumes, or allocated IPs remain.
 

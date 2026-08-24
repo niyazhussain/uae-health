@@ -39,6 +39,8 @@ docker compose -f ../compose.yaml exec api npm run db:migrate:down
 
 Synthetic seeding refuses to run in production and requires `ALLOW_SYNTHETIC_SEED=true`.
 
+The schema models a global application user separately from tenant-scoped identity connections, organization/practice memberships, facility access, roles, permissions, approval requests, assignments, and financial approval limits. A database trigger rejects updates, deletes, and truncation of committed `audit_events`.
+
 See the root [`README.md`](../README.md) for the full local workflow, hot reload, pgAdmin profile, service addresses, logs, and shutdown commands.
 
 ## Verification
@@ -46,6 +48,9 @@ See the root [`README.md`](../README.md) for the full local workflow, hot reload
 ```bash
 npm run lint
 npm run test
+npm run test:database
 npm run test:e2e
 npm run build
 ```
+
+`npm run test:database` requires `DATABASE_URL` and runs migrations in an isolated temporary PostgreSQL schema. In the root Docker workflow, run it with `docker compose exec api npm run test:database` after rebuilding the API image when `package.json` changes.

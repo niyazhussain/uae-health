@@ -13,4 +13,4 @@ The broader [`initial-his-prd`](../initial-his-prd/README.md) remains the progra
 
 ## Current status
 
-The React, NestJS, and local PostgreSQL/Kysely foundations are running with synthetic data. The next implementation task is `2.1a`, the durable frontend design system and shadcn/ui foundation, unless an earlier unblocked task is deliberately prioritized and documented.
+The React, NestJS, and local PostgreSQL/Kysely foundations are running with synthetic data. Task `2.4`, the global application-user, tenant hierarchy, scoped membership, role/permission, approval-request, identity-binding, and append-only audit schema foundation, is the current implementation task. After its approved delivery, native non-SSO Cognito tasks `3.1` and `3.2` are deliberately prioritized to verify administrator-created users, first login, TOTP enrollment, token validation, and protected API access. Tenant SSO, SCIM, account linking, and custom domains remain deferred until separately prioritized.

@@ -7,7 +7,7 @@ The HIS capability modules depend on a consistent, secure, and deployable applic
 - Establish a React, Vite, and TypeScript application shell for authenticated HIS workflows.
 - Establish a NestJS and TypeScript REST API with generated OpenAPI contracts and frontend client types.
 - Establish PostgreSQL persistence, Kysely query-builder, and migration conventions.
-- Establish Cognito-based authentication in AWS UAE, facility-aware authorization, confidential-record controls, and financial approval limits.
+- Establish Cognito-based authentication in AWS UAE, tenant-specific OIDC/SAML federation, JIT and SCIM workforce provisioning, facility-aware application authorization, confidential-record controls, and financial approval limits.
 - Establish append-only business audit events and privacy-safe operational observability.
 - Establish private S3-compatible document storage and durable asynchronous job processing.
 - Establish repeatable local development, automated testing, container builds, cost-aware AWS UAE deployment, versioned releases, and rollback.
@@ -20,7 +20,7 @@ The HIS capability modules depend on a consistent, secure, and deployable applic
 - `web-application-shell`: React application bootstrap, navigation, session states, accessibility, localization foundations, error handling, and typed API access.
 - `api-platform`: NestJS REST application bootstrap, module conventions, validation, errors, API versioning, OpenAPI generation, idempotency, and health endpoints.
 - `data-platform`: PostgreSQL connectivity, Kysely conventions, migrations, transactions, concurrency controls, identifiers, dates, and monetary representations.
-- `identity-authorization`: Cognito-based OpenID Connect authentication, optional identity federation, facility-aware permissions, confidential-record access, and approval-limit enforcement.
+- `identity-authorization`: Cognito-based OpenID Connect authentication, tenant-specific OIDC/SAML federation, JIT and SCIM provisioning, global and local roles, scoped permissions, confidential-record access, and approval-limit enforcement.
 - `audit-observability`: Append-only business audit evidence, request correlation, privacy-safe logs, metrics, traces, monitoring, and alerting.
 - `document-job-platform`: Private object storage, controlled document access, upload validation, malware quarantine boundary, transactional outbox, and durable workers.
 - `delivery-platform`: Local fake-data environment, AWS UAE deployment, S3/CloudFront static delivery, cost controls, CI/CD, environment separation, immutable releases, backup verification, and rollback.

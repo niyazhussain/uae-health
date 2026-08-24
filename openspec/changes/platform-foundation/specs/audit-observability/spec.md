@@ -15,6 +15,10 @@ The platform SHALL record policy-selected business audit events in one append-on
 - **WHEN** a policy-selected sensitive record is changed
 - **THEN** the event records the approved before and after field snapshots without storing prohibited data
 
+#### Scenario: Access authority changes
+- **WHEN** an identity is linked, a membership changes state, a role is requested or decided, or a role assignment changes
+- **THEN** the platform records the actor, effective user, tenant and facility scope where applicable, action, target, outcome, correlation identifier, and required reason
+
 ### Requirement: Protect audit-event integrity
 Ordinary application identities SHALL NOT update or delete committed audit events, and audit access SHALL itself be permission-controlled and auditable.
 
