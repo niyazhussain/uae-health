@@ -104,6 +104,21 @@ export interface WorkforceAssignableGlobalRole {
   description: string;
 }
 
+export interface WorkforceDelegablePermission {
+  permissionId: string;
+  code: string;
+  name: string;
+  description: string;
+}
+
+export interface WorkforceTenantLocalRole {
+  roleId: string;
+  code: string;
+  name: string;
+  description: string;
+  permissions: WorkforceDelegablePermission[];
+}
+
 export interface AssignWorkforceGlobalRoleInput {
   organizationId: string;
   roleId: string;
@@ -111,6 +126,29 @@ export interface AssignWorkforceGlobalRoleInput {
 }
 
 export interface AssignWorkforceGlobalRoleRepositoryInput extends AssignWorkforceGlobalRoleInput {
+  actorCognitoSubject: string;
+  membershipId: string;
+}
+
+export interface CreateWorkforceTenantLocalRoleInput {
+  organizationId: string;
+  name: string;
+  description: string;
+  permissionIds: string[];
+  reason: string;
+}
+
+export interface CreateWorkforceTenantLocalRoleRepositoryInput extends CreateWorkforceTenantLocalRoleInput {
+  actorCognitoSubject: string;
+}
+
+export interface AssignWorkforceTenantLocalRoleInput {
+  organizationId: string;
+  roleId: string;
+  reason: string;
+}
+
+export interface AssignWorkforceTenantLocalRoleRepositoryInput extends AssignWorkforceTenantLocalRoleInput {
   actorCognitoSubject: string;
   membershipId: string;
 }
@@ -174,6 +212,13 @@ export class WorkforceRoleAssignmentConflictError extends Error {
   }
 }
 
+export class WorkforceTenantLocalRoleConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'WorkforceTenantLocalRoleConflictError';
+  }
+}
+
 export interface WorkforceDirectoryUser {
   membershipId: string;
   applicationUserId: string;
@@ -193,8 +238,11 @@ export interface WorkforceDirectoryUser {
 export interface WorkforceDirectoryResponse {
   contexts: WorkforceDirectoryContext[];
   selectedContext: WorkforceDirectoryContext;
+  cognitoStatusAvailable: boolean;
   canManageRoles: boolean;
   assignableGlobalRoles: WorkforceAssignableGlobalRole[];
+  tenantLocalRoles: WorkforceTenantLocalRole[];
+  delegablePermissions: WorkforceDelegablePermission[];
   users: WorkforceDirectoryUser[];
 }
 
@@ -219,6 +267,8 @@ export interface WorkforceDirectoryRepositoryPort {
     organizationId: string,
   ): Promise<WorkforceRoleAssignment[]>;
   listAssignableGlobalRoles(): Promise<WorkforceAssignableGlobalRole[]>;
+  listTenantLocalRoles(tenantId: string): Promise<WorkforceTenantLocalRole[]>;
+  listDelegablePermissions(): Promise<WorkforceDelegablePermission[]>;
   isCognitoSubjectBound(cognitoSubject: string): Promise<boolean>;
   persistInvitation(
     input: PersistWorkforceInvitationInput,
@@ -228,6 +278,12 @@ export interface WorkforceDirectoryRepositoryPort {
   ): Promise<WorkforceMembershipStatusResponse>;
   assignGlobalRole(
     input: AssignWorkforceGlobalRoleRepositoryInput,
+  ): Promise<WorkforceRoleAssignment>;
+  createTenantLocalRole(
+    input: CreateWorkforceTenantLocalRoleRepositoryInput,
+  ): Promise<WorkforceTenantLocalRole>;
+  assignTenantLocalRole(
+    input: AssignWorkforceTenantLocalRoleRepositoryInput,
   ): Promise<WorkforceRoleAssignment>;
   revokeRoleAssignment(
     input: RevokeWorkforceRoleAssignmentRepositoryInput,

@@ -3,6 +3,7 @@ import {
   Controller,
   Get,
   Delete,
+  Header,
   Param,
   ParseUUIDPipe,
   Patch,
@@ -26,7 +27,9 @@ import { CurrentPrincipal } from '../auth/current-principal.decorator.js';
 import type { AuthenticatedPrincipal } from '../auth/auth.types.js';
 import { ChangeWorkforceMembershipStatusDto } from './dto/change-workforce-membership-status.dto.js';
 import { AssignWorkforceGlobalRoleDto } from './dto/assign-workforce-global-role.dto.js';
+import { AssignWorkforceTenantLocalRoleDto } from './dto/assign-workforce-tenant-local-role.dto.js';
 import { CreateWorkforceInvitationDto } from './dto/create-workforce-invitation.dto.js';
+import { CreateWorkforceTenantLocalRoleDto } from './dto/create-workforce-tenant-local-role.dto.js';
 import { RevokeWorkforceRoleAssignmentDto } from './dto/revoke-workforce-role-assignment.dto.js';
 import { WorkforceDirectoryQueryDto } from './dto/workforce-directory-query.dto.js';
 import { WorkforceDirectoryService } from './workforce-directory.service.js';
@@ -35,6 +38,7 @@ import type {
   WorkforceInvitationResponse,
   WorkforceMembershipStatusResponse,
   WorkforceRoleAssignment,
+  WorkforceTenantLocalRole,
 } from './workforce-directory.types.js';
 
 @ApiTags('Workforce administration')
@@ -53,9 +57,7 @@ export class WorkforceDirectoryController {
   @ApiForbiddenResponse({
     description: 'The caller cannot manage the requested organization.',
   })
-  @ApiServiceUnavailableResponse({
-    description: 'Cognito account status is temporarily unavailable.',
-  })
+  @Header('Cache-Control', 'no-store')
   getDirectory(
     @CurrentPrincipal() principal: AuthenticatedPrincipal,
     @Query() query: WorkforceDirectoryQueryDto,
@@ -85,6 +87,28 @@ export class WorkforceDirectoryController {
     @Body() input: CreateWorkforceInvitationDto,
   ): Promise<WorkforceInvitationResponse> {
     return this.directory.createInvitation(principal, input);
+  }
+
+  @Post('tenant-local-roles')
+  @ApiOperation({
+    summary: 'Create a delegable tenant-local role in an authorized practice',
+  })
+  @ApiCreatedResponse({ description: 'The tenant-local role definition.' })
+  @ApiUnauthorizedResponse({ description: 'An active session is required.' })
+  @ApiForbiddenResponse({
+    description: 'The caller cannot manage roles in the target organization.',
+  })
+  @ApiConflictResponse({
+    description: 'The tenant-local role name or permissions are not valid.',
+  })
+  @ApiServiceUnavailableResponse({
+    description: 'Tenant-local role persistence is temporarily unavailable.',
+  })
+  createTenantLocalRole(
+    @CurrentPrincipal() principal: AuthenticatedPrincipal,
+    @Body() input: CreateWorkforceTenantLocalRoleDto,
+  ): Promise<WorkforceTenantLocalRole> {
+    return this.directory.createTenantLocalRole(principal, input);
   }
 
   @Patch('memberships/:membershipId/status')
@@ -136,6 +160,29 @@ export class WorkforceDirectoryController {
     @Body() input: AssignWorkforceGlobalRoleDto,
   ): Promise<WorkforceRoleAssignment> {
     return this.directory.assignGlobalRole(principal, membershipId, input);
+  }
+
+  @Post('memberships/:membershipId/tenant-local-role-assignments')
+  @ApiOperation({
+    summary: 'Assign a tenant-local workforce role in an authorized practice',
+  })
+  @ApiCreatedResponse({ description: 'The practice-scoped role assignment.' })
+  @ApiUnauthorizedResponse({ description: 'An active session is required.' })
+  @ApiForbiddenResponse({
+    description: 'The caller cannot manage roles in the target organization.',
+  })
+  @ApiConflictResponse({
+    description: 'The role or membership cannot be changed.',
+  })
+  @ApiServiceUnavailableResponse({
+    description: 'Role assignment persistence is temporarily unavailable.',
+  })
+  assignTenantLocalRole(
+    @CurrentPrincipal() principal: AuthenticatedPrincipal,
+    @Param('membershipId', new ParseUUIDPipe()) membershipId: string,
+    @Body() input: AssignWorkforceTenantLocalRoleDto,
+  ): Promise<WorkforceRoleAssignment> {
+    return this.directory.assignTenantLocalRole(principal, membershipId, input);
   }
 
   @Delete('role-assignments/:assignmentId')

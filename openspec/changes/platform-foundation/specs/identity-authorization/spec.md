@@ -56,6 +56,10 @@ Native workforce users SHALL sign in with real verified email addresses compared
 - **WHEN** an authenticated administrator with `tenant.memberships.manage` opens the workforce directory for an organization inside the assignment's active scope
 - **THEN** the API returns only users with memberships in that organization and reconciles their HIS membership state with safe Cognito account status fields
 
+#### Scenario: Cognito status lookup is temporarily unavailable
+- **WHEN** an authorized administrator opens the workforce directory while Cognito account-status reconciliation cannot be completed
+- **THEN** the API returns the database-authoritative memberships and role assignments, identifies Cognito status as unavailable, does not label an active membership as pending solely because of that unavailable lookup, and does not infer identity state or authorization from the failed lookup
+
 #### Scenario: Caller asserts an unauthorized directory scope
 - **WHEN** an authenticated caller requests a workforce directory outside their current database-backed permission and organization scope
 - **THEN** the API denies the request without trusting the frontend selection or any Cognito group claim
@@ -147,6 +151,14 @@ Site administrators SHALL control the permission catalogue and immutable, clonab
 #### Scenario: Practice administrator attempts privilege escalation
 - **WHEN** a practice administrator attempts to grant a permission or cross-tenant scope they are not authorized to delegate
 - **THEN** the platform rejects the change and records the denied attempt according to audit policy
+
+#### Scenario: Practice administrator creates and assigns a tenant-local role
+- **WHEN** an administrator with current `tenant.roles.manage` creates a uniquely named tenant-local role from one or more active delegable catalogue permissions and assigns it to another active membership in the current practice
+- **THEN** the role exists only in that tenant, the assignment is practice-scoped without facility or descendant scope, and Cognito users, groups, tokens, and sessions are unchanged
+
+#### Scenario: Administrator attempts an unsafe tenant-local role mutation
+- **WHEN** an administrator attempts to create a local role with an undelegable or unknown permission, reuse a tenant-local role name, assign a different tenant's role, change their own role, assign an inactive membership, duplicate an active assignment, or request facility or descendant scope
+- **THEN** the platform rejects the request without changing a role, membership, role assignment, or Cognito resource
 
 ### Requirement: Govern role requests and approvals
 Roles SHALL declare whether they are requestable and whether approval is required. The platform SHALL record requests, decisions, decision reasons, validity periods, and resulting assignments. It SHALL prevent self-approval where the applicable policy requires separation of duties.

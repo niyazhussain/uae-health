@@ -8,6 +8,7 @@ import type { DatabaseSchema } from './database.types.js';
 import * as createFacilities from './migrations/2026-08-23T000000_create_facilities.js';
 import * as createIdentityAuthorizationAudit from './migrations/2026-08-24T000000_create_identity_authorization_audit.js';
 import * as createWorkforceSessions from './migrations/2026-08-24T010000_create_workforce_sessions.js';
+import * as addTenantLocalRoleNameUniqueness from './migrations/2026-08-26T000000_add_tenant_local_role_name_uniqueness.js';
 
 const databaseUrl = process.env.DATABASE_URL;
 const describeWithDatabase = databaseUrl ? describe : describe.skip;
@@ -36,10 +37,12 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
     await createFacilities.up(database);
     await createIdentityAuthorizationAudit.up(database);
     await createWorkforceSessions.up(database);
+    await addTenantLocalRoleNameUniqueness.up(database);
   });
 
   afterAll(async () => {
     if (database) {
+      await addTenantLocalRoleNameUniqueness.down(database);
       await createWorkforceSessions.down(database);
       await createIdentityAuthorizationAudit.down(database);
       await createFacilities.down(database);
@@ -1160,6 +1163,112 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
         expect.objectContaining({ assignmentId: assignment.assignmentId }),
       ]),
     );
+
+    const localRolePermissions = await database
+      .selectFrom('permissions')
+      .select(['id', 'code'])
+      .where('code', 'in', ['patients.read', 'billing.approve'])
+      .execute();
+    const delegablePermission = localRolePermissions.find(
+      (permission) => permission.code === 'patients.read',
+    )!;
+    const restrictedPermission = localRolePermissions.find(
+      (permission) => permission.code === 'billing.approve',
+    )!;
+    const localRole = await repository.createTenantLocalRole({
+      actorCognitoSubject: administratorSubject,
+      organizationId: organization.id,
+      name: 'Synthetic local registration',
+      description: 'Synthetic practice-specific registration access.',
+      permissionIds: [delegablePermission.id],
+      reason: 'Synthetic tenant-local role creation test.',
+    });
+    expect(localRole).toMatchObject({
+      name: 'Synthetic local registration',
+      description: 'Synthetic practice-specific registration access.',
+      permissions: [
+        expect.objectContaining({
+          permissionId: delegablePermission.id,
+          code: 'patients.read',
+        }),
+      ],
+    });
+    await expect(
+      database
+        .selectFrom('audit_events')
+        .select(['action', 'reason', 'after_data'])
+        .where('target_entity_id', '=', localRole.roleId)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toMatchObject({
+      action: 'identity.tenant_local_role_created',
+      reason: 'Synthetic tenant-local role creation test.',
+      after_data: {
+        roleName: 'Synthetic local registration',
+        permissionCodes: ['patients.read'],
+        requestPolicy: 'admin_only',
+      },
+    });
+    await expect(repository.listTenantLocalRoles(tenant.id)).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          roleId: localRole.roleId,
+          permissions: [
+            expect.objectContaining({ permissionId: delegablePermission.id }),
+          ],
+        }),
+      ]),
+    );
+    await expect(
+      repository.createTenantLocalRole({
+        actorCognitoSubject: administratorSubject,
+        organizationId: organization.id,
+        name: '  SYNTHETIC LOCAL REGISTRATION  ',
+        description: 'Synthetic duplicate local role definition.',
+        permissionIds: [delegablePermission.id],
+        reason: 'Synthetic duplicate tenant-local role test.',
+      }),
+    ).rejects.toThrow('An active tenant-local role already uses this name.');
+    await expect(
+      repository.createTenantLocalRole({
+        actorCognitoSubject: administratorSubject,
+        organizationId: organization.id,
+        name: 'Synthetic privileged local role',
+        description: 'Synthetic restricted local role definition.',
+        permissionIds: [restrictedPermission.id],
+        reason: 'Synthetic restricted tenant-local role test.',
+      }),
+    ).rejects.toThrow(
+      'Tenant-local roles can contain only active delegable permissions.',
+    );
+    const localAssignment = await repository.assignTenantLocalRole({
+      actorCognitoSubject: administratorSubject,
+      membershipId: targetMembership.id,
+      organizationId: organization.id,
+      roleId: localRole.roleId,
+      reason: 'Synthetic tenant-local role assignment test.',
+    });
+    expect(localAssignment).toMatchObject({
+      membershipId: targetMembership.id,
+      roleId: localRole.roleId,
+      roleCode: localRole.code,
+    });
+    await expect(
+      repository.revokeRoleAssignment({
+        actorCognitoSubject: administratorSubject,
+        assignmentId: localAssignment.assignmentId,
+        organizationId: organization.id,
+        reason: 'Synthetic tenant-local role revocation test.',
+      }),
+    ).resolves.toMatchObject({ assignmentId: localAssignment.assignmentId });
+    await expect(
+      database
+        .selectFrom('role_assignments')
+        .select(['revoked_at', 'revocation_reason'])
+        .where('id', '=', localAssignment.assignmentId)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toMatchObject({
+      revocation_reason: 'Synthetic tenant-local role revocation test.',
+    });
   });
 
   it('prevents organization cycles', async () => {

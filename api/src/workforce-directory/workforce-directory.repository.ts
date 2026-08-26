@@ -6,17 +6,21 @@ import { DatabaseService } from '../database/database.service.js';
 import type { DatabaseSchema } from '../database/database.types.js';
 import type {
   AssignWorkforceGlobalRoleRepositoryInput,
+  AssignWorkforceTenantLocalRoleRepositoryInput,
   ChangeWorkforceMembershipStatusRepositoryInput,
+  CreateWorkforceTenantLocalRoleRepositoryInput,
   PersistWorkforceInvitationInput,
   RevokeWorkforceRoleAssignmentRepositoryInput,
   WorkforceAssignableGlobalRole,
   WorkforceDirectoryContext,
   WorkforceDirectoryMember,
+  WorkforceDelegablePermission,
   WorkforceDirectoryRepositoryPort,
   WorkforceInvitationAuthorization,
   WorkforceInvitationResponse,
   WorkforceMembershipStatusResponse,
   WorkforceRoleAssignment,
+  WorkforceTenantLocalRole,
 } from './workforce-directory.types.js';
 import {
   WorkforceIdentityConflictError,
@@ -26,6 +30,7 @@ import {
   WorkforceRoleAssignmentConflictError,
   WorkforceRoleManagementAuthorizationLostError,
   WorkforceMembershipStateConflictError,
+  WorkforceTenantLocalRoleConflictError,
 } from './workforce-directory.types.js';
 
 interface ContextRow {
@@ -71,6 +76,28 @@ interface AssignableGlobalRoleRow {
   name: string;
   description: string;
 }
+
+interface DelegablePermissionRow {
+  permission_id: string;
+  code: string;
+  name: string;
+  description: string;
+}
+
+interface TenantLocalRoleRow {
+  role_id: string;
+  code: string;
+  name: string;
+  description: string;
+}
+
+interface TenantLocalRolePermissionRow extends DelegablePermissionRow {
+  role_id: string;
+}
+
+type AssignWorkforceRoleRepositoryInput =
+  | AssignWorkforceGlobalRoleRepositoryInput
+  | AssignWorkforceTenantLocalRoleRepositoryInput;
 
 type DatabaseExecutor = Kysely<DatabaseSchema> | Transaction<DatabaseSchema>;
 
@@ -290,6 +317,89 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
       code: row.code,
       name: row.name,
       description: row.description,
+    }));
+  }
+
+  async listTenantLocalRoles(
+    tenantId: string,
+  ): Promise<WorkforceTenantLocalRole[]> {
+    const [roles, permissionRows] = await Promise.all([
+      sql<TenantLocalRoleRow>`
+        select role.id as role_id, role.code, role.name, role.description
+        from roles role
+        where role.tenant_id = ${tenantId}
+          and role.status = 'active'
+          and exists (
+            select 1
+            from role_permissions role_permission
+            where role_permission.role_id = role.id
+          )
+          and not exists (
+            select 1
+            from role_permissions role_permission
+            join permissions permission
+              on permission.id = role_permission.permission_id
+            where role_permission.role_id = role.id
+              and permission.is_delegable = false
+          )
+        order by role.name, role.id
+      `.execute(this.database.client),
+      sql<TenantLocalRolePermissionRow>`
+        select
+          role.id as role_id,
+          permission.id as permission_id,
+          permission.code,
+          permission.name,
+          permission.description
+        from roles role
+        join role_permissions role_permission
+          on role_permission.role_id = role.id
+        join permissions permission
+          on permission.id = role_permission.permission_id
+        where role.tenant_id = ${tenantId}
+          and role.status = 'active'
+          and permission.is_delegable = true
+        order by permission.name, permission.id
+      `.execute(this.database.client),
+    ]);
+    const permissionsByRole = new Map<string, WorkforceDelegablePermission[]>();
+
+    for (const permission of permissionRows.rows) {
+      const rolePermissions = permissionsByRole.get(permission.role_id) ?? [];
+      rolePermissions.push({
+        permissionId: permission.permission_id,
+        code: permission.code,
+        name: permission.name,
+        description: permission.description,
+      });
+      permissionsByRole.set(permission.role_id, rolePermissions);
+    }
+
+    return roles.rows.map((role) => ({
+      roleId: role.role_id,
+      code: role.code,
+      name: role.name,
+      description: role.description,
+      permissions: permissionsByRole.get(role.role_id) ?? [],
+    }));
+  }
+
+  async listDelegablePermissions(): Promise<WorkforceDelegablePermission[]> {
+    const result = await sql<DelegablePermissionRow>`
+      select permission.id as permission_id,
+        permission.code,
+        permission.name,
+        permission.description
+      from permissions permission
+      where permission.is_delegable = true
+      order by permission.name, permission.id
+    `.execute(this.database.client);
+
+    return result.rows.map((permission) => ({
+      permissionId: permission.permission_id,
+      code: permission.code,
+      name: permission.name,
+      description: permission.description,
     }));
   }
 
@@ -679,8 +789,156 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
       });
   }
 
+  async createTenantLocalRole(
+    input: CreateWorkforceTenantLocalRoleRepositoryInput,
+  ): Promise<WorkforceTenantLocalRole> {
+    try {
+      return await this.database.client
+        .transaction()
+        .setIsolationLevel('serializable')
+        .execute(async (trx) => {
+          const authorization =
+            await this.findOrganizationPermissionAuthorization(
+              trx,
+              input.actorCognitoSubject,
+              input.organizationId,
+              'tenant.roles.manage',
+            );
+
+          if (!authorization) {
+            throw new WorkforceRoleManagementAuthorizationLostError();
+          }
+
+          const permissions = await trx
+            .selectFrom('permissions')
+            .select(['id', 'code', 'name', 'description'])
+            .where('id', 'in', input.permissionIds)
+            .where('is_delegable', '=', true)
+            .orderBy('name')
+            .forUpdate()
+            .execute();
+
+          if (permissions.length !== input.permissionIds.length) {
+            throw new WorkforceTenantLocalRoleConflictError(
+              'Tenant-local roles can contain only active delegable permissions.',
+            );
+          }
+
+          const existingRole = await trx
+            .selectFrom('roles')
+            .select('id')
+            .where('tenant_id', '=', authorization.tenantId)
+            .where('status', '=', 'active')
+            .where(sql<boolean>`lower(btrim(name)) = lower(${input.name})`)
+            .executeTakeFirst();
+
+          if (existingRole) {
+            throw new WorkforceTenantLocalRoleConflictError(
+              'An active tenant-local role already uses this name.',
+            );
+          }
+
+          const role = await trx
+            .insertInto('roles')
+            .values({
+              tenant_id: authorization.tenantId,
+              code: `LOCAL_${randomUUID().replaceAll('-', '').toUpperCase()}`,
+              name: input.name,
+              description: input.description,
+              is_system_template: false,
+              request_policy: 'admin_only',
+              cloned_from_role_id: null,
+              status: 'active',
+              created_by_user_id: authorization.actorUserId,
+            })
+            .returning(['id', 'code', 'name', 'description'])
+            .executeTakeFirstOrThrow();
+
+          await trx
+            .insertInto('role_permissions')
+            .values(
+              permissions.map((permission) => ({
+                role_id: role.id,
+                permission_id: permission.id,
+                granted_by_user_id: authorization.actorUserId,
+              })),
+            )
+            .execute();
+
+          await trx
+            .insertInto('audit_events')
+            .values({
+              actor_type: 'user',
+              actor_identifier: input.actorCognitoSubject,
+              actor_user_id: authorization.actorUserId,
+              effective_user_id: authorization.actorUserId,
+              tenant_id: authorization.tenantId,
+              organization_id: authorization.organizationId,
+              facility_id: null,
+              action: 'identity.tenant_local_role_created',
+              target_entity_type: 'role',
+              target_entity_id: role.id,
+              outcome: 'success',
+              correlation_id: randomUUID(),
+              reason: input.reason,
+              before_data: null,
+              after_data: {
+                roleCode: role.code,
+                roleName: role.name,
+                permissionCodes: permissions.map(
+                  (permission) => permission.code,
+                ),
+                requestPolicy: 'admin_only',
+              },
+            })
+            .execute();
+
+          return {
+            roleId: role.id,
+            code: role.code,
+            name: role.name,
+            description: role.description,
+            permissions: permissions.map((permission) => ({
+              permissionId: permission.id,
+              code: permission.code,
+              name: permission.name,
+              description: permission.description,
+            })),
+          };
+        });
+    } catch (error) {
+      if (
+        error instanceof WorkforceRoleManagementAuthorizationLostError ||
+        error instanceof WorkforceTenantLocalRoleConflictError
+      ) {
+        throw error;
+      }
+
+      if (isUniqueViolation(error)) {
+        throw new WorkforceTenantLocalRoleConflictError(
+          'An active tenant-local role already uses this name.',
+        );
+      }
+
+      throw error;
+    }
+  }
+
   async assignGlobalRole(
     input: AssignWorkforceGlobalRoleRepositoryInput,
+  ): Promise<WorkforceRoleAssignment> {
+    return this.assignRole(input, 'global');
+  }
+
+  async assignTenantLocalRole(
+    input: AssignWorkforceTenantLocalRoleRepositoryInput,
+  ): Promise<WorkforceRoleAssignment> {
+    return this.assignRole(input, 'tenant-local');
+  }
+
+  private async assignRole(
+    input: AssignWorkforceRoleRepositoryInput,
+    roleScope: 'global' | 'tenant-local',
   ): Promise<WorkforceRoleAssignment> {
     try {
       return await this.database.client
@@ -739,7 +997,7 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
             );
           }
 
-          const role = await trx
+          let roleQuery = trx
             .selectFrom('roles as role')
             .select([
               'role.id as role_id',
@@ -748,14 +1006,20 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
               'role.description as role_description',
             ])
             .where('role.id', '=', input.roleId)
-            .where('role.tenant_id', 'is', null)
             .where('role.status', '=', 'active')
-            .forUpdate()
-            .executeTakeFirst();
+            .forUpdate();
+
+          roleQuery =
+            roleScope === 'global'
+              ? roleQuery.where('role.tenant_id', 'is', null)
+              : roleQuery.where('role.tenant_id', '=', authorization.tenantId);
+          const role = await roleQuery.executeTakeFirst();
 
           if (!role) {
             throw new WorkforceRoleAssignmentConflictError(
-              'This global role is not available for assignment.',
+              roleScope === 'global'
+                ? 'This global role is not available for assignment.'
+                : 'This tenant-local role is not available for assignment.',
             );
           }
 
@@ -773,7 +1037,9 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
 
           if (nonDelegablePermission) {
             throw new WorkforceRoleAssignmentConflictError(
-              'This global role is not available for assignment.',
+              roleScope === 'global'
+                ? 'This global role is not available for assignment.'
+                : 'This tenant-local role is not available for assignment.',
             );
           }
 
@@ -833,6 +1099,7 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
               before_data: null,
               after_data: {
                 roleCode: role.role_code,
+                roleScope,
                 scopeOrganizationId: authorization.organizationId,
                 facilityScope: null,
                 includeDescendants: false,
@@ -944,7 +1211,8 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
           assignment.membership_valid_from > now ||
           (assignment.membership_valid_until !== null &&
             assignment.membership_valid_until <= now) ||
-          assignment.role_tenant_id !== null ||
+          (assignment.role_tenant_id !== null &&
+            assignment.role_tenant_id !== authorization.tenantId) ||
           assignment.role_status !== 'active' ||
           assignment.revoked_at !== null ||
           assignment.valid_from > now ||

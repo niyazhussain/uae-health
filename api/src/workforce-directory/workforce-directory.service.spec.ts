@@ -12,6 +12,7 @@ import {
   WorkforceMembershipStateConflictError,
   WorkforceRoleAssignmentConflictError,
   WorkforceRoleManagementAuthorizationLostError,
+  WorkforceTenantLocalRoleConflictError,
   WorkforceInvitationAuthorizationLostError,
   type CognitoWorkforceDirectoryPort,
   type WorkforceDirectoryRepositoryPort,
@@ -37,6 +38,31 @@ const roleAssignment = {
   roleName: 'Reception and registration',
   roleDescription: 'Synthetic registration access.',
   organizationId: invitationInput.organizationId,
+};
+
+const tenantLocalRole = {
+  roleId: '80000000-0000-4000-8000-000000000002',
+  code: 'LOCAL_SYNTHETIC_RECEPTION',
+  name: 'Synthetic local reception',
+  description: 'Synthetic practice-specific registration access.',
+  permissions: [
+    {
+      permissionId: '90000000-0000-4000-8000-000000000001',
+      code: 'patients.read',
+      name: 'Read patient records',
+      description:
+        'Read non-confidential patient records in the assigned scope.',
+    },
+  ],
+};
+
+const tenantLocalRoleAssignment = {
+  ...roleAssignment,
+  assignmentId: '70000000-0000-4000-8000-000000000002',
+  roleId: tenantLocalRole.roleId,
+  roleCode: tenantLocalRole.code,
+  roleName: tenantLocalRole.name,
+  roleDescription: tenantLocalRole.description,
 };
 
 function createDependencies() {
@@ -95,6 +121,10 @@ function createDependencies() {
       description: roleAssignment.roleDescription,
     },
   ]);
+  const listTenantLocalRoles = jest.fn().mockResolvedValue([tenantLocalRole]);
+  const listDelegablePermissions = jest
+    .fn()
+    .mockResolvedValue(tenantLocalRole.permissions);
   const isCognitoSubjectBound = jest.fn().mockResolvedValue(false);
   const persistInvitation = jest.fn().mockResolvedValue({
     applicationUserId: '30000000-0000-4000-8000-000000000003',
@@ -112,6 +142,10 @@ function createDependencies() {
     sessionsRevoked: 2,
   });
   const assignGlobalRole = jest.fn().mockResolvedValue(roleAssignment);
+  const createTenantLocalRole = jest.fn().mockResolvedValue(tenantLocalRole);
+  const assignTenantLocalRole = jest
+    .fn()
+    .mockResolvedValue(tenantLocalRoleAssignment);
   const revokeRoleAssignment = jest.fn().mockResolvedValue(roleAssignment);
   const repository: WorkforceDirectoryRepositoryPort = {
     listManageableContexts,
@@ -120,10 +154,14 @@ function createDependencies() {
     authorizeRoleManagement,
     listRoleAssignments,
     listAssignableGlobalRoles,
+    listTenantLocalRoles,
+    listDelegablePermissions,
     isCognitoSubjectBound,
     persistInvitation,
     changeMembershipStatus,
     assignGlobalRole,
+    createTenantLocalRole,
+    assignTenantLocalRole,
     revokeRoleAssignment,
   };
   const listAccounts = jest.fn().mockResolvedValue([
@@ -159,10 +197,14 @@ function createDependencies() {
     authorizeRoleManagement,
     listRoleAssignments,
     listAssignableGlobalRoles,
+    listTenantLocalRoles,
+    listDelegablePermissions,
     isCognitoSubjectBound,
     persistInvitation,
     changeMembershipStatus,
     assignGlobalRole,
+    createTenantLocalRole,
+    assignTenantLocalRole,
     revokeRoleAssignment,
     provisionAccount,
     deleteAccount,
@@ -192,6 +234,7 @@ describe('WorkforceDirectoryService', () => {
         organizationId: '20000000-0000-4000-8000-000000000001',
         organizationName: 'Synthetic Care Practice',
       },
+      cognitoStatusAvailable: true,
       canManageRoles: true,
       assignableGlobalRoles: [
         {
@@ -201,6 +244,8 @@ describe('WorkforceDirectoryService', () => {
           description: roleAssignment.roleDescription,
         },
       ],
+      tenantLocalRoles: [tenantLocalRole],
+      delegablePermissions: tenantLocalRole.permissions,
       users: [
         {
           membershipId: '60000000-0000-4000-8000-000000000001',
@@ -249,15 +294,25 @@ describe('WorkforceDirectoryService', () => {
     expect(listAccounts).not.toHaveBeenCalled();
   });
 
-  it('returns a safe dependency error when Cognito cannot be read', async () => {
+  it('returns database-authoritative roles when Cognito status cannot be read', async () => {
     const { repository, cognito } = createDependencies();
     cognito.listAccounts = jest
       .fn()
       .mockRejectedValue(new Error('AWS diagnostic details'));
     const service = new WorkforceDirectoryService(repository, cognito);
 
-    await expect(service.getDirectory(principal)).rejects.toBeInstanceOf(
-      ServiceUnavailableException,
+    const directory = await service.getDirectory(principal);
+
+    expect(directory.cognitoStatusAvailable).toBe(false);
+    expect(directory.users).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          membershipId: '60000000-0000-4000-8000-000000000001',
+          roleAssignments: [],
+          cognitoStatus: null,
+          cognitoEnabled: null,
+        }),
+      ]),
     );
   });
 
@@ -530,6 +585,75 @@ describe('WorkforceDirectoryService', () => {
         reason: 'Synthetic role conflict test.',
       }),
     ).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('creates a delegable tenant-local role after checking current database authority', async () => {
+    const { repository, cognito, createTenantLocalRole } = createDependencies();
+    const service = new WorkforceDirectoryService(repository, cognito);
+
+    await expect(
+      service.createTenantLocalRole(principal, {
+        organizationId: invitationInput.organizationId,
+        name: tenantLocalRole.name,
+        description: tenantLocalRole.description,
+        permissionIds: tenantLocalRole.permissions.map(
+          (permission) => permission.permissionId,
+        ),
+        reason: 'Synthetic local role creation test.',
+      }),
+    ).resolves.toEqual(tenantLocalRole);
+    expect(createTenantLocalRole).toHaveBeenCalledWith({
+      actorCognitoSubject: principal.subject,
+      organizationId: invitationInput.organizationId,
+      name: tenantLocalRole.name,
+      description: tenantLocalRole.description,
+      permissionIds: tenantLocalRole.permissions.map(
+        (permission) => permission.permissionId,
+      ),
+      reason: 'Synthetic local role creation test.',
+    });
+  });
+
+  it('maps an unsafe tenant-local role definition to a conflict', async () => {
+    const { repository, cognito, createTenantLocalRole } = createDependencies();
+    createTenantLocalRole.mockRejectedValue(
+      new WorkforceTenantLocalRoleConflictError(
+        'Tenant-local roles can contain only active delegable permissions.',
+      ),
+    );
+    const service = new WorkforceDirectoryService(repository, cognito);
+
+    await expect(
+      service.createTenantLocalRole(principal, {
+        organizationId: invitationInput.organizationId,
+        name: tenantLocalRole.name,
+        description: tenantLocalRole.description,
+        permissionIds: tenantLocalRole.permissions.map(
+          (permission) => permission.permissionId,
+        ),
+        reason: 'Synthetic local role conflict test.',
+      }),
+    ).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('assigns an approved tenant-local role after checking current database authority', async () => {
+    const { repository, cognito, assignTenantLocalRole } = createDependencies();
+    const service = new WorkforceDirectoryService(repository, cognito);
+
+    await expect(
+      service.assignTenantLocalRole(principal, roleAssignment.membershipId, {
+        organizationId: invitationInput.organizationId,
+        roleId: tenantLocalRole.roleId,
+        reason: 'Synthetic local role assignment test.',
+      }),
+    ).resolves.toEqual(tenantLocalRoleAssignment);
+    expect(assignTenantLocalRole).toHaveBeenCalledWith({
+      actorCognitoSubject: principal.subject,
+      membershipId: roleAssignment.membershipId,
+      organizationId: invitationInput.organizationId,
+      roleId: tenantLocalRole.roleId,
+      reason: 'Synthetic local role assignment test.',
+    });
   });
 
   it('rejects role revocation when current database authority changed', async () => {

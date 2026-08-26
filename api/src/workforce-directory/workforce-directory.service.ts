@@ -13,8 +13,11 @@ import {
 } from './workforce-directory.constants.js';
 import type {
   AssignWorkforceGlobalRoleInput,
+  AssignWorkforceTenantLocalRoleInput,
   ChangeWorkforceMembershipStatusInput,
+  CreateWorkforceTenantLocalRoleInput,
   CreateWorkforceInvitationInput,
+  CognitoWorkforceAccount,
   CognitoWorkforceDirectoryPort,
   RevokeWorkforceRoleAssignmentInput,
   WorkforceDirectoryRepositoryPort,
@@ -22,6 +25,7 @@ import type {
   WorkforceInvitationResponse,
   WorkforceMembershipStatusResponse,
   WorkforceRoleAssignment,
+  WorkforceTenantLocalRole,
 } from './workforce-directory.types.js';
 import {
   WorkforceIdentityConflictError,
@@ -31,6 +35,7 @@ import {
   WorkforceMembershipStateConflictError,
   WorkforceRoleAssignmentConflictError,
   WorkforceRoleManagementAuthorizationLostError,
+  WorkforceTenantLocalRoleConflictError,
 } from './workforce-directory.types.js';
 
 @Injectable()
@@ -79,13 +84,15 @@ export class WorkforceDirectoryService {
         ),
       ]);
 
-    let accounts;
+    let accounts: CognitoWorkforceAccount[] = [];
+    let cognitoStatusAvailable = true;
 
     try {
       accounts = await this.cognito.listAccounts();
     } catch {
-      throw new ServiceUnavailableException(
-        'Workforce authentication status is temporarily unavailable.',
+      cognitoStatusAvailable = false;
+      this.logger.warn(
+        'event=workforce_directory_cognito_status outcome=unavailable',
       );
     }
 
@@ -103,15 +110,23 @@ export class WorkforceDirectoryService {
       assignments.push(assignment);
       roleAssignmentsByMembership.set(assignment.membershipId, assignments);
     }
-    const assignableGlobalRoles = roleManagementAuthorization
-      ? await this.repository.listAssignableGlobalRoles()
-      : [];
+    const [assignableGlobalRoles, tenantLocalRoles, delegablePermissions] =
+      roleManagementAuthorization
+        ? await Promise.all([
+            this.repository.listAssignableGlobalRoles(),
+            this.repository.listTenantLocalRoles(selectedContext.tenantId),
+            this.repository.listDelegablePermissions(),
+          ])
+        : [[], [], []];
 
     return {
       contexts,
       selectedContext,
+      cognitoStatusAvailable,
       canManageRoles: roleManagementAuthorization !== null,
       assignableGlobalRoles,
+      tenantLocalRoles,
+      delegablePermissions,
       users: members.map((member) => {
         const account = member.cognitoSubject
           ? accountBySubject.get(member.cognitoSubject)
@@ -276,6 +291,66 @@ export class WorkforceDirectoryService {
 
       throw new ServiceUnavailableException(
         'The workforce role could not be assigned.',
+      );
+    }
+  }
+
+  async createTenantLocalRole(
+    principal: AuthenticatedPrincipal,
+    input: CreateWorkforceTenantLocalRoleInput,
+  ): Promise<WorkforceTenantLocalRole> {
+    try {
+      return await this.repository.createTenantLocalRole({
+        actorCognitoSubject: principal.subject,
+        organizationId: input.organizationId,
+        name: input.name,
+        description: input.description,
+        permissionIds: input.permissionIds,
+        reason: input.reason,
+      });
+    } catch (error) {
+      if (error instanceof WorkforceRoleManagementAuthorizationLostError) {
+        throw new ForbiddenException(
+          'Workforce role management is not permitted for this organization.',
+        );
+      }
+
+      if (error instanceof WorkforceTenantLocalRoleConflictError) {
+        throw new ConflictException(error.message);
+      }
+
+      throw new ServiceUnavailableException(
+        'The tenant-local role could not be created.',
+      );
+    }
+  }
+
+  async assignTenantLocalRole(
+    principal: AuthenticatedPrincipal,
+    membershipId: string,
+    input: AssignWorkforceTenantLocalRoleInput,
+  ): Promise<WorkforceRoleAssignment> {
+    try {
+      return await this.repository.assignTenantLocalRole({
+        actorCognitoSubject: principal.subject,
+        membershipId,
+        organizationId: input.organizationId,
+        roleId: input.roleId,
+        reason: input.reason,
+      });
+    } catch (error) {
+      if (error instanceof WorkforceRoleManagementAuthorizationLostError) {
+        throw new ForbiddenException(
+          'Workforce role management is not permitted for this organization.',
+        );
+      }
+
+      if (error instanceof WorkforceRoleAssignmentConflictError) {
+        throw new ConflictException(error.message);
+      }
+
+      throw new ServiceUnavailableException(
+        'The tenant-local role could not be assigned.',
       );
     }
   }

@@ -18,6 +18,7 @@ import { type FormEvent, useEffect, useMemo, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -31,7 +32,9 @@ import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -39,8 +42,10 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import {
   assignWorkforceGlobalRole,
+  assignWorkforceTenantLocalRole,
   changeWorkforceMembershipStatus,
   createWorkforceInvitation,
+  createWorkforceTenantLocalRole,
   getWorkforceDirectory,
   revokeWorkforceRoleAssignment,
   WorkforceApiError,
@@ -54,8 +59,14 @@ interface WorkforceDirectoryProps {
   onSessionExpired: () => void;
 }
 
-function statusBadge(user: WorkforceDirectoryUser) {
-  if (user.membershipStatus === "suspended" || user.cognitoEnabled === false) {
+function statusBadge(
+  user: WorkforceDirectoryUser,
+  cognitoStatusAvailable: boolean,
+) {
+  if (
+    user.membershipStatus === "suspended" ||
+    (cognitoStatusAvailable && user.cognitoEnabled === false)
+  ) {
     return (
       <Badge variant="destructive">
         <WarningCircleIcon />
@@ -66,8 +77,9 @@ function statusBadge(user: WorkforceDirectoryUser) {
 
   if (
     user.membershipStatus === "pending" ||
-    !user.cognitoStatus ||
-    user.cognitoStatus === "FORCE_CHANGE_PASSWORD"
+    (cognitoStatusAvailable &&
+      (!user.cognitoStatus ||
+        user.cognitoStatus === "FORCE_CHANGE_PASSWORD"))
   ) {
     return (
       <Badge variant="warning">
@@ -105,6 +117,8 @@ export function WorkforceDirectory({
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [revalidatedLegacyDirectory, setRevalidatedLegacyDirectory] =
+    useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [inviteSubmitting, setInviteSubmitting] = useState(false);
   const [inviteError, setInviteError] = useState<string | null>(null);
@@ -135,6 +149,18 @@ export function WorkforceDirectory({
   const [roleManagementSuccess, setRoleManagementSuccess] = useState<
     string | null
   >(null);
+  const [tenantLocalRoleOpen, setTenantLocalRoleOpen] = useState(false);
+  const [tenantLocalRoleSubmitting, setTenantLocalRoleSubmitting] =
+    useState(false);
+  const [tenantLocalRoleError, setTenantLocalRoleError] = useState<
+    string | null
+  >(null);
+  const [tenantLocalRoleName, setTenantLocalRoleName] = useState("");
+  const [tenantLocalRoleDescription, setTenantLocalRoleDescription] =
+    useState("");
+  const [tenantLocalRolePermissionIds, setTenantLocalRolePermissionIds] =
+    useState<string[]>([]);
+  const [tenantLocalRoleReason, setTenantLocalRoleReason] = useState("");
 
   useEffect(() => {
     const controller = new AbortController();
@@ -162,6 +188,25 @@ export function WorkforceDirectory({
 
     return () => controller.abort();
   }, [onSessionExpired, reloadVersion, selectedOrganizationId]);
+
+  useEffect(() => {
+    if (
+      !directory ||
+      revalidatedLegacyDirectory ||
+      directory.users.every((user) => Array.isArray(user.roleAssignments))
+    ) {
+      return;
+    }
+
+    const revalidate = window.setTimeout(() => {
+      setRevalidatedLegacyDirectory(true);
+      setLoading(true);
+      setError(null);
+      setReloadVersion((version) => version + 1);
+    }, 0);
+
+    return () => window.clearTimeout(revalidate);
+  }, [directory, revalidatedLegacyDirectory]);
 
   const selectOrganization = (organizationId: string) => {
     setLoading(true);
@@ -194,6 +239,9 @@ export function WorkforceDirectory({
 
   const activeOrganizationId =
     selectedOrganizationId ?? directory?.selectedContext.organizationId;
+  const assignableGlobalRoles = directory?.assignableGlobalRoles ?? [];
+  const tenantLocalRoles = directory?.tenantLocalRoles ?? [];
+  const delegablePermissions = directory?.delegablePermissions ?? [];
 
   const setInvitationDialogOpen = (open: boolean) => {
     if (inviteSubmitting) return;
@@ -341,15 +389,25 @@ export function WorkforceDirectory({
     setRoleManagementSuccess(null);
 
     try {
-      const assignment = await assignWorkforceGlobalRole(
-        csrfToken,
-        roleManagementTarget.membershipId,
-        {
-          organizationId: activeOrganizationId,
-          roleId: selectedRoleId,
-          reason: roleManagementReason.trim(),
-        },
+      const input = {
+        organizationId: activeOrganizationId,
+        roleId: selectedRoleId,
+        reason: roleManagementReason.trim(),
+      };
+      const isTenantLocalRole = tenantLocalRoles.some(
+        (role) => role.roleId === selectedRoleId,
       );
+      const assignment = isTenantLocalRole
+        ? await assignWorkforceTenantLocalRole(
+            csrfToken,
+            roleManagementTarget.membershipId,
+            input,
+          )
+        : await assignWorkforceGlobalRole(
+            csrfToken,
+            roleManagementTarget.membershipId,
+            input,
+          );
       setRoleManagementSuccess(
         `${assignment.roleName} was assigned to ${roleManagementTarget.displayName}.`,
       );
@@ -368,6 +426,73 @@ export function WorkforceDirectory({
       );
     } finally {
       setRoleManagementSubmitting(false);
+    }
+  };
+
+  const setTenantLocalRoleDialogOpen = (open: boolean) => {
+    if (tenantLocalRoleSubmitting) return;
+
+    setTenantLocalRoleOpen(open);
+    if (!open) {
+      setTenantLocalRoleError(null);
+      setTenantLocalRoleName("");
+      setTenantLocalRoleDescription("");
+      setTenantLocalRolePermissionIds([]);
+      setTenantLocalRoleReason("");
+    }
+  };
+
+  const toggleTenantLocalRolePermission = (permissionId: string) => {
+    setTenantLocalRolePermissionIds((permissionIds) =>
+      permissionIds.includes(permissionId)
+        ? permissionIds.filter((id) => id !== permissionId)
+        : [...permissionIds, permissionId],
+    );
+  };
+
+  const submitTenantLocalRole = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    if (!activeOrganizationId || tenantLocalRolePermissionIds.length === 0) {
+      setTenantLocalRoleError(
+        "Select a practice and at least one permission before continuing.",
+      );
+      return;
+    }
+
+    setTenantLocalRoleSubmitting(true);
+    setTenantLocalRoleError(null);
+    setRoleManagementSuccess(null);
+
+    try {
+      const role = await createWorkforceTenantLocalRole(csrfToken, {
+        organizationId: activeOrganizationId,
+        name: tenantLocalRoleName.trim(),
+        description: tenantLocalRoleDescription.trim(),
+        permissionIds: tenantLocalRolePermissionIds,
+        reason: tenantLocalRoleReason.trim(),
+      });
+      setRoleManagementSuccess(
+        `${role.name} is available to assign in this tenant.`,
+      );
+      setTenantLocalRoleOpen(false);
+      setTenantLocalRoleName("");
+      setTenantLocalRoleDescription("");
+      setTenantLocalRolePermissionIds([]);
+      setTenantLocalRoleReason("");
+      retry();
+    } catch (reason: unknown) {
+      if (reason instanceof WorkforceApiError && reason.status === 401) {
+        onSessionExpired();
+        return;
+      }
+      setTenantLocalRoleError(
+        reason instanceof Error
+          ? reason.message
+          : "The tenant-local role could not be created.",
+      );
+    } finally {
+      setTenantLocalRoleSubmitting(false);
     }
   };
 
@@ -435,14 +560,27 @@ export function WorkforceDirectory({
           </p>
         </div>
         <div className="flex flex-col items-stretch gap-3 sm:items-end">
-          <Button
-            type="button"
-            onClick={() => setInvitationDialogOpen(true)}
-            disabled={!directory || loading || Boolean(error)}
-          >
-            <UserPlusIcon />
-            Invite user
-          </Button>
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button
+              type="button"
+              onClick={() => setInvitationDialogOpen(true)}
+              disabled={!directory || loading || Boolean(error)}
+            >
+              <UserPlusIcon />
+              Invite user
+            </Button>
+            {directory?.canManageRoles && (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setTenantLocalRoleDialogOpen(true)}
+                disabled={loading || Boolean(error)}
+              >
+                <ShieldPlusIcon />
+                Create local role
+              </Button>
+            )}
+          </div>
           {directory && (
             <div className="flex gap-3">
               <div className="rounded-lg border bg-card px-4 py-3">
@@ -624,6 +762,13 @@ export function WorkforceDirectory({
           </div>
         )}
 
+        {!loading && !error && !directory?.cognitoStatusAvailable && (
+          <div className="border-b border-warning/30 bg-warning/10 px-5 py-3 text-sm text-warning-foreground">
+            Cognito account status is temporarily unavailable. Practice access
+            and role assignments below are current database-authoritative data.
+          </div>
+        )}
+
         {!loading && !error && visibleUsers.length > 0 && (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[64rem] text-start text-sm">
@@ -656,9 +801,18 @@ export function WorkforceDirectory({
                         </div>
                       </div>
                     </td>
-                    <td className="px-5 py-4">{statusBadge(user)}</td>
                     <td className="px-5 py-4">
-                      {user.roleAssignments.length > 0 ? (
+                      {statusBadge(
+                        user,
+                        directory?.cognitoStatusAvailable ?? true,
+                      )}
+                    </td>
+                    <td className="px-5 py-4">
+                      {!Array.isArray(user.roleAssignments) ? (
+                        <span className="text-xs text-muted-foreground">
+                          Refreshing role data…
+                        </span>
+                      ) : user.roleAssignments.length > 0 ? (
                         <div className="flex max-w-64 flex-wrap gap-1.5">
                           {user.roleAssignments.map((assignment) => (
                             <Badge
@@ -841,17 +995,173 @@ export function WorkforceDirectory({
       </Dialog>
 
       <Dialog
+        open={tenantLocalRoleOpen}
+        onOpenChange={setTenantLocalRoleDialogOpen}
+      >
+        <DialogContent className="max-h-[calc(100vh-2rem)] overflow-y-auto sm:max-w-xl">
+          <form className="grid gap-5" onSubmit={submitTenantLocalRole}>
+            <DialogHeader>
+              <DialogTitle>Create tenant-local role</DialogTitle>
+              <DialogDescription>
+                Build an administrator-assigned role for this tenant from the
+                approved delegable permission catalogue. Facility scope, role
+                requests, and Cognito changes are not part of this action.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="rounded-lg border bg-muted/45 p-3">
+              <p className="text-xs font-medium text-muted-foreground">
+                Practice
+              </p>
+              <p className="mt-1 font-medium">
+                {directory?.selectedContext.organizationName ??
+                  "Select a practice"}
+              </p>
+            </div>
+
+            <div className="grid gap-2">
+              <Label htmlFor="tenant-local-role-name">Role name</Label>
+              <Input
+                id="tenant-local-role-name"
+                name="name"
+                minLength={2}
+                maxLength={200}
+                required
+                value={tenantLocalRoleName}
+                onChange={(event) => setTenantLocalRoleName(event.target.value)}
+              />
+              <p className="text-xs leading-5 text-muted-foreground">
+                Must be unique within this tenant.
+              </p>
+            </div>
+
+            <div className="grid gap-2">
+              <Label htmlFor="tenant-local-role-description">
+                Role description
+              </Label>
+              <Textarea
+                id="tenant-local-role-description"
+                name="description"
+                minLength={3}
+                maxLength={1000}
+                required
+                value={tenantLocalRoleDescription}
+                onChange={(event) =>
+                  setTenantLocalRoleDescription(event.target.value)
+                }
+              />
+            </div>
+
+            <fieldset className="grid gap-2">
+              <legend className="text-sm font-medium">
+                Delegable permissions
+              </legend>
+              <p className="text-xs leading-5 text-muted-foreground">
+                Select at least one permission. Site-controlled privileged
+                permissions are excluded.
+              </p>
+              <div className="grid max-h-60 gap-2 overflow-y-auto rounded-lg border p-3">
+                {delegablePermissions.map((permission) => {
+                  const checked = tenantLocalRolePermissionIds.includes(
+                    permission.permissionId,
+                  );
+                  const id = `tenant-local-permission-${permission.permissionId}`;
+
+                  return (
+                    <div key={permission.permissionId} className="flex gap-3">
+                      <Checkbox
+                        id={id}
+                        checked={checked}
+                        onCheckedChange={() =>
+                          toggleTenantLocalRolePermission(
+                            permission.permissionId,
+                          )
+                        }
+                      />
+                      <Label
+                        htmlFor={id}
+                        className="grid cursor-pointer gap-0.5 font-normal"
+                      >
+                        <span className="font-medium">{permission.name}</span>
+                        <span className="text-xs leading-5 text-muted-foreground">
+                          {permission.description}
+                        </span>
+                      </Label>
+                    </div>
+                  );
+                })}
+              </div>
+            </fieldset>
+
+            <div className="grid gap-2">
+              <Label htmlFor="tenant-local-role-reason">
+                Reason for role definition
+              </Label>
+              <Textarea
+                id="tenant-local-role-reason"
+                name="reason"
+                minLength={3}
+                maxLength={500}
+                required
+                value={tenantLocalRoleReason}
+                onChange={(event) =>
+                  setTenantLocalRoleReason(event.target.value)
+                }
+              />
+              <p className="text-xs leading-5 text-muted-foreground">
+                This reason is stored in the audit trail. Do not include patient
+                or clinical details.
+              </p>
+            </div>
+
+            {tenantLocalRoleError && (
+              <div
+                className="flex gap-2 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive"
+                role="alert"
+              >
+                <WarningCircleIcon className="mt-0.5 size-4 shrink-0" />
+                <p>{tenantLocalRoleError}</p>
+              </div>
+            )}
+
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setTenantLocalRoleDialogOpen(false)}
+                disabled={tenantLocalRoleSubmitting}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                disabled={
+                  tenantLocalRoleSubmitting ||
+                  tenantLocalRolePermissionIds.length === 0
+                }
+              >
+                <ShieldPlusIcon />
+                {tenantLocalRoleSubmitting
+                  ? "Creating local role"
+                  : "Create local role"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
         open={roleManagementTarget !== null}
         onOpenChange={setRoleManagementDialogOpen}
       >
         <DialogContent className="sm:max-w-lg">
-          <form className="grid gap-5" onSubmit={submitRoleAssignment}>
+          <form className="grid min-w-0 gap-5" onSubmit={submitRoleAssignment}>
             <DialogHeader>
               <DialogTitle>Manage practice roles</DialogTitle>
               <DialogDescription>
-                Assign only approved global roles for this practice, or remove
-                an existing eligible role. Cognito sign-in and other practice
-                access are unchanged.
+                Assign approved global or tenant-local roles for this practice,
+                or remove an existing eligible role. Cognito sign-in and other
+                practice access are unchanged.
               </DialogDescription>
             </DialogHeader>
 
@@ -867,31 +1177,33 @@ export function WorkforceDirectory({
 
             <div className="grid gap-2">
               <Label>Current roles</Label>
-              {roleManagementTarget?.roleAssignments.length ? (
+              {(roleManagementTarget?.roleAssignments ?? []).length ? (
                 <div className="grid gap-2">
-                  {roleManagementTarget.roleAssignments.map((assignment) => (
-                    <div
-                      key={assignment.assignmentId}
-                      className="flex items-center justify-between gap-3 rounded-lg border p-3"
-                    >
-                      <div>
-                        <p className="font-medium">{assignment.roleName}</p>
-                        <p className="mt-0.5 text-xs text-muted-foreground">
-                          {assignment.roleDescription}
-                        </p>
-                      </div>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        onClick={() => void revokeRoleAssignment(assignment)}
-                        disabled={roleManagementSubmitting}
+                  {(roleManagementTarget?.roleAssignments ?? []).map(
+                    (assignment) => (
+                      <div
+                        key={assignment.assignmentId}
+                        className="flex items-center justify-between gap-3 rounded-lg border p-3"
                       >
-                        <MinusCircleIcon />
-                        Remove
-                      </Button>
-                    </div>
-                  ))}
+                        <div>
+                          <p className="font-medium">{assignment.roleName}</p>
+                          <p className="mt-0.5 text-xs text-muted-foreground">
+                            {assignment.roleDescription}
+                          </p>
+                        </div>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => void revokeRoleAssignment(assignment)}
+                          disabled={roleManagementSubmitting}
+                        >
+                          <MinusCircleIcon />
+                          Remove
+                        </Button>
+                      </div>
+                    ),
+                  )}
                 </div>
               ) : (
                 <p className="rounded-lg border border-dashed p-3 text-sm text-muted-foreground">
@@ -901,22 +1213,35 @@ export function WorkforceDirectory({
             </div>
 
             <div className="grid gap-2">
-              <Label htmlFor="global-role">Global role to assign</Label>
+              <Label htmlFor="role-to-assign">Role to assign</Label>
               <Select value={selectedRoleId} onValueChange={setSelectedRoleId}>
-                <SelectTrigger id="global-role">
-                  <SelectValue placeholder="Select a safe global role" />
+                <SelectTrigger id="role-to-assign">
+                  <SelectValue placeholder="Select an approved role" />
                 </SelectTrigger>
                 <SelectContent>
-                  {directory?.assignableGlobalRoles.map((role) => (
-                    <SelectItem key={role.roleId} value={role.roleId}>
-                      {role.name} · {role.description}
-                    </SelectItem>
-                  ))}
+                  <SelectGroup>
+                    <SelectLabel>Global roles</SelectLabel>
+                    {assignableGlobalRoles.map((role) => (
+                      <SelectItem key={role.roleId} value={role.roleId}>
+                        {role.name} · {role.description}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                  {tenantLocalRoles.length ? (
+                    <SelectGroup>
+                      <SelectLabel>Tenant-local roles</SelectLabel>
+                      {tenantLocalRoles.map((role) => (
+                        <SelectItem key={role.roleId} value={role.roleId}>
+                          {role.name} · {role.description}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  ) : null}
                 </SelectContent>
               </Select>
               <p className="text-xs leading-5 text-muted-foreground">
-                Privileged roles and tenant-local role design are intentionally
-                excluded from this screen.
+                Privileged roles, facility scope, and descendant access are not
+                available through this screen.
               </p>
             </div>
 

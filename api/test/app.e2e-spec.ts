@@ -133,6 +133,46 @@ describe('AppController (e2e)', () => {
       });
   });
 
+  it('/v1/admin/workforce-directory tenant-local role creation rejects an unauthenticated request', () => {
+    const server = app.getHttpServer() as Server;
+
+    return request(server)
+      .post('/v1/admin/workforce-directory/tenant-local-roles')
+      .send({
+        organizationId: '20000000-0000-4000-8000-000000000001',
+        name: 'Synthetic local reception',
+        description: 'Synthetic practice-specific registration access.',
+        permissionIds: ['90000000-0000-4000-8000-000000000001'],
+        reason: 'Synthetic tenant-local role creation test.',
+      })
+      .expect(401)
+      .expect({
+        message: 'Active workforce session required.',
+        error: 'Unauthorized',
+        statusCode: 401,
+      });
+  });
+
+  it('/v1/admin/workforce-directory tenant-local role assignment rejects an unauthenticated request', () => {
+    const server = app.getHttpServer() as Server;
+
+    return request(server)
+      .post(
+        '/v1/admin/workforce-directory/memberships/60000000-0000-4000-8000-000000000001/tenant-local-role-assignments',
+      )
+      .send({
+        organizationId: '20000000-0000-4000-8000-000000000001',
+        roleId: '70000000-0000-4000-8000-000000000001',
+        reason: 'Synthetic tenant-local role assignment test.',
+      })
+      .expect(401)
+      .expect({
+        message: 'Active workforce session required.',
+        error: 'Unauthorized',
+        statusCode: 401,
+      });
+  });
+
   it('/v1/admin/workforce-directory role assignment revocation rejects an unauthenticated request', () => {
     const server = app.getHttpServer() as Server;
 
