@@ -171,6 +171,21 @@ Roles SHALL declare whether they are requestable and whether approval is require
 - **WHEN** a user requests a role restricted to administrator assignment
 - **THEN** the platform rejects the request without creating an active assignment
 
+### Requirement: Keep workforce identity providers replaceable
+Workforce authentication SHALL use a provider-neutral identity boundary. Each identity binding SHALL use a configured connection and immutable issuer/subject identifiers. The HIS database SHALL own account lifecycle and provider-sync status, while a backend-only adapter performs the corresponding external lifecycle command. Cognito is the initial adapter, but an approved Okta, Entra ID, or other provider connection SHALL not change the authorization model or require an email-based merge. Application modules outside the identity-provider module SHALL not depend on Cognito SDK types or Cognito-specific identity/status fields.
+
+#### Scenario: Workforce authentication provider changes
+- **WHEN** a tenant moves workforce authentication from one approved provider connection to another
+- **THEN** the platform supports an approved parallel transition and explicit immutable-identity linking while preserving the application user, memberships, and roles without copying passwords or MFA secrets
+
+#### Scenario: HIS lifecycle command reaches an external provider
+- **WHEN** an authorized HIS lifecycle operation creates, activates, suspends, or otherwise changes a native workforce account
+- **THEN** the backend calls the configured provider adapter, persists a safe provider-sync outcome on the identity binding, and continues to enforce only HIS lifecycle, membership, role, permission, scope, and session state
+
+#### Scenario: Directory presents workforce account state
+- **WHEN** an authorized administrator views the workforce directory
+- **THEN** it returns HIS-managed lifecycle and provider-sync state without making a provider account-status read, exposing a provider SDK field, or allowing the frontend to call the provider
+
 ### Requirement: Accept tenant-scoped SCIM provisioning without delegating authorization
 The platform MAY expose a tenant-scoped SCIM 2.0 service for approved enterprise identity providers. SCIM MAY create, update, suspend, and restore application users and memberships using approved profile fields. SCIM users and groups SHALL NOT directly grant permissions or active role assignments; a configured mapping MAY create a pending role request.
 

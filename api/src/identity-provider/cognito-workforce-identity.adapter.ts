@@ -4,7 +4,6 @@ import {
   AdminGetUserCommand,
   AliasExistsException,
   CognitoIdentityProviderClient,
-  ListUsersCommand,
   UserNotFoundException,
   UsernameExistsException,
   type AttributeType,
@@ -13,10 +12,9 @@ import {
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type {
-  CognitoWorkforceAccount,
-  CognitoProvisionedWorkforceAccount,
-  CognitoWorkforceDirectoryPort,
-} from './workforce-directory.types.js';
+  WorkforceIdentityProviderAccount,
+  WorkforceIdentityProviderPort,
+} from '../workforce-directory/workforce-directory.types.js';
 
 function attribute(
   attributes: AttributeType[] | undefined,
@@ -26,61 +24,26 @@ function attribute(
 }
 
 @Injectable()
-export class CognitoWorkforceDirectoryAdapter implements CognitoWorkforceDirectoryPort {
+export class CognitoWorkforceIdentityAdapter implements WorkforceIdentityProviderPort {
   private readonly client: CognitoIdentityProviderClient;
   private readonly userPoolId: string;
+  readonly issuer: string;
+  readonly protocol = 'cognito' as const;
 
   constructor(config: ConfigService) {
     this.client = new CognitoIdentityProviderClient({
       region: config.getOrThrow<string>('COGNITO_REGION'),
     });
     this.userPoolId = config.getOrThrow<string>('COGNITO_USER_POOL_ID');
-  }
-
-  async listAccounts(): Promise<CognitoWorkforceAccount[]> {
-    const accounts: CognitoWorkforceAccount[] = [];
-    let paginationToken: string | undefined;
-
-    do {
-      const response = await this.client.send(
-        new ListUsersCommand({
-          UserPoolId: this.userPoolId,
-          Limit: 60,
-          PaginationToken: paginationToken,
-        }),
-      );
-
-      for (const user of response.Users ?? []) {
-        const subject = attribute(user.Attributes, 'sub');
-
-        if (!subject) {
-          continue;
-        }
-
-        accounts.push({
-          subject,
-          enabled: user.Enabled === true,
-          status: user.UserStatus ?? 'UNKNOWN',
-          createdAt: user.UserCreateDate?.toISOString() ?? null,
-          updatedAt: user.UserLastModifiedDate?.toISOString() ?? null,
-        });
-      }
-
-      paginationToken = response.PaginationToken;
-    } while (paginationToken);
-
-    return accounts;
+    this.issuer = `https://cognito-idp.${config.getOrThrow<string>('COGNITO_REGION')}.amazonaws.com/${this.userPoolId}`;
   }
 
   async provisionAccount(
     email: string,
     displayName: string,
-  ): Promise<CognitoProvisionedWorkforceAccount> {
+  ): Promise<WorkforceIdentityProviderAccount> {
     const existing = await this.getAccount(email);
-
-    if (existing) {
-      return { ...existing, created: false };
-    }
+    if (existing) return { ...existing, created: false };
 
     try {
       const response = await this.client.send(
@@ -94,20 +57,13 @@ export class CognitoWorkforceDirectoryAdapter implements CognitoWorkforceDirecto
           ],
         }),
       );
-      const account = this.toProvisionedAccount(response.User);
-
-      if (account) {
-        return { ...account, created: true };
-      }
+      const account = this.toAccount(response.User);
+      if (account) return { ...account, created: true };
 
       const created = await this.getAccount(email);
-
       if (!created) {
-        throw new Error(
-          'Cognito did not return the created workforce account.',
-        );
+        throw new Error('Identity-provider account was not returned.');
       }
-
       return { ...created, created: true };
     } catch (error) {
       if (
@@ -115,28 +71,24 @@ export class CognitoWorkforceDirectoryAdapter implements CognitoWorkforceDirecto
         error instanceof AliasExistsException
       ) {
         const racedAccount = await this.getAccount(email);
-
-        if (racedAccount) {
-          return { ...racedAccount, created: false };
-        }
+        if (racedAccount) return { ...racedAccount, created: false };
       }
-
       throw error;
     }
   }
 
-  async deleteAccount(username: string): Promise<void> {
+  async deleteAccount(externalAccountId: string): Promise<void> {
     await this.client.send(
       new AdminDeleteUserCommand({
         UserPoolId: this.userPoolId,
-        Username: username,
+        Username: externalAccountId,
       }),
     );
   }
 
   private async getAccount(
     usernameOrAlias: string,
-  ): Promise<Omit<CognitoProvisionedWorkforceAccount, 'created'> | null> {
+  ): Promise<Omit<WorkforceIdentityProviderAccount, 'created'> | null> {
     try {
       const response = await this.client.send(
         new AdminGetUserCommand({
@@ -144,41 +96,36 @@ export class CognitoWorkforceDirectoryAdapter implements CognitoWorkforceDirecto
           Username: usernameOrAlias,
         }),
       );
-      const account = this.toProvisionedAccount({
+      const account = this.toAccount({
         Username: response.Username,
         Attributes: response.UserAttributes,
         Enabled: response.Enabled,
         UserStatus: response.UserStatus,
       });
-
       if (!account) {
-        throw new Error('Cognito workforce account is missing its subject.');
+        throw new Error('Identity-provider account has no subject.');
       }
-
       return account;
     } catch (error) {
-      if (error instanceof UserNotFoundException) {
-        return null;
-      }
-
+      if (error instanceof UserNotFoundException) return null;
       throw error;
     }
   }
 
-  private toProvisionedAccount(
+  private toAccount(
     user: UserType | undefined,
-  ): Omit<CognitoProvisionedWorkforceAccount, 'created'> | null {
+  ): Omit<WorkforceIdentityProviderAccount, 'created'> | null {
     const subject = attribute(user?.Attributes, 'sub');
-
-    if (!user?.Username || !subject) {
-      return null;
-    }
+    if (!user?.Username || !subject) return null;
 
     return {
       subject,
-      username: user.Username,
-      enabled: user.Enabled === true,
-      status: user.UserStatus ?? 'UNKNOWN',
+      externalAccountId: user.Username,
+      availableForWorkforceAccess:
+        user.Enabled === true &&
+        ['FORCE_CHANGE_PASSWORD', 'CONFIRMED', 'RESET_REQUIRED'].includes(
+          user.UserStatus ?? 'UNKNOWN',
+        ),
     };
   }
 }

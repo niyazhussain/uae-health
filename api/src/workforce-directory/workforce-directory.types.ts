@@ -11,24 +11,17 @@ export interface WorkforceDirectoryMember {
   displayName: string;
   email: string | null;
   membershipStatus: 'pending' | 'active' | 'suspended' | 'revoked';
+  accountStatus: 'active' | 'suspended' | 'closed';
   identityStatus: 'active' | 'suspended' | null;
-  cognitoSubject: string | null;
+  identitySubject: string | null;
+  providerSyncStatus: 'pending' | 'synchronized' | 'failed' | null;
   isSynthetic: boolean;
 }
 
-export interface CognitoWorkforceAccount {
+export interface WorkforceIdentityProviderAccount {
   subject: string;
-  enabled: boolean;
-  status: string;
-  createdAt: string | null;
-  updatedAt: string | null;
-}
-
-export interface CognitoProvisionedWorkforceAccount {
-  subject: string;
-  username: string;
-  enabled: boolean;
-  status: string;
+  externalAccountId: string;
+  availableForWorkforceAccess: boolean;
   created: boolean;
 }
 
@@ -49,9 +42,9 @@ export interface WorkforceInvitationAuthorization {
 }
 
 export interface PersistWorkforceInvitationInput {
-  actorCognitoSubject: string;
+  actorSubject: string;
   authorization: WorkforceInvitationAuthorization;
-  account: CognitoProvisionedWorkforceAccount;
+  account: WorkforceIdentityProviderAccount;
   displayName: string;
   email: string;
   reason: string;
@@ -76,7 +69,7 @@ export interface ChangeWorkforceMembershipStatusInput {
 }
 
 export interface ChangeWorkforceMembershipStatusRepositoryInput extends ChangeWorkforceMembershipStatusInput {
-  actorCognitoSubject: string;
+  actorSubject: string;
   membershipId: string;
 }
 
@@ -126,7 +119,7 @@ export interface AssignWorkforceGlobalRoleInput {
 }
 
 export interface AssignWorkforceGlobalRoleRepositoryInput extends AssignWorkforceGlobalRoleInput {
-  actorCognitoSubject: string;
+  actorSubject: string;
   membershipId: string;
 }
 
@@ -139,7 +132,7 @@ export interface CreateWorkforceTenantLocalRoleInput {
 }
 
 export interface CreateWorkforceTenantLocalRoleRepositoryInput extends CreateWorkforceTenantLocalRoleInput {
-  actorCognitoSubject: string;
+  actorSubject: string;
 }
 
 export interface AssignWorkforceTenantLocalRoleInput {
@@ -149,7 +142,7 @@ export interface AssignWorkforceTenantLocalRoleInput {
 }
 
 export interface AssignWorkforceTenantLocalRoleRepositoryInput extends AssignWorkforceTenantLocalRoleInput {
-  actorCognitoSubject: string;
+  actorSubject: string;
   membershipId: string;
 }
 
@@ -159,7 +152,7 @@ export interface RevokeWorkforceRoleAssignmentInput {
 }
 
 export interface RevokeWorkforceRoleAssignmentRepositoryInput extends RevokeWorkforceRoleAssignmentInput {
-  actorCognitoSubject: string;
+  actorSubject: string;
   assignmentId: string;
 }
 
@@ -227,18 +220,15 @@ export interface WorkforceDirectoryUser {
   displayName: string;
   email: string | null;
   membershipStatus: WorkforceDirectoryMember['membershipStatus'];
+  accountStatus: WorkforceDirectoryMember['accountStatus'];
   identityStatus: WorkforceDirectoryMember['identityStatus'];
-  cognitoStatus: string | null;
-  cognitoEnabled: boolean | null;
-  cognitoCreatedAt: string | null;
-  cognitoUpdatedAt: string | null;
+  providerSyncStatus: WorkforceDirectoryMember['providerSyncStatus'];
   isSynthetic: boolean;
 }
 
 export interface WorkforceDirectoryResponse {
   contexts: WorkforceDirectoryContext[];
   selectedContext: WorkforceDirectoryContext;
-  cognitoStatusAvailable: boolean;
   canManageRoles: boolean;
   assignableGlobalRoles: WorkforceAssignableGlobalRole[];
   tenantLocalRoles: WorkforceTenantLocalRole[];
@@ -247,19 +237,17 @@ export interface WorkforceDirectoryResponse {
 }
 
 export interface WorkforceDirectoryRepositoryPort {
-  listManageableContexts(
-    cognitoSubject: string,
-  ): Promise<WorkforceDirectoryContext[]>;
+  listManageableContexts(subject: string): Promise<WorkforceDirectoryContext[]>;
   listMembers(
     tenantId: string,
     organizationId: string,
   ): Promise<WorkforceDirectoryMember[]>;
   authorizeInvitation(
-    cognitoSubject: string,
+    subject: string,
     organizationId: string,
   ): Promise<WorkforceInvitationAuthorization | null>;
   authorizeRoleManagement(
-    cognitoSubject: string,
+    subject: string,
     organizationId: string,
   ): Promise<WorkforceInvitationAuthorization | null>;
   listRoleAssignments(
@@ -269,7 +257,7 @@ export interface WorkforceDirectoryRepositoryPort {
   listAssignableGlobalRoles(): Promise<WorkforceAssignableGlobalRole[]>;
   listTenantLocalRoles(tenantId: string): Promise<WorkforceTenantLocalRole[]>;
   listDelegablePermissions(): Promise<WorkforceDelegablePermission[]>;
-  isCognitoSubjectBound(cognitoSubject: string): Promise<boolean>;
+  isIdentitySubjectBound(subject: string): Promise<boolean>;
   persistInvitation(
     input: PersistWorkforceInvitationInput,
   ): Promise<WorkforceInvitationResponse>;
@@ -290,11 +278,12 @@ export interface WorkforceDirectoryRepositoryPort {
   ): Promise<WorkforceRoleAssignment>;
 }
 
-export interface CognitoWorkforceDirectoryPort {
-  listAccounts(): Promise<CognitoWorkforceAccount[]>;
+export interface WorkforceIdentityProviderPort {
+  readonly issuer: string;
+  readonly protocol: 'cognito' | 'oidc' | 'saml';
   provisionAccount(
     email: string,
     displayName: string,
-  ): Promise<CognitoProvisionedWorkforceAccount>;
-  deleteAccount(username: string): Promise<void>;
+  ): Promise<WorkforceIdentityProviderAccount>;
+  deleteAccount(externalAccountId: string): Promise<void>;
 }

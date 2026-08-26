@@ -1,8 +1,8 @@
-import { Injectable } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+import { Inject, Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { sql, type Kysely, type Transaction } from 'kysely';
 import { DatabaseService } from '../database/database.service.js';
+import { WORKFORCE_IDENTITY_PROVIDER } from './workforce-directory.constants.js';
 import type { DatabaseSchema } from '../database/database.types.js';
 import type {
   AssignWorkforceGlobalRoleRepositoryInput,
@@ -18,6 +18,7 @@ import type {
   WorkforceDirectoryRepositoryPort,
   WorkforceInvitationAuthorization,
   WorkforceInvitationResponse,
+  WorkforceIdentityProviderPort,
   WorkforceMembershipStatusResponse,
   WorkforceRoleAssignment,
   WorkforceTenantLocalRole,
@@ -46,8 +47,10 @@ interface MemberRow {
   display_name: string;
   primary_email: string | null;
   membership_status: WorkforceDirectoryMember['membershipStatus'];
+  account_status: WorkforceDirectoryMember['accountStatus'];
   identity_status: WorkforceDirectoryMember['identityStatus'];
-  cognito_subject: string | null;
+  identity_subject: string | null;
+  provider_sync_status: WorkforceDirectoryMember['providerSyncStatus'];
   is_synthetic: boolean;
 }
 
@@ -111,19 +114,20 @@ function isUniqueViolation(error: unknown): boolean {
 
 @Injectable()
 export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositoryPort {
-  private readonly cognitoIssuer: string;
+  private readonly providerIssuer: string;
+  private readonly providerProtocol: WorkforceIdentityProviderPort['protocol'];
 
   constructor(
     private readonly database: DatabaseService,
-    config: ConfigService,
+    @Inject(WORKFORCE_IDENTITY_PROVIDER)
+    identityProvider: WorkforceIdentityProviderPort,
   ) {
-    const region = config.getOrThrow<string>('COGNITO_REGION');
-    const userPoolId = config.getOrThrow<string>('COGNITO_USER_POOL_ID');
-    this.cognitoIssuer = `https://cognito-idp.${region}.amazonaws.com/${userPoolId}`;
+    this.providerIssuer = identityProvider.issuer;
+    this.providerProtocol = identityProvider.protocol;
   }
 
   async listManageableContexts(
-    cognitoSubject: string,
+    subject: string,
   ): Promise<WorkforceDirectoryContext[]> {
     const result = await sql<ContextRow>`
       with recursive resolved_actors as (
@@ -133,9 +137,9 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
           on connection.id = identity.identity_connection_id
         join application_users actor
           on actor.id = identity.application_user_id
-        where identity.subject = ${cognitoSubject}
+        where identity.subject = ${subject}
           and identity.status = 'active'
-          and connection.issuer = ${this.cognitoIssuer}
+          and connection.issuer = ${this.providerIssuer}
           and connection.status = 'active'
           and actor.status = 'active'
       ),
@@ -220,15 +224,17 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
         application_user.display_name,
         application_user.primary_email,
         membership.status as membership_status,
+        application_user.status as account_status,
         identity.status as identity_status,
-        identity.subject as cognito_subject,
+        identity.subject as identity_subject,
+        identity.provider_sync_status,
         application_user.is_synthetic
       from organization_memberships membership
       join application_users application_user
         on application_user.id = membership.application_user_id
       left join identity_connections connection
         on connection.tenant_id = membership.tenant_id
-       and connection.issuer = ${this.cognitoIssuer}
+       and connection.issuer = ${this.providerIssuer}
       left join user_identities identity
         on identity.application_user_id = application_user.id
        and identity.identity_connection_id = connection.id
@@ -243,8 +249,10 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
       displayName: row.display_name,
       email: row.primary_email,
       membershipStatus: row.membership_status,
+      accountStatus: row.account_status,
       identityStatus: row.identity_status,
-      cognitoSubject: row.cognito_subject,
+      identitySubject: row.identity_subject,
+      providerSyncStatus: row.provider_sync_status,
       isSynthetic: row.is_synthetic,
     }));
   }
@@ -404,30 +412,30 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
   }
 
   authorizeInvitation(
-    cognitoSubject: string,
+    subject: string,
     organizationId: string,
   ): Promise<WorkforceInvitationAuthorization | null> {
     return this.findOrganizationPermissionAuthorization(
       this.database.client,
-      cognitoSubject,
+      subject,
       organizationId,
       'tenant.memberships.manage',
     );
   }
 
   authorizeRoleManagement(
-    cognitoSubject: string,
+    subject: string,
     organizationId: string,
   ): Promise<WorkforceInvitationAuthorization | null> {
     return this.findOrganizationPermissionAuthorization(
       this.database.client,
-      cognitoSubject,
+      subject,
       organizationId,
       'tenant.roles.manage',
     );
   }
 
-  async isCognitoSubjectBound(cognitoSubject: string): Promise<boolean> {
+  async isIdentitySubjectBound(subject: string): Promise<boolean> {
     const binding = await this.database.client
       .selectFrom('user_identities as identity')
       .innerJoin(
@@ -436,8 +444,8 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
         'identity.identity_connection_id',
       )
       .select('identity.id')
-      .where('connection.issuer', '=', this.cognitoIssuer)
-      .where('identity.subject', '=', cognitoSubject)
+      .where('connection.issuer', '=', this.providerIssuer)
+      .where('identity.subject', '=', subject)
       .executeTakeFirst();
 
     return binding !== undefined;
@@ -454,7 +462,7 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
           const currentAuthorization =
             await this.findOrganizationPermissionAuthorization(
               trx,
-              input.actorCognitoSubject,
+              input.actorSubject,
               input.authorization.organizationId,
               'tenant.memberships.manage',
             );
@@ -472,14 +480,14 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
             .selectFrom('identity_connections')
             .select('id')
             .where('tenant_id', '=', currentAuthorization.tenantId)
-            .where('issuer', '=', this.cognitoIssuer)
-            .where('protocol', '=', 'cognito')
+            .where('issuer', '=', this.providerIssuer)
+            .where('protocol', '=', this.providerProtocol)
             .where('status', '=', 'active')
             .execute();
 
           if (targetConnections.length !== 1) {
             throw new Error(
-              'The tenant must have exactly one active Cognito identity connection for this issuer.',
+              'The tenant must have exactly one active native identity connection for this issuer.',
             );
           }
 
@@ -500,7 +508,7 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
               'application_user.status as application_user_status',
               'identity.status as identity_status',
             ])
-            .where('connection.issuer', '=', this.cognitoIssuer)
+            .where('connection.issuer', '=', this.providerIssuer)
             .where('identity.subject', '=', input.account.subject)
             .execute();
           const existingApplicationUserIds = new Set(
@@ -509,7 +517,7 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
 
           if (existingApplicationUserIds.size > 1) {
             throw new Error(
-              'The Cognito subject resolves to multiple application users.',
+              'The identity subject resolves to multiple application users.',
             );
           }
 
@@ -567,6 +575,10 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
                 identity_connection_id: targetConnectionId,
                 subject: input.account.subject,
                 status: 'active',
+                provider_sync_status: 'synchronized',
+                provider_sync_attempted_at: new Date(),
+                provider_sync_completed_at: new Date(),
+                provider_sync_error_code: null,
                 last_authenticated_at: null,
               })
               .execute();
@@ -603,7 +615,7 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
             .insertInto('audit_events')
             .values({
               actor_type: 'user',
-              actor_identifier: input.actorCognitoSubject,
+              actor_identifier: input.actorSubject,
               actor_user_id: currentAuthorization.actorUserId,
               effective_user_id: currentAuthorization.actorUserId,
               tenant_id: currentAuthorization.tenantId,
@@ -618,7 +630,7 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
               before_data: null,
               after_data: {
                 membershipStatus: 'active',
-                cognitoAccountCreated: input.account.created,
+                providerAccountCreated: input.account.created,
                 roleAssigned: false,
               },
             })
@@ -663,7 +675,7 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
         const authorization =
           await this.findOrganizationPermissionAuthorization(
             trx,
-            input.actorCognitoSubject,
+            input.actorSubject,
             input.organizationId,
             'tenant.memberships.manage',
           );
@@ -738,7 +750,7 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
               '=',
               membership.application_user_id,
             )
-            .where('connection.issuer', '=', this.cognitoIssuer)
+            .where('connection.issuer', '=', this.providerIssuer)
             .execute();
           const subjects = identities.map((identity) => identity.subject);
 
@@ -757,7 +769,7 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
           .insertInto('audit_events')
           .values({
             actor_type: 'user',
-            actor_identifier: input.actorCognitoSubject,
+            actor_identifier: input.actorSubject,
             actor_user_id: authorization.actorUserId,
             effective_user_id: authorization.actorUserId,
             tenant_id: authorization.tenantId,
@@ -800,7 +812,7 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
           const authorization =
             await this.findOrganizationPermissionAuthorization(
               trx,
-              input.actorCognitoSubject,
+              input.actorSubject,
               input.organizationId,
               'tenant.roles.manage',
             );
@@ -869,7 +881,7 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
             .insertInto('audit_events')
             .values({
               actor_type: 'user',
-              actor_identifier: input.actorCognitoSubject,
+              actor_identifier: input.actorSubject,
               actor_user_id: authorization.actorUserId,
               effective_user_id: authorization.actorUserId,
               tenant_id: authorization.tenantId,
@@ -948,7 +960,7 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
           const authorization =
             await this.findOrganizationPermissionAuthorization(
               trx,
-              input.actorCognitoSubject,
+              input.actorSubject,
               input.organizationId,
               'tenant.roles.manage',
             );
@@ -1084,7 +1096,7 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
             .insertInto('audit_events')
             .values({
               actor_type: 'user',
-              actor_identifier: input.actorCognitoSubject,
+              actor_identifier: input.actorSubject,
               actor_user_id: authorization.actorUserId,
               effective_user_id: membership.application_user_id,
               tenant_id: authorization.tenantId,
@@ -1145,7 +1157,7 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
         const authorization =
           await this.findOrganizationPermissionAuthorization(
             trx,
-            input.actorCognitoSubject,
+            input.actorSubject,
             input.organizationId,
             'tenant.roles.manage',
           );
@@ -1255,7 +1267,7 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
           .insertInto('audit_events')
           .values({
             actor_type: 'user',
-            actor_identifier: input.actorCognitoSubject,
+            actor_identifier: input.actorSubject,
             actor_user_id: authorization.actorUserId,
             effective_user_id: assignment.application_user_id,
             tenant_id: authorization.tenantId,
@@ -1289,7 +1301,7 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
 
   private async findOrganizationPermissionAuthorization(
     executor: DatabaseExecutor,
-    cognitoSubject: string,
+    subject: string,
     organizationId: string,
     permissionCode: string,
   ): Promise<WorkforceInvitationAuthorization | null> {
@@ -1301,9 +1313,9 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
           on connection.id = identity.identity_connection_id
         join application_users actor
           on actor.id = identity.application_user_id
-        where identity.subject = ${cognitoSubject}
+        where identity.subject = ${subject}
           and identity.status = 'active'
-          and connection.issuer = ${this.cognitoIssuer}
+          and connection.issuer = ${this.providerIssuer}
           and connection.status = 'active'
           and actor.status = 'active'
       ),

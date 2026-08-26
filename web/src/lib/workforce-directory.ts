@@ -13,11 +13,9 @@ export interface WorkforceDirectoryUser {
   displayName: string;
   email: string | null;
   membershipStatus: "pending" | "active" | "suspended" | "revoked";
+  accountStatus: "active" | "suspended" | "closed";
   identityStatus: "active" | "suspended" | null;
-  cognitoStatus: string | null;
-  cognitoEnabled: boolean | null;
-  cognitoCreatedAt: string | null;
-  cognitoUpdatedAt: string | null;
+  providerSyncStatus: "pending" | "synchronized" | "failed" | null;
   isSynthetic: boolean;
 }
 
@@ -56,7 +54,6 @@ export interface WorkforceTenantLocalRole {
 export interface WorkforceDirectoryResponse {
   contexts: WorkforceDirectoryContext[];
   selectedContext: WorkforceDirectoryContext;
-  cognitoStatusAvailable: boolean;
   canManageRoles: boolean;
   assignableGlobalRoles: WorkforceAssignableGlobalRole[];
   tenantLocalRoles: WorkforceTenantLocalRole[];
@@ -173,7 +170,6 @@ export async function getWorkforceDirectory(
 
   return {
     ...directory,
-    cognitoStatusAvailable: directory.cognitoStatusAvailable ?? true,
     assignableGlobalRoles: directory.assignableGlobalRoles ?? [],
     tenantLocalRoles: directory.tenantLocalRoles ?? [],
     delegablePermissions: directory.delegablePermissions ?? [],

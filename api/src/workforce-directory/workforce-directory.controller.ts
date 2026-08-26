@@ -70,7 +70,7 @@ export class WorkforceDirectoryController {
     summary: 'Invite a native workforce user into an authorized practice',
   })
   @ApiCreatedResponse({
-    description: 'The Cognito account and active practice membership.',
+    description: 'The external account and active practice membership.',
   })
   @ApiUnauthorizedResponse({ description: 'An active session is required.' })
   @ApiForbiddenResponse({
@@ -80,7 +80,8 @@ export class WorkforceDirectoryController {
     description: 'The identity is disabled, conflicting, or already a member.',
   })
   @ApiServiceUnavailableResponse({
-    description: 'Cognito or HIS persistence is temporarily unavailable.',
+    description:
+      'Identity-provider or HIS persistence is temporarily unavailable.',
   })
   createInvitation(
     @CurrentPrincipal() principal: AuthenticatedPrincipal,

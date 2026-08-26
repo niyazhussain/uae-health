@@ -59,13 +59,11 @@ interface WorkforceDirectoryProps {
   onSessionExpired: () => void;
 }
 
-function statusBadge(
-  user: WorkforceDirectoryUser,
-  cognitoStatusAvailable: boolean,
-) {
+function statusBadge(user: WorkforceDirectoryUser) {
   if (
     user.membershipStatus === "suspended" ||
-    (cognitoStatusAvailable && user.cognitoEnabled === false)
+    user.accountStatus === "suspended" ||
+    user.accountStatus === "closed"
   ) {
     return (
       <Badge variant="destructive">
@@ -75,12 +73,7 @@ function statusBadge(
     );
   }
 
-  if (
-    user.membershipStatus === "pending" ||
-    (cognitoStatusAvailable &&
-      (!user.cognitoStatus ||
-        user.cognitoStatus === "FORCE_CHANGE_PASSWORD"))
-  ) {
+  if (user.membershipStatus === "pending") {
     return (
       <Badge variant="warning">
         <WarningCircleIcon />
@@ -89,10 +82,7 @@ function statusBadge(
     );
   }
 
-  if (
-    user.membershipStatus === "active" &&
-    user.cognitoStatus === "CONFIRMED"
-  ) {
+  if (user.membershipStatus === "active" && user.accountStatus === "active") {
     return (
       <Badge variant="success">
         <CheckCircleIcon />
@@ -229,7 +219,8 @@ export function WorkforceDirectory({
         user.displayName,
         user.email ?? "",
         user.membershipStatus,
-        user.cognitoStatus ?? "",
+        user.accountStatus,
+        user.providerSyncStatus ?? "",
       ]
         .join(" ")
         .toLocaleLowerCase()
@@ -270,7 +261,7 @@ export function WorkforceDirectory({
       });
       setInviteSuccess(
         result.accountCreated
-          ? `Cognito accepted the invitation for ${result.email}. Practice access is active with no role assigned.`
+          ? `The identity provider accepted the invitation for ${result.email}. Practice access is active with no role assigned.`
           : `The existing account for ${result.email} now has practice access. No role was assigned.`,
       );
       setInviteDisplayName("");
@@ -555,7 +546,7 @@ export function WorkforceDirectory({
             Workforce directory
           </h1>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground sm:text-base">
-            Review practice membership and Cognito account readiness. Access is
+            Review practice membership and account readiness. Access is
             limited to your current administrative scope.
           </p>
         </div>
@@ -596,8 +587,7 @@ export function WorkforceDirectory({
                     directory.users.filter(
                       (user) =>
                         user.membershipStatus === "active" &&
-                        user.cognitoEnabled &&
-                        user.cognitoStatus === "CONFIRMED",
+                        user.accountStatus === "active",
                     ).length
                   }
                 </p>
@@ -762,13 +752,6 @@ export function WorkforceDirectory({
           </div>
         )}
 
-        {!loading && !error && !directory?.cognitoStatusAvailable && (
-          <div className="border-b border-warning/30 bg-warning/10 px-5 py-3 text-sm text-warning-foreground">
-            Cognito account status is temporarily unavailable. Practice access
-            and role assignments below are current database-authoritative data.
-          </div>
-        )}
-
         {!loading && !error && visibleUsers.length > 0 && (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[64rem] text-start text-sm">
@@ -777,7 +760,7 @@ export function WorkforceDirectory({
                   <th className="px-5 py-3 text-start font-medium">User</th>
                   <th className="px-5 py-3 text-start font-medium">Access</th>
                   <th className="px-5 py-3 text-start font-medium">Roles</th>
-                  <th className="px-5 py-3 text-start font-medium">Cognito</th>
+                  <th className="px-5 py-3 text-start font-medium">Account</th>
                   <th className="px-5 py-3 text-start font-medium">Data</th>
                   <th className="px-5 py-3 text-end font-medium">Actions</th>
                 </tr>
@@ -802,10 +785,7 @@ export function WorkforceDirectory({
                       </div>
                     </td>
                     <td className="px-5 py-4">
-                      {statusBadge(
-                        user,
-                        directory?.cognitoStatusAvailable ?? true,
-                      )}
+                      {statusBadge(user)}
                     </td>
                     <td className="px-5 py-4">
                       {!Array.isArray(user.roleAssignments) ? (
@@ -830,11 +810,11 @@ export function WorkforceDirectory({
                       )}
                     </td>
                     <td className="px-5 py-4">
-                      <p>{user.cognitoStatus ?? "Not linked"}</p>
+                      <p>{user.accountStatus}</p>
                       <p className="mt-0.5 text-xs text-muted-foreground">
                         {user.identityStatus
-                          ? `Identity ${user.identityStatus}`
-                          : "No Cognito identity binding"}
+                          ? `Identity ${user.identityStatus} · Provider sync ${user.providerSyncStatus ?? "unknown"}`
+                          : "No identity binding"}
                       </p>
                     </td>
                     <td className="px-5 py-4">
@@ -901,7 +881,7 @@ export function WorkforceDirectory({
             <DialogHeader>
               <DialogTitle>Invite workforce user</DialogTitle>
               <DialogDescription>
-                Cognito sends the initial sign-in email. The user must set a
+                The configured identity provider sends the initial sign-in email. The user must set a
                 password and enroll an authenticator before signing in.
               </DialogDescription>
             </DialogHeader>
@@ -1005,7 +985,7 @@ export function WorkforceDirectory({
               <DialogDescription>
                 Build an administrator-assigned role for this tenant from the
                 approved delegable permission catalogue. Facility scope, role
-                requests, and Cognito changes are not part of this action.
+                requests, and identity-provider changes are not part of this action.
               </DialogDescription>
             </DialogHeader>
 
@@ -1160,7 +1140,7 @@ export function WorkforceDirectory({
               <DialogTitle>Manage practice roles</DialogTitle>
               <DialogDescription>
                 Assign approved global or tenant-local roles for this practice,
-                or remove an existing eligible role. Cognito sign-in and other
+                or remove an existing eligible role. Sign-in and other
                 practice access are unchanged.
               </DialogDescription>
             </DialogHeader>
@@ -1311,7 +1291,7 @@ export function WorkforceDirectory({
               </DialogTitle>
               <DialogDescription>
                 {membershipChangeTarget?.membershipStatus === "active"
-                  ? "This removes access to this practice and immediately revokes the user's active application sessions. Their Cognito account and other practice access are unchanged."
+                  ? "This removes access to this practice and immediately revokes the user's active application sessions. Their external account and other practice access are unchanged."
                   : "This restores access only to this practice. It does not create any new roles or facility access."}
               </DialogDescription>
             </DialogHeader>

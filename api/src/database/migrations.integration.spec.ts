@@ -9,6 +9,7 @@ import * as createFacilities from './migrations/2026-08-23T000000_create_facilit
 import * as createIdentityAuthorizationAudit from './migrations/2026-08-24T000000_create_identity_authorization_audit.js';
 import * as createWorkforceSessions from './migrations/2026-08-24T010000_create_workforce_sessions.js';
 import * as addTenantLocalRoleNameUniqueness from './migrations/2026-08-26T000000_add_tenant_local_role_name_uniqueness.js';
+import * as addIdentityProviderSyncStatus from './migrations/2026-08-26T010000_add_identity_provider_sync_status.js';
 
 const databaseUrl = process.env.DATABASE_URL;
 const describeWithDatabase = databaseUrl ? describe : describe.skip;
@@ -38,10 +39,12 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
     await createIdentityAuthorizationAudit.up(database);
     await createWorkforceSessions.up(database);
     await addTenantLocalRoleNameUniqueness.up(database);
+    await addIdentityProviderSyncStatus.up(database);
   });
 
   afterAll(async () => {
     if (database) {
+      await addIdentityProviderSyncStatus.down(database);
       await addTenantLocalRoleNameUniqueness.down(database);
       await createWorkforceSessions.down(database);
       await createIdentityAuthorizationAudit.down(database);

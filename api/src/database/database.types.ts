@@ -5,6 +5,7 @@ export type OrganizationKind = 'group' | 'practice';
 export type UserStatus = 'active' | 'suspended' | 'closed';
 export type IdentityProtocol = 'cognito' | 'oidc' | 'saml';
 export type IdentityStatus = 'active' | 'suspended';
+export type ProviderSyncStatus = 'pending' | 'synchronized' | 'failed';
 export type MembershipStatus = 'pending' | 'active' | 'suspended' | 'revoked';
 export type ProvisioningMethod = 'admin_invite' | 'jit' | 'scim';
 export type RoleRequestPolicy = 'admin_only' | 'approval_required';
@@ -80,6 +81,10 @@ export interface UserIdentityTable {
   identity_connection_id: string;
   subject: string;
   status: Generated<IdentityStatus>;
+  provider_sync_status: Generated<ProviderSyncStatus>;
+  provider_sync_attempted_at: Date | null;
+  provider_sync_completed_at: Date | null;
+  provider_sync_error_code: string | null;
   last_authenticated_at: Date | null;
   created_at: Generated<Date>;
   updated_at: Generated<Date>;

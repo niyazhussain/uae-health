@@ -60,9 +60,9 @@ The platform SHALL emit structured logs, metrics, and traces while redacting sec
 - **WHEN** patient-supplied data fails validation
 - **THEN** operational telemetry records the safe error classification and correlation identifier without logging the prohibited field contents
 
-#### Scenario: Cognito status reconciliation is unavailable
-- **WHEN** a workforce-directory request cannot complete its read-only Cognito account-status reconciliation
-- **THEN** operational telemetry records only the safe dependency and outcome classification, without provider diagnostics, credentials, tokens, session identifiers, or MFA data
+#### Scenario: Identity-provider lifecycle command completes
+- **WHEN** a backend identity-provider lifecycle command succeeds or fails
+- **THEN** operational telemetry records only the configured provider, safe outcome, and error classification without provider diagnostics, credentials, tokens, session identifiers, or MFA data
 
 ### Requirement: Monitor service health and failure signals
 The platform SHALL provide observable signals for availability, latency, error rate, database health, worker backlog, job failures, integration failures, storage failures, backup status, and certificate expiry.

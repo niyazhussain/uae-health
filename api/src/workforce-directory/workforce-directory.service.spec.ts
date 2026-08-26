@@ -14,7 +14,7 @@ import {
   WorkforceRoleManagementAuthorizationLostError,
   WorkforceTenantLocalRoleConflictError,
   WorkforceInvitationAuthorizationLostError,
-  type CognitoWorkforceDirectoryPort,
+  type WorkforceIdentityProviderPort,
   type WorkforceDirectoryRepositoryPort,
 } from './workforce-directory.types.js';
 
@@ -81,8 +81,10 @@ function createDependencies() {
       displayName: 'Synthetic Practice Administrator',
       email: 'practice.admin@example.invalid',
       membershipStatus: 'active',
+      accountStatus: 'active',
       identityStatus: 'active',
-      cognitoSubject: 'admin-subject',
+      identitySubject: 'admin-subject',
+      providerSyncStatus: 'synchronized',
       isSynthetic: true,
     },
     {
@@ -91,8 +93,10 @@ function createDependencies() {
       displayName: 'Pending Synthetic User',
       email: 'pending.user@example.invalid',
       membershipStatus: 'pending',
+      accountStatus: 'active',
       identityStatus: null,
-      cognitoSubject: null,
+      identitySubject: null,
+      providerSyncStatus: null,
       isSynthetic: true,
     },
   ]);
@@ -125,7 +129,7 @@ function createDependencies() {
   const listDelegablePermissions = jest
     .fn()
     .mockResolvedValue(tenantLocalRole.permissions);
-  const isCognitoSubjectBound = jest.fn().mockResolvedValue(false);
+  const isIdentitySubjectBound = jest.fn().mockResolvedValue(false);
   const persistInvitation = jest.fn().mockResolvedValue({
     applicationUserId: '30000000-0000-4000-8000-000000000003',
     membershipId: '60000000-0000-4000-8000-000000000003',
@@ -156,7 +160,7 @@ function createDependencies() {
     listAssignableGlobalRoles,
     listTenantLocalRoles,
     listDelegablePermissions,
-    isCognitoSubjectBound,
+    isIdentitySubjectBound,
     persistInvitation,
     changeMembershipStatus,
     assignGlobalRole,
@@ -164,25 +168,16 @@ function createDependencies() {
     assignTenantLocalRole,
     revokeRoleAssignment,
   };
-  const listAccounts = jest.fn().mockResolvedValue([
-    {
-      subject: 'admin-subject',
-      enabled: true,
-      status: 'CONFIRMED',
-      createdAt: '2026-08-24T10:00:00.000Z',
-      updatedAt: '2026-08-24T10:30:00.000Z',
-    },
-  ]);
   const provisionAccount = jest.fn().mockResolvedValue({
     subject: 'invited-subject',
-    username: 'invited-cognito-username',
-    enabled: true,
-    status: 'FORCE_CHANGE_PASSWORD',
+    externalAccountId: 'invited-provider-account',
+    availableForWorkforceAccess: true,
     created: true,
   });
   const deleteAccount = jest.fn().mockResolvedValue(undefined);
-  const cognito: CognitoWorkforceDirectoryPort = {
-    listAccounts,
+  const cognito: WorkforceIdentityProviderPort = {
+    issuer: 'https://identity-provider.example.invalid/native',
+    protocol: 'cognito',
     provisionAccount,
     deleteAccount,
   };
@@ -192,14 +187,13 @@ function createDependencies() {
     cognito,
     listManageableContexts,
     listMembers,
-    listAccounts,
     authorizeInvitation,
     authorizeRoleManagement,
     listRoleAssignments,
     listAssignableGlobalRoles,
     listTenantLocalRoles,
     listDelegablePermissions,
-    isCognitoSubjectBound,
+    isIdentitySubjectBound,
     persistInvitation,
     changeMembershipStatus,
     assignGlobalRole,
@@ -234,7 +228,6 @@ describe('WorkforceDirectoryService', () => {
         organizationId: '20000000-0000-4000-8000-000000000001',
         organizationName: 'Synthetic Care Practice',
       },
-      cognitoStatusAvailable: true,
       canManageRoles: true,
       assignableGlobalRoles: [
         {
@@ -255,11 +248,9 @@ describe('WorkforceDirectoryService', () => {
           displayName: 'Synthetic Practice Administrator',
           email: 'practice.admin@example.invalid',
           membershipStatus: 'active',
+          accountStatus: 'active',
           identityStatus: 'active',
-          cognitoStatus: 'CONFIRMED',
-          cognitoEnabled: true,
-          cognitoCreatedAt: '2026-08-24T10:00:00.000Z',
-          cognitoUpdatedAt: '2026-08-24T10:30:00.000Z',
+          providerSyncStatus: 'synchronized',
           isSynthetic: true,
         },
         {
@@ -270,11 +261,9 @@ describe('WorkforceDirectoryService', () => {
           displayName: 'Pending Synthetic User',
           email: 'pending.user@example.invalid',
           membershipStatus: 'pending',
+          accountStatus: 'active',
           identityStatus: null,
-          cognitoStatus: null,
-          cognitoEnabled: null,
-          cognitoCreatedAt: null,
-          cognitoUpdatedAt: null,
+          providerSyncStatus: null,
           isSynthetic: true,
         },
       ],
@@ -283,7 +272,7 @@ describe('WorkforceDirectoryService', () => {
   });
 
   it('fails closed when the requested organization is outside actor scope', async () => {
-    const { repository, cognito, listMembers, listAccounts } =
+    const { repository, cognito, listMembers, provisionAccount } =
       createDependencies();
     const service = new WorkforceDirectoryService(repository, cognito);
 
@@ -291,26 +280,22 @@ describe('WorkforceDirectoryService', () => {
       service.getDirectory(principal, '20000000-0000-4000-8000-000000000099'),
     ).rejects.toBeInstanceOf(ForbiddenException);
     expect(listMembers).not.toHaveBeenCalled();
-    expect(listAccounts).not.toHaveBeenCalled();
+    expect(provisionAccount).not.toHaveBeenCalled();
   });
 
-  it('returns database-authoritative roles when Cognito status cannot be read', async () => {
-    const { repository, cognito } = createDependencies();
-    cognito.listAccounts = jest
-      .fn()
-      .mockRejectedValue(new Error('AWS diagnostic details'));
+  it('lists database-authoritative users without calling the identity provider', async () => {
+    const { repository, cognito, provisionAccount } = createDependencies();
     const service = new WorkforceDirectoryService(repository, cognito);
 
     const directory = await service.getDirectory(principal);
 
-    expect(directory.cognitoStatusAvailable).toBe(false);
+    expect(provisionAccount).not.toHaveBeenCalled();
     expect(directory.users).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           membershipId: '60000000-0000-4000-8000-000000000001',
           roleAssignments: [],
-          cognitoStatus: null,
-          cognitoEnabled: null,
+          providerSyncStatus: 'synchronized',
         }),
       ]),
     );
@@ -345,7 +330,7 @@ describe('WorkforceDirectoryService', () => {
     );
     expect(persistInvitation).toHaveBeenCalledWith(
       expect.objectContaining({
-        actorCognitoSubject: principal.subject,
+        actorSubject: principal.subject,
         displayName: invitationInput.displayName,
         email: invitationInput.email,
         reason: invitationInput.reason,
@@ -375,7 +360,7 @@ describe('WorkforceDirectoryService', () => {
     await expect(
       service.createInvitation(principal, invitationInput),
     ).rejects.toBeInstanceOf(ServiceUnavailableException);
-    expect(deleteAccount).toHaveBeenCalledWith('invited-cognito-username');
+    expect(deleteAccount).toHaveBeenCalledWith('invited-provider-account');
   });
 
   it('never deletes a pre-existing Cognito account after a HIS conflict', async () => {
@@ -407,7 +392,7 @@ describe('WorkforceDirectoryService', () => {
       repository,
       cognito,
       persistInvitation,
-      isCognitoSubjectBound,
+      isIdentitySubjectBound,
       deleteAccount,
     } = createDependencies();
     persistInvitation.mockRejectedValue(new WorkforceMembershipConflictError());
@@ -416,7 +401,7 @@ describe('WorkforceDirectoryService', () => {
     await expect(
       service.createInvitation(principal, invitationInput),
     ).rejects.toBeInstanceOf(ConflictException);
-    expect(isCognitoSubjectBound).not.toHaveBeenCalled();
+    expect(isIdentitySubjectBound).not.toHaveBeenCalled();
     expect(deleteAccount).not.toHaveBeenCalled();
   });
 
@@ -425,11 +410,11 @@ describe('WorkforceDirectoryService', () => {
       repository,
       cognito,
       persistInvitation,
-      isCognitoSubjectBound,
+      isIdentitySubjectBound,
       deleteAccount,
     } = createDependencies();
     persistInvitation.mockRejectedValue(new Error('database unavailable'));
-    isCognitoSubjectBound.mockResolvedValue(true);
+    isIdentitySubjectBound.mockResolvedValue(true);
     const service = new WorkforceDirectoryService(repository, cognito);
 
     await expect(
@@ -495,7 +480,7 @@ describe('WorkforceDirectoryService', () => {
       sessionsRevoked: 2,
     });
     expect(changeMembershipStatus).toHaveBeenCalledWith({
-      actorCognitoSubject: principal.subject,
+      actorSubject: principal.subject,
       membershipId: '60000000-0000-4000-8000-000000000002',
       organizationId: invitationInput.organizationId,
       status: 'suspended',
@@ -561,7 +546,7 @@ describe('WorkforceDirectoryService', () => {
       }),
     ).resolves.toEqual(roleAssignment);
     expect(assignGlobalRole).toHaveBeenCalledWith({
-      actorCognitoSubject: principal.subject,
+      actorSubject: principal.subject,
       membershipId: roleAssignment.membershipId,
       organizationId: invitationInput.organizationId,
       roleId: roleAssignment.roleId,
@@ -603,7 +588,7 @@ describe('WorkforceDirectoryService', () => {
       }),
     ).resolves.toEqual(tenantLocalRole);
     expect(createTenantLocalRole).toHaveBeenCalledWith({
-      actorCognitoSubject: principal.subject,
+      actorSubject: principal.subject,
       organizationId: invitationInput.organizationId,
       name: tenantLocalRole.name,
       description: tenantLocalRole.description,
@@ -648,7 +633,7 @@ describe('WorkforceDirectoryService', () => {
       }),
     ).resolves.toEqual(tenantLocalRoleAssignment);
     expect(assignTenantLocalRole).toHaveBeenCalledWith({
-      actorCognitoSubject: principal.subject,
+      actorSubject: principal.subject,
       membershipId: roleAssignment.membershipId,
       organizationId: invitationInput.organizationId,
       roleId: tenantLocalRole.roleId,

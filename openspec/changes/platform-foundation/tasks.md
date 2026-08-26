@@ -39,6 +39,7 @@
 - [ ] 3.3 Implement facility-scoped API authorization, confidential-record controls, approval limits, and access-denied auditing.
 - [ ] 3.4 Implement administrator-managed tenant OIDC/SAML connections, federated JIT provisioning, non-SSO invitation/approval, and immutable-issuer/subject account linking for Entra ID, Okta, and future approved providers without email-based automatic merging.
 - [ ] 3.4a Implement an HIS-owned, tenant-scoped SCIM 2.0 user and group provisioning service with membership-specific suspension, idempotent synchronization, protected credentials, and no direct permission grant from SCIM claims.
+- [x] 3.4b Refactor workforce authentication to a provider-neutral identity boundary with Cognito as the initial dedicated adapter, HIS-owned account lifecycle and persisted provider-sync status after backend-only lifecycle calls, approved parallel provider transitions and immutable-identity linking for Okta, Entra ID, and future providers, and documented password/MFA migration paths without copying credential material or merging by email.
 - [ ] 3.5 Define and implement a separate patient Cognito identity boundary and an auditable patient-portal-account-to-clinical-record linking workflow, supporting real email or phone sign-in and optional WhatsApp phone-control verification without email-based workforce/patient merging.
 
 ## 4. Deploy a disposable fake-data demonstration

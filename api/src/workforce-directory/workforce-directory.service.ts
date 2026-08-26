@@ -3,12 +3,11 @@ import {
   ForbiddenException,
   Inject,
   Injectable,
-  Logger,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import type { AuthenticatedPrincipal } from '../auth/auth.types.js';
 import {
-  COGNITO_WORKFORCE_DIRECTORY,
+  WORKFORCE_IDENTITY_PROVIDER,
   WORKFORCE_DIRECTORY_REPOSITORY,
 } from './workforce-directory.constants.js';
 import type {
@@ -17,8 +16,7 @@ import type {
   ChangeWorkforceMembershipStatusInput,
   CreateWorkforceTenantLocalRoleInput,
   CreateWorkforceInvitationInput,
-  CognitoWorkforceAccount,
-  CognitoWorkforceDirectoryPort,
+  WorkforceIdentityProviderPort,
   RevokeWorkforceRoleAssignmentInput,
   WorkforceDirectoryRepositoryPort,
   WorkforceDirectoryResponse,
@@ -40,13 +38,11 @@ import {
 
 @Injectable()
 export class WorkforceDirectoryService {
-  private readonly logger = new Logger(WorkforceDirectoryService.name);
-
   constructor(
     @Inject(WORKFORCE_DIRECTORY_REPOSITORY)
     private readonly repository: WorkforceDirectoryRepositoryPort,
-    @Inject(COGNITO_WORKFORCE_DIRECTORY)
-    private readonly cognito: CognitoWorkforceDirectoryPort,
+    @Inject(WORKFORCE_IDENTITY_PROVIDER)
+    private readonly identityProvider: WorkforceIdentityProviderPort,
   ) {}
 
   async getDirectory(
@@ -84,21 +80,6 @@ export class WorkforceDirectoryService {
         ),
       ]);
 
-    let accounts: CognitoWorkforceAccount[] = [];
-    let cognitoStatusAvailable = true;
-
-    try {
-      accounts = await this.cognito.listAccounts();
-    } catch {
-      cognitoStatusAvailable = false;
-      this.logger.warn(
-        'event=workforce_directory_cognito_status outcome=unavailable',
-      );
-    }
-
-    const accountBySubject = new Map(
-      accounts.map((account) => [account.subject, account]),
-    );
     const roleAssignmentsByMembership = new Map<
       string,
       WorkforceRoleAssignment[]
@@ -122,30 +103,23 @@ export class WorkforceDirectoryService {
     return {
       contexts,
       selectedContext,
-      cognitoStatusAvailable,
       canManageRoles: roleManagementAuthorization !== null,
       assignableGlobalRoles,
       tenantLocalRoles,
       delegablePermissions,
       users: members.map((member) => {
-        const account = member.cognitoSubject
-          ? accountBySubject.get(member.cognitoSubject)
-          : undefined;
-
         return {
           membershipId: member.membershipId,
           applicationUserId: member.applicationUserId,
-          canChangeMembership: member.cognitoSubject !== principal.subject,
+          canChangeMembership: member.identitySubject !== principal.subject,
           roleAssignments:
             roleAssignmentsByMembership.get(member.membershipId) ?? [],
           displayName: member.displayName,
           email: member.email,
           membershipStatus: member.membershipStatus,
+          accountStatus: member.accountStatus,
           identityStatus: member.identityStatus,
-          cognitoStatus: account?.status ?? null,
-          cognitoEnabled: account?.enabled ?? null,
-          cognitoCreatedAt: account?.createdAt ?? null,
-          cognitoUpdatedAt: account?.updatedAt ?? null,
+          providerSyncStatus: member.providerSyncStatus,
           isSynthetic: member.isSynthetic,
         };
       }),
@@ -170,7 +144,7 @@ export class WorkforceDirectoryService {
     let account;
 
     try {
-      account = await this.cognito.provisionAccount(
+      account = await this.identityProvider.provisionAccount(
         input.email,
         input.displayName,
       );
@@ -180,25 +154,15 @@ export class WorkforceDirectoryService {
       );
     }
 
-    if (!account.enabled) {
+    if (!account.availableForWorkforceAccess) {
       throw new ConflictException(
-        'The existing Cognito account is disabled and cannot be invited.',
-      );
-    }
-
-    if (
-      !['FORCE_CHANGE_PASSWORD', 'CONFIRMED', 'RESET_REQUIRED'].includes(
-        account.status,
-      )
-    ) {
-      throw new ConflictException(
-        'The existing Cognito account is not a reusable native workforce account.',
+        'The existing identity-provider account cannot be invited.',
       );
     }
 
     try {
       return await this.repository.persistInvitation({
-        actorCognitoSubject: principal.subject,
+        actorSubject: principal.subject,
         authorization,
         account,
         displayName: input.displayName,
@@ -211,7 +175,10 @@ export class WorkforceDirectoryService {
         !(error instanceof WorkforceMembershipConflictError) &&
         !(error instanceof WorkforceIdentityConflictError)
       ) {
-        await this.compensateNewAccount(account.subject, account.username);
+        await this.compensateNewAccount(
+          account.subject,
+          account.externalAccountId,
+        );
       }
 
       if (error instanceof WorkforceInvitationAuthorizationLostError) {
@@ -240,7 +207,7 @@ export class WorkforceDirectoryService {
   ): Promise<WorkforceMembershipStatusResponse> {
     try {
       return await this.repository.changeMembershipStatus({
-        actorCognitoSubject: principal.subject,
+        actorSubject: principal.subject,
         membershipId,
         organizationId: input.organizationId,
         status: input.status,
@@ -272,7 +239,7 @@ export class WorkforceDirectoryService {
   ): Promise<WorkforceRoleAssignment> {
     try {
       return await this.repository.assignGlobalRole({
-        actorCognitoSubject: principal.subject,
+        actorSubject: principal.subject,
         membershipId,
         organizationId: input.organizationId,
         roleId: input.roleId,
@@ -301,7 +268,7 @@ export class WorkforceDirectoryService {
   ): Promise<WorkforceTenantLocalRole> {
     try {
       return await this.repository.createTenantLocalRole({
-        actorCognitoSubject: principal.subject,
+        actorSubject: principal.subject,
         organizationId: input.organizationId,
         name: input.name,
         description: input.description,
@@ -332,7 +299,7 @@ export class WorkforceDirectoryService {
   ): Promise<WorkforceRoleAssignment> {
     try {
       return await this.repository.assignTenantLocalRole({
-        actorCognitoSubject: principal.subject,
+        actorSubject: principal.subject,
         membershipId,
         organizationId: input.organizationId,
         roleId: input.roleId,
@@ -362,7 +329,7 @@ export class WorkforceDirectoryService {
   ): Promise<WorkforceRoleAssignment> {
     try {
       return await this.repository.revokeRoleAssignment({
-        actorCognitoSubject: principal.subject,
+        actorSubject: principal.subject,
         assignmentId,
         organizationId: input.organizationId,
         reason: input.reason,
@@ -385,32 +352,21 @@ export class WorkforceDirectoryService {
   }
 
   private async compensateNewAccount(
-    cognitoSubject: string,
-    cognitoUsername: string,
+    subject: string,
+    externalAccountId: string,
   ): Promise<void> {
     try {
-      if (await this.repository.isCognitoSubjectBound(cognitoSubject)) {
-        this.logger.warn(
-          'event=workforce_invitation_compensation outcome=skipped classification=identity_bound',
-        );
+      if (await this.repository.isIdentitySubjectBound(subject)) {
         return;
       }
     } catch {
-      this.logger.error(
-        'event=workforce_invitation_compensation outcome=skipped classification=binding_check_failed',
-      );
       return;
     }
 
     try {
-      await this.cognito.deleteAccount(cognitoUsername);
-      this.logger.log(
-        'event=workforce_invitation_compensation outcome=success',
-      );
+      await this.identityProvider.deleteAccount(externalAccountId);
     } catch {
-      this.logger.error(
-        'event=workforce_invitation_compensation outcome=failure classification=cognito_delete_failed',
-      );
+      return;
     }
   }
 }
