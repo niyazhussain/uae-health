@@ -6,17 +6,15 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import type { AuthenticatedPrincipal } from '../auth/auth.types.js';
-import {
-  WORKFORCE_IDENTITY_PROVIDER,
-  WORKFORCE_DIRECTORY_REPOSITORY,
-} from './workforce-directory.constants.js';
+import { WORKFORCE_DIRECTORY_REPOSITORY } from './workforce-directory.constants.js';
+import { WORKFORCE_IDENTITY_PROVIDER } from '../identity-provider/identity-provider.constants.js';
+import type { WorkforceIdentityProviderPort } from '../identity-provider/identity-provider.types.js';
 import type {
   AssignWorkforceGlobalRoleInput,
   AssignWorkforceTenantLocalRoleInput,
   ChangeWorkforceMembershipStatusInput,
   CreateWorkforceTenantLocalRoleInput,
   CreateWorkforceInvitationInput,
-  WorkforceIdentityProviderPort,
   RevokeWorkforceRoleAssignmentInput,
   WorkforceDirectoryRepositoryPort,
   WorkforceDirectoryResponse,

@@ -237,12 +237,20 @@ Authorization SHALL evaluate the user's tenant, organization, practice, facility
 - **WHEN** a user lacks cross-facility authority for the requested record
 - **THEN** the platform denies access without revealing protected record details
 
+#### Scenario: Facility-scoped operation is evaluated from current HIS assignments
+- **WHEN** a protected operation identifies a tenant, organization, facility, permission, action, and opaque target identifier
+- **THEN** the authorization service permits it only when the principal has an active membership-facility link and an active applicable role assignment with the required permission; it never trusts frontend scope or provider claims
+
 ### Requirement: Enforce confidential-record access
 The platform SHALL require an explicit permission and applicable scope before allowing access to a patient record classified as confidential.
 
 #### Scenario: Authorized confidential-record access
 - **WHEN** a properly scoped user with confidential-record permission accesses a confidential patient
 - **THEN** the platform permits the authorized operation and records the access in the business audit trail
+
+#### Scenario: Confidential access lacks the additional permission
+- **WHEN** a user has the operation permission but lacks `confidential-records.read` in the same applicable scope
+- **THEN** the platform denies access without exposing record details and records safe denied-access evidence
 
 ### Requirement: Enforce approval limits
 The authorization platform SHALL support user or role approval limits for configured financial operations and SHALL distinguish initiation from approval where policy requires separation of duties.

@@ -2,7 +2,8 @@ import { Inject, Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { sql, type Kysely, type Transaction } from 'kysely';
 import { DatabaseService } from '../database/database.service.js';
-import { WORKFORCE_IDENTITY_PROVIDER } from './workforce-directory.constants.js';
+import { WORKFORCE_IDENTITY_PROVIDER } from '../identity-provider/identity-provider.constants.js';
+import type { WorkforceIdentityProviderPort } from '../identity-provider/identity-provider.types.js';
 import type { DatabaseSchema } from '../database/database.types.js';
 import type {
   AssignWorkforceGlobalRoleRepositoryInput,
@@ -18,7 +19,6 @@ import type {
   WorkforceDirectoryRepositoryPort,
   WorkforceInvitationAuthorization,
   WorkforceInvitationResponse,
-  WorkforceIdentityProviderPort,
   WorkforceMembershipStatusResponse,
   WorkforceRoleAssignment,
   WorkforceRoleCataloguePermission,

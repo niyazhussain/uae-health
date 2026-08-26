@@ -14,7 +14,7 @@ import { ConfigService } from '@nestjs/config';
 import type {
   WorkforceIdentityProviderAccount,
   WorkforceIdentityProviderPort,
-} from '../workforce-directory/workforce-directory.types.js';
+} from './identity-provider.types.js';
 
 function attribute(
   attributes: AttributeType[] | undefined,

@@ -39,6 +39,10 @@ The platform SHALL record policy-selected business audit events in one append-on
 - **WHEN** an authorized administrator creates a tenant-local role and its delegable permission grants
 - **THEN** the role, permission grants, and safe role-definition audit evidence commit atomically without storing Cognito tokens, session identifiers, passwords, TOTP values, or MFA secrets
 
+#### Scenario: Sensitive access is denied
+- **WHEN** the authorization service denies an auditable facility-scoped or confidential operation
+- **THEN** it records the actor, requested tenant, organization, facility where applicable, action, opaque target, denied outcome, correlation, and safe reason without recording clinical content or provider credentials
+
 ### Requirement: Protect audit-event integrity
 Ordinary application identities SHALL NOT update or delete committed audit events, and audit access SHALL itself be permission-controlled and auditable.
 

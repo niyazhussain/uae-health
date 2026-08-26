@@ -1,6 +1,6 @@
 import { Module } from '@nestjs/common';
-import { WORKFORCE_IDENTITY_PROVIDER } from '../workforce-directory/workforce-directory.constants.js';
 import { CognitoWorkforceIdentityAdapter } from './cognito-workforce-identity.adapter.js';
+import { WORKFORCE_IDENTITY_PROVIDER } from './identity-provider.constants.js';
 
 @Module({
   providers: [

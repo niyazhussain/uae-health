@@ -6,6 +6,7 @@ import { HealthModule } from './health/health.module.js';
 import { validateEnvironment } from './config/validate-environment.js';
 import { DatabaseModule } from './database/database.module.js';
 import { AuthModule } from './auth/auth.module.js';
+import { AuthorizationModule } from './authorization/authorization.module.js';
 import { WorkforceDirectoryModule } from './workforce-directory/workforce-directory.module.js';
 
 @Module({
@@ -29,6 +30,7 @@ import { WorkforceDirectoryModule } from './workforce-directory/workforce-direct
     }),
     DatabaseModule,
     AuthModule,
+    AuthorizationModule,
     WorkforceDirectoryModule,
     HealthModule,
   ],

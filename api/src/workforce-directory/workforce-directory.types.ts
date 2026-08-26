@@ -1,3 +1,10 @@
+import type { WorkforceIdentityProviderAccount } from '../identity-provider/identity-provider.types.js';
+
+export type {
+  WorkforceIdentityProviderAccount,
+  WorkforceIdentityProviderPort,
+} from '../identity-provider/identity-provider.types.js';
+
 export interface WorkforceDirectoryContext {
   tenantId: string;
   tenantName: string;
@@ -16,13 +23,6 @@ export interface WorkforceDirectoryMember {
   identitySubject: string | null;
   providerSyncStatus: 'pending' | 'synchronized' | 'failed' | null;
   isSynthetic: boolean;
-}
-
-export interface WorkforceIdentityProviderAccount {
-  subject: string;
-  externalAccountId: string;
-  availableForWorkforceAccess: boolean;
-  created: boolean;
 }
 
 export interface CreateWorkforceInvitationInput {
@@ -308,14 +308,4 @@ export interface WorkforceDirectoryRepositoryPort {
   revokeRoleAssignment(
     input: RevokeWorkforceRoleAssignmentRepositoryInput,
   ): Promise<WorkforceRoleAssignment>;
-}
-
-export interface WorkforceIdentityProviderPort {
-  readonly issuer: string;
-  readonly protocol: 'cognito' | 'oidc' | 'saml';
-  provisionAccount(
-    email: string,
-    displayName: string,
-  ): Promise<WorkforceIdentityProviderAccount>;
-  deleteAccount(externalAccountId: string): Promise<void>;
 }
