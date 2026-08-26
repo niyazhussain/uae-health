@@ -7,7 +7,7 @@ The HIS capability modules depend on a consistent, secure, and deployable applic
 - Establish a React, Vite, and TypeScript application shell for authenticated HIS workflows.
 - Establish a NestJS and TypeScript REST API with generated OpenAPI contracts and frontend client types.
 - Establish PostgreSQL persistence, Kysely query-builder, and migration conventions.
-- Establish Cognito-based authentication with one shared synthetic staging identity boundary for local, development, and staging use in AWS Mumbai and a separate production identity boundary in AWS UAE, tenant-specific OIDC/SAML federation, JIT and SCIM workforce provisioning, facility-aware application authorization, confidential-record controls, and financial approval limits.
+- Establish native Cognito-based workforce authentication with one shared synthetic staging identity boundary for local, development, and staging use in AWS Mumbai; provider-neutral authorization, facility-aware controls, confidential-record controls, and financial approval limits; and a separate basic patient identity boundary for the POC.
 - Establish append-only business audit events and privacy-safe operational observability.
 - Establish private S3-compatible document storage and durable asynchronous job processing.
 - Establish repeatable local development, automated testing, container builds, cost-aware AWS UAE deployment, versioned releases, and rollback.
@@ -20,7 +20,7 @@ The HIS capability modules depend on a consistent, secure, and deployable applic
 - `web-application-shell`: React application bootstrap, navigation, session states, accessibility, localization foundations, error handling, and typed API access.
 - `api-platform`: NestJS REST application bootstrap, module conventions, validation, errors, API versioning, OpenAPI generation, idempotency, and health endpoints.
 - `data-platform`: PostgreSQL connectivity, Kysely conventions, migrations, transactions, concurrency controls, identifiers, dates, and monetary representations.
-- `identity-authorization`: Cognito-based OpenID Connect authentication, tenant-specific OIDC/SAML federation, JIT and SCIM provisioning, global and local roles, scoped permissions, confidential-record access, and approval-limit enforcement.
+- `identity-authorization`: Native Cognito-based POC authentication, separate patient/workforce identity boundaries, global and local roles, scoped permissions, confidential-record access, and approval-limit enforcement.
 - `audit-observability`: Append-only business audit evidence, request correlation, privacy-safe logs, metrics, traces, monitoring, and alerting.
 - `document-job-platform`: Private object storage, controlled document access, upload validation, malware quarantine boundary, transactional outbox, and durable workers.
 - `delivery-platform`: Local fake-data environment, AWS UAE deployment, S3/CloudFront static delivery, cost controls, CI/CD, environment separation, immutable releases, backup verification, and rollback.
@@ -35,8 +35,7 @@ None. The archived OpenSpec baseline does not yet contain implementation capabil
 - Adds Node.js/TypeScript workspace tooling and dependencies for React, Vite, NestJS with Express, Kysely, PostgreSQL, OpenAPI, validation, testing, and observability.
 - Adds local PostgreSQL, object-storage substitutes, API, and worker development services.
 - Introduces shared contracts used by every later HIS module.
-- Records AWS Middle East (UAE) as the production location for health-data workloads, including PostgreSQL, object storage, backups, and health-data logs.
 - Records AWS Asia Pacific (Mumbai) as the only region for the shared synthetic staging identity boundary used by local, development, and staging.
-- Records Amazon Cognito as the initial authentication boundary; it can federate with workforce OIDC/SAML providers and UAE PASS after approved onboarding.
-- Requires infrastructure decisions for hostnames, object storage, secrets, certificates, monitoring, backup, and deployment targets.
-- Does not implement patient registration, scheduling, ADT, insurance, packages, billing, or communication business workflows.
+- Records Amazon Cognito as the initial native authentication boundary while keeping application identity and authorization provider-neutral.
+- Defers enterprise federation, SCIM, advanced patient proofing, tenant domains, and real-data production infrastructure to [`phase-2-identity-and-production`](../phase-2-identity-and-production/proposal.md).
+- Does not implement patient registration, clinical records, ADT, insurance, packages, billing, or communication business workflows; it includes only basic patient identity and appointment access in the POC.
