@@ -160,6 +160,14 @@ Site administrators SHALL control the permission catalogue and immutable, clonab
 - **WHEN** an administrator attempts to create a local role with an undelegable or unknown permission, reuse a tenant-local role name, assign a different tenant's role, change their own role, assign an inactive membership, duplicate an active assignment, or request facility or descendant scope
 - **THEN** the platform rejects the request without changing a role, membership, role assignment, or Cognito resource
 
+#### Scenario: Role manager views the current tenant catalogue
+- **WHEN** an administrator with current `tenant.roles.manage` opens the role catalogue for their current practice
+- **THEN** the platform returns active global templates and only the current tenant's active local roles with their permissions, delegation status, and current-practice assignment counts, without changing authorization state
+
+#### Scenario: Role manager requests another tenant's catalogue
+- **WHEN** an administrator requests a role catalogue outside their current tenant and practice authority
+- **THEN** the platform denies the request without disclosing roles, assignments, members, or counts from that tenant
+
 ### Requirement: Govern role requests and approvals
 Roles SHALL declare whether they are requestable and whether approval is required. The platform SHALL record requests, decisions, decision reasons, validity periods, and resulting assignments. It SHALL prevent self-approval where the applicable policy requires separation of duties.
 

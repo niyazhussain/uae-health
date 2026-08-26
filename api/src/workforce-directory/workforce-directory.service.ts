@@ -22,6 +22,7 @@ import type {
   WorkforceDirectoryResponse,
   WorkforceInvitationResponse,
   WorkforceMembershipStatusResponse,
+  WorkforceRoleCatalogueResponse,
   WorkforceRoleAssignment,
   WorkforceTenantLocalRole,
 } from './workforce-directory.types.js';
@@ -124,6 +125,44 @@ export class WorkforceDirectoryService {
         };
       }),
     };
+  }
+
+  async getRoleCatalogue(
+    principal: AuthenticatedPrincipal,
+    requestedOrganizationId?: string,
+  ): Promise<WorkforceRoleCatalogueResponse> {
+    const contexts = await this.repository.listRoleManageableContexts(
+      principal.subject,
+    );
+    const selectedContext = requestedOrganizationId
+      ? contexts.find(
+          (context) => context.organizationId === requestedOrganizationId,
+        )
+      : contexts[0];
+
+    if (!selectedContext) {
+      throw new ForbiddenException(
+        'Role catalogue access is not permitted for this organization.',
+      );
+    }
+
+    const authorization = await this.repository.authorizeRoleManagement(
+      principal.subject,
+      selectedContext.organizationId,
+    );
+
+    if (!authorization) {
+      throw new ForbiddenException(
+        'Role catalogue access is not permitted for this organization.',
+      );
+    }
+
+    const roles = await this.repository.listRoleCatalogue(
+      selectedContext.tenantId,
+      selectedContext.organizationId,
+    );
+
+    return { contexts, selectedContext, roles };
   }
 
   async createInvitation(

@@ -51,6 +51,25 @@ export interface WorkforceTenantLocalRole {
   permissions: WorkforceDelegablePermission[];
 }
 
+export interface WorkforceRoleCataloguePermission {
+  permissionId: string;
+  code: string;
+  name: string;
+  description: string;
+  isDelegable: boolean;
+}
+
+export interface WorkforceRoleCatalogueRole {
+  roleId: string;
+  code: string;
+  name: string;
+  description: string;
+  source: "global" | "tenant-local";
+  isDelegable: boolean;
+  assignmentCount: number;
+  permissions: WorkforceRoleCataloguePermission[];
+}
+
 export interface WorkforceDirectoryResponse {
   contexts: WorkforceDirectoryContext[];
   selectedContext: WorkforceDirectoryContext;
@@ -59,6 +78,12 @@ export interface WorkforceDirectoryResponse {
   tenantLocalRoles: WorkforceTenantLocalRole[];
   delegablePermissions: WorkforceDelegablePermission[];
   users: WorkforceDirectoryUser[];
+}
+
+export interface WorkforceRoleCatalogueResponse {
+  contexts: WorkforceDirectoryContext[];
+  selectedContext: WorkforceDirectoryContext;
+  roles: WorkforceRoleCatalogueRole[];
 }
 
 export interface CreateWorkforceInvitationInput {
@@ -174,6 +199,46 @@ export async function getWorkforceDirectory(
     tenantLocalRoles: directory.tenantLocalRoles ?? [],
     delegablePermissions: directory.delegablePermissions ?? [],
   };
+}
+
+export async function getWorkforceRoleCatalogue(
+  organizationId?: string,
+): Promise<WorkforceRoleCatalogueResponse> {
+  const apiBaseUrl =
+    import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3000";
+  const url = new URL(
+    "/v1/admin/workforce-directory/role-catalogue",
+    apiBaseUrl,
+  );
+
+  if (organizationId) {
+    url.searchParams.set("organizationId", organizationId);
+  }
+
+  const response = await fetch(url, {
+    cache: "no-store",
+    credentials: "include",
+  });
+
+  if (!response.ok) {
+    let error: ErrorResponse = {};
+
+    try {
+      error = (await response.json()) as ErrorResponse;
+    } catch {
+      // The status-based fallback below is safe for non-JSON upstream errors.
+    }
+
+    throw new WorkforceApiError(
+      errorMessage(
+        error,
+        `Role catalogue request failed (${response.status}).`,
+      ),
+      response.status,
+    );
+  }
+
+  return (await response.json()) as WorkforceRoleCatalogueResponse;
 }
 
 export async function createWorkforceInvitation(

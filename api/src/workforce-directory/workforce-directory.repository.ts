@@ -21,6 +21,8 @@ import type {
   WorkforceIdentityProviderPort,
   WorkforceMembershipStatusResponse,
   WorkforceRoleAssignment,
+  WorkforceRoleCataloguePermission,
+  WorkforceRoleCatalogueRole,
   WorkforceTenantLocalRole,
 } from './workforce-directory.types.js';
 import {
@@ -98,6 +100,24 @@ interface TenantLocalRolePermissionRow extends DelegablePermissionRow {
   role_id: string;
 }
 
+interface RoleCatalogueRoleRow {
+  role_id: string;
+  code: string;
+  name: string;
+  description: string;
+  source: WorkforceRoleCatalogueRole['source'];
+  assignment_count: string | number;
+}
+
+interface RoleCataloguePermissionRow {
+  role_id: string;
+  permission_id: string;
+  code: string;
+  name: string;
+  description: string;
+  is_delegable: boolean;
+}
+
 type AssignWorkforceRoleRepositoryInput =
   | AssignWorkforceGlobalRoleRepositoryInput
   | AssignWorkforceTenantLocalRoleRepositoryInput;
@@ -128,6 +148,22 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
 
   async listManageableContexts(
     subject: string,
+  ): Promise<WorkforceDirectoryContext[]> {
+    return this.listContextsWithPermission(
+      subject,
+      'tenant.memberships.manage',
+    );
+  }
+
+  async listRoleManageableContexts(
+    subject: string,
+  ): Promise<WorkforceDirectoryContext[]> {
+    return this.listContextsWithPermission(subject, 'tenant.roles.manage');
+  }
+
+  private async listContextsWithPermission(
+    subject: string,
+    permissionCode: string,
   ): Promise<WorkforceDirectoryContext[]> {
     const result = await sql<ContextRow>`
       with recursive resolved_actors as (
@@ -176,7 +212,7 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
           and assignment.revoked_at is null
           and assignment.valid_from <= now()
           and (assignment.valid_until is null or assignment.valid_until > now())
-          and permission.code = 'tenant.memberships.manage'
+          and permission.code = ${permissionCode}
 
         union
 
@@ -390,6 +426,108 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
       description: role.description,
       permissions: permissionsByRole.get(role.role_id) ?? [],
     }));
+  }
+
+  async listRoleCatalogue(
+    tenantId: string,
+    organizationId: string,
+  ): Promise<WorkforceRoleCatalogueRole[]> {
+    const [roles, permissionRows] = await Promise.all([
+      sql<RoleCatalogueRoleRow>`
+        select
+          role.id as role_id,
+          role.code,
+          role.name,
+          role.description,
+          case
+            when role.tenant_id is null then 'global'
+            else 'tenant-local'
+          end as source,
+          coalesce(assignment_counts.assignment_count, 0) as assignment_count
+        from roles role
+        left join lateral (
+          select count(*) as assignment_count
+          from role_assignments assignment
+          join organization_memberships membership
+            on membership.id = assignment.membership_id
+           and membership.tenant_id = assignment.tenant_id
+          where assignment.role_id = role.id
+            and assignment.tenant_id = ${tenantId}
+            and membership.organization_id = ${organizationId}
+            and membership.status = 'active'
+            and membership.valid_from <= now()
+            and (membership.valid_until is null or membership.valid_until > now())
+            and assignment.scope_organization_id = ${organizationId}
+            and assignment.facility_id is null
+            and assignment.include_descendants = false
+            and assignment.revoked_at is null
+            and assignment.valid_from <= now()
+            and (assignment.valid_until is null or assignment.valid_until > now())
+        ) assignment_counts on true
+        where role.status = 'active'
+          and (
+            (role.tenant_id is null and role.is_system_template = true)
+            or role.tenant_id = ${tenantId}
+          )
+        order by
+          case when role.tenant_id is null then 0 else 1 end,
+          role.name,
+          role.id
+      `.execute(this.database.client),
+      sql<RoleCataloguePermissionRow>`
+        select
+          role.id as role_id,
+          permission.id as permission_id,
+          permission.code,
+          permission.name,
+          permission.description,
+          permission.is_delegable
+        from roles role
+        join role_permissions role_permission
+          on role_permission.role_id = role.id
+        join permissions permission
+          on permission.id = role_permission.permission_id
+        where role.status = 'active'
+          and (
+            (role.tenant_id is null and role.is_system_template = true)
+            or role.tenant_id = ${tenantId}
+          )
+        order by permission.name, permission.id
+      `.execute(this.database.client),
+    ]);
+    const permissionsByRole = new Map<
+      string,
+      WorkforceRoleCataloguePermission[]
+    >();
+
+    for (const permission of permissionRows.rows) {
+      const rolePermissions = permissionsByRole.get(permission.role_id) ?? [];
+      rolePermissions.push({
+        permissionId: permission.permission_id,
+        code: permission.code,
+        name: permission.name,
+        description: permission.description,
+        isDelegable: permission.is_delegable,
+      });
+      permissionsByRole.set(permission.role_id, rolePermissions);
+    }
+
+    return roles.rows.map((role) => {
+      const permissions = permissionsByRole.get(role.role_id) ?? [];
+
+      return {
+        roleId: role.role_id,
+        code: role.code,
+        name: role.name,
+        description: role.description,
+        source: role.source,
+        isDelegable:
+          permissions.length > 0 &&
+          permissions.every((permission) => permission.isDelegable),
+        assignmentCount: Number(role.assignment_count),
+        permissions,
+      };
+    });
   }
 
   async listDelegablePermissions(): Promise<WorkforceDelegablePermission[]> {

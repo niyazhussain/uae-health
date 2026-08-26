@@ -32,12 +32,14 @@ import { CreateWorkforceInvitationDto } from './dto/create-workforce-invitation.
 import { CreateWorkforceTenantLocalRoleDto } from './dto/create-workforce-tenant-local-role.dto.js';
 import { RevokeWorkforceRoleAssignmentDto } from './dto/revoke-workforce-role-assignment.dto.js';
 import { WorkforceDirectoryQueryDto } from './dto/workforce-directory-query.dto.js';
+import { WorkforceRoleCatalogueQueryDto } from './dto/workforce-role-catalogue-query.dto.js';
 import { WorkforceDirectoryService } from './workforce-directory.service.js';
 import type {
   WorkforceDirectoryResponse,
   WorkforceInvitationResponse,
   WorkforceMembershipStatusResponse,
   WorkforceRoleAssignment,
+  WorkforceRoleCatalogueResponse,
   WorkforceTenantLocalRole,
 } from './workforce-directory.types.js';
 
@@ -47,6 +49,24 @@ import type {
 @UseGuards(WorkforceSessionAuthenticationGuard)
 export class WorkforceDirectoryController {
   constructor(private readonly directory: WorkforceDirectoryService) {}
+
+  @Get('role-catalogue')
+  @ApiOperation({
+    summary:
+      'List active global and current-tenant roles for an authorized practice',
+  })
+  @ApiOkResponse({ description: 'The scoped, read-only role catalogue.' })
+  @ApiUnauthorizedResponse({ description: 'An active session is required.' })
+  @ApiForbiddenResponse({
+    description: 'The caller cannot manage roles for the requested practice.',
+  })
+  @Header('Cache-Control', 'no-store')
+  getRoleCatalogue(
+    @CurrentPrincipal() principal: AuthenticatedPrincipal,
+    @Query() query: WorkforceRoleCatalogueQueryDto,
+  ): Promise<WorkforceRoleCatalogueResponse> {
+    return this.directory.getRoleCatalogue(principal, query.organizationId);
+  }
 
   @Get()
   @ApiOperation({

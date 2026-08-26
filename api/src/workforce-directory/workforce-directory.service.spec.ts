@@ -65,8 +65,32 @@ const tenantLocalRoleAssignment = {
   roleDescription: tenantLocalRole.description,
 };
 
+const roleCatalogueRole = {
+  roleId: roleAssignment.roleId,
+  code: roleAssignment.roleCode,
+  name: roleAssignment.roleName,
+  description: roleAssignment.roleDescription,
+  source: 'global' as const,
+  isDelegable: false,
+  assignmentCount: 2,
+  permissions: [
+    {
+      ...tenantLocalRole.permissions[0],
+      isDelegable: false,
+    },
+  ],
+};
+
 function createDependencies() {
   const listManageableContexts = jest.fn().mockResolvedValue([
+    {
+      tenantId: '10000000-0000-4000-8000-000000000001',
+      tenantName: 'Synthetic Practice Group',
+      organizationId: '20000000-0000-4000-8000-000000000001',
+      organizationName: 'Synthetic Care Practice',
+    },
+  ]);
+  const listRoleManageableContexts = jest.fn().mockResolvedValue([
     {
       tenantId: '10000000-0000-4000-8000-000000000001',
       tenantName: 'Synthetic Practice Group',
@@ -129,6 +153,7 @@ function createDependencies() {
   const listDelegablePermissions = jest
     .fn()
     .mockResolvedValue(tenantLocalRole.permissions);
+  const listRoleCatalogue = jest.fn().mockResolvedValue([roleCatalogueRole]);
   const isIdentitySubjectBound = jest.fn().mockResolvedValue(false);
   const persistInvitation = jest.fn().mockResolvedValue({
     applicationUserId: '30000000-0000-4000-8000-000000000003',
@@ -153,6 +178,7 @@ function createDependencies() {
   const revokeRoleAssignment = jest.fn().mockResolvedValue(roleAssignment);
   const repository: WorkforceDirectoryRepositoryPort = {
     listManageableContexts,
+    listRoleManageableContexts,
     listMembers,
     authorizeInvitation,
     authorizeRoleManagement,
@@ -160,6 +186,7 @@ function createDependencies() {
     listAssignableGlobalRoles,
     listTenantLocalRoles,
     listDelegablePermissions,
+    listRoleCatalogue,
     isIdentitySubjectBound,
     persistInvitation,
     changeMembershipStatus,
@@ -186,6 +213,7 @@ function createDependencies() {
     repository,
     cognito,
     listManageableContexts,
+    listRoleManageableContexts,
     listMembers,
     authorizeInvitation,
     authorizeRoleManagement,
@@ -193,6 +221,7 @@ function createDependencies() {
     listAssignableGlobalRoles,
     listTenantLocalRoles,
     listDelegablePermissions,
+    listRoleCatalogue,
     isIdentitySubjectBound,
     persistInvitation,
     changeMembershipStatus,
@@ -281,6 +310,58 @@ describe('WorkforceDirectoryService', () => {
     ).rejects.toBeInstanceOf(ForbiddenException);
     expect(listMembers).not.toHaveBeenCalled();
     expect(provisionAccount).not.toHaveBeenCalled();
+  });
+
+  it('returns the scoped read-only role catalogue only to a role manager', async () => {
+    const {
+      repository,
+      cognito,
+      listRoleManageableContexts,
+      authorizeRoleManagement,
+      listRoleCatalogue,
+    } = createDependencies();
+    const service = new WorkforceDirectoryService(repository, cognito);
+
+    await expect(
+      service.getRoleCatalogue(principal, invitationInput.organizationId),
+    ).resolves.toEqual({
+      contexts: [
+        {
+          tenantId: '10000000-0000-4000-8000-000000000001',
+          tenantName: 'Synthetic Practice Group',
+          organizationId: invitationInput.organizationId,
+          organizationName: 'Synthetic Care Practice',
+        },
+      ],
+      selectedContext: {
+        tenantId: '10000000-0000-4000-8000-000000000001',
+        tenantName: 'Synthetic Practice Group',
+        organizationId: invitationInput.organizationId,
+        organizationName: 'Synthetic Care Practice',
+      },
+      roles: [roleCatalogueRole],
+    });
+    expect(listRoleManageableContexts).toHaveBeenCalledWith(principal.subject);
+    expect(authorizeRoleManagement).toHaveBeenCalledWith(
+      principal.subject,
+      invitationInput.organizationId,
+    );
+    expect(listRoleCatalogue).toHaveBeenCalledWith(
+      '10000000-0000-4000-8000-000000000001',
+      invitationInput.organizationId,
+    );
+  });
+
+  it('does not disclose a role catalogue outside the role-management scope', async () => {
+    const { repository, cognito, listRoleCatalogue, authorizeRoleManagement } =
+      createDependencies();
+    authorizeRoleManagement.mockResolvedValue(null);
+    const service = new WorkforceDirectoryService(repository, cognito);
+
+    await expect(
+      service.getRoleCatalogue(principal, invitationInput.organizationId),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(listRoleCatalogue).not.toHaveBeenCalled();
   });
 
   it('lists database-authoritative users without calling the identity provider', async () => {

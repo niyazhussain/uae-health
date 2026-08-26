@@ -12,11 +12,23 @@ The web application SHALL use repository-owned shadcn/ui component source built 
 - **THEN** it provides visible text or an accessible label in addition to the semantic status color
 
 ### Requirement: Provide an authenticated application shell
-The web application SHALL provide a consistent shell for authenticated HIS modules, including the active facility context, primary navigation, page hierarchy, current-user controls, and session state.
+The web application SHALL provide a consistent shell for authenticated HIS modules, including the current authorized practice context, primary navigation, page hierarchy, current-user controls, and session state. When facility selection is implemented, the shell SHALL also show the active facility without using frontend navigation state to decide authorization.
 
 #### Scenario: Authenticated user enters the application
 - **WHEN** an authenticated user opens an authorized application route
-- **THEN** the system displays the application shell, active facility, user identity, navigation permitted to that user, and requested page
+- **THEN** the system displays the application shell, active authorized practice, user identity, primary navigation, and requested page
+
+#### Scenario: Role manager opens the role catalogue
+- **WHEN** an authenticated user opens the Roles route
+- **THEN** the shell preserves the selected practice context and the page requests only the read-only catalogue that the API authorizes for that context
+
+#### Scenario: User navigates from the top bar
+- **WHEN** an authenticated user selects Workforce or Roles from the top-bar navigation
+- **THEN** the shell changes the requested page while preserving the selected practice context and the API remains the authorization authority
+
+#### Scenario: User opens a planned module
+- **WHEN** an authenticated user selects a top-level module that has no authorized application capability yet
+- **THEN** the shell presents a clear unavailable state without displaying placeholder clinical data, claiming access, or calling a protected module API
 
 #### Scenario: Unauthenticated user opens a protected route
 - **WHEN** a user without a valid session opens a protected application route

@@ -49,6 +49,7 @@ import {
   getWorkforceDirectory,
   revokeWorkforceRoleAssignment,
   WorkforceApiError,
+  type WorkforceDirectoryContext,
   type WorkforceDirectoryResponse,
   type WorkforceRoleAssignment,
   type WorkforceDirectoryUser,
@@ -56,6 +57,10 @@ import {
 
 interface WorkforceDirectoryProps {
   csrfToken: string;
+  selectedOrganizationId?: string;
+  onSelectedOrganizationChange: (organizationId: string) => void;
+  onContextChange: (context: WorkforceDirectoryContext) => void;
+  onPageReady: () => void;
   onSessionExpired: () => void;
 }
 
@@ -96,13 +101,15 @@ function statusBadge(user: WorkforceDirectoryUser) {
 
 export function WorkforceDirectory({
   csrfToken,
+  selectedOrganizationId,
+  onSelectedOrganizationChange,
+  onContextChange,
+  onPageReady,
   onSessionExpired,
 }: WorkforceDirectoryProps) {
   const [directory, setDirectory] = useState<WorkforceDirectoryResponse | null>(
     null,
   );
-  const [selectedOrganizationId, setSelectedOrganizationId] =
-    useState<string>();
   const [reloadVersion, setReloadVersion] = useState(0);
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
@@ -159,6 +166,10 @@ export function WorkforceDirectory({
       .then((response) => {
         if (controller.signal.aborted) return;
         setDirectory(response);
+        onContextChange(response.selectedContext);
+        if (selectedOrganizationId !== response.selectedContext.organizationId) {
+          onSelectedOrganizationChange(response.selectedContext.organizationId);
+        }
       })
       .catch((reason: unknown) => {
         if (controller.signal.aborted) return;
@@ -177,7 +188,17 @@ export function WorkforceDirectory({
       });
 
     return () => controller.abort();
-  }, [onSessionExpired, reloadVersion, selectedOrganizationId]);
+  }, [
+    onContextChange,
+    onSelectedOrganizationChange,
+    onSessionExpired,
+    reloadVersion,
+    selectedOrganizationId,
+  ]);
+
+  useEffect(() => {
+    if (!loading) onPageReady();
+  }, [loading, onPageReady]);
 
   useEffect(() => {
     if (
@@ -201,7 +222,7 @@ export function WorkforceDirectory({
   const selectOrganization = (organizationId: string) => {
     setLoading(true);
     setError(null);
-    setSelectedOrganizationId(organizationId);
+    onSelectedOrganizationChange(organizationId);
   };
 
   const retry = () => {
