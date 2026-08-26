@@ -837,6 +837,331 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
     ).resolves.toEqual({ status: 'active' });
   });
 
+  it('assigns and revokes only delegable global roles within an administrator practice scope', async () => {
+    const issuer =
+      'https://cognito-idp.ap-south-1.amazonaws.com/ap-south-1_synthetic';
+    const tenant = await database
+      .insertInto('tenants')
+      .values({
+        code: 'ROLE-MANAGEMENT-TEST',
+        name: 'Synthetic Role Management Tenant',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const organization = await database
+      .insertInto('organizations')
+      .values({
+        tenant_id: tenant.id,
+        parent_organization_id: null,
+        kind: 'practice',
+        code: 'ROLE-MANAGEMENT-PRACTICE',
+        name: 'Synthetic Role Management Practice',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const connection = await database
+      .insertInto('identity_connections')
+      .values({
+        tenant_id: tenant.id,
+        code: 'role-management-native-cognito',
+        name: 'Synthetic Role Management Native Cognito',
+        protocol: 'cognito',
+        issuer,
+        jit_provisioning_enabled: false,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const [administrator, target, accessAdministrator] = await database
+      .insertInto('application_users')
+      .values([
+        {
+          display_name: 'Synthetic Role Administrator',
+          primary_email: 'role.admin@example.invalid',
+          is_synthetic: true,
+        },
+        {
+          display_name: 'Synthetic Role Target',
+          primary_email: 'role.target@example.invalid',
+          is_synthetic: true,
+        },
+        {
+          display_name: 'Synthetic Access Administrator',
+          primary_email: 'access.admin@example.invalid',
+          is_synthetic: true,
+        },
+      ])
+      .returning('id')
+      .execute();
+    const administratorSubject = 'synthetic-role-admin-subject';
+    const accessAdministratorSubject = 'synthetic-access-admin-subject';
+    await database
+      .insertInto('user_identities')
+      .values([
+        {
+          application_user_id: administrator.id,
+          identity_connection_id: connection.id,
+          subject: administratorSubject,
+          last_authenticated_at: null,
+        },
+        {
+          application_user_id: accessAdministrator.id,
+          identity_connection_id: connection.id,
+          subject: accessAdministratorSubject,
+          last_authenticated_at: null,
+        },
+      ])
+      .execute();
+    const [
+      administratorMembership,
+      targetMembership,
+      accessAdministratorMembership,
+    ] = await database
+      .insertInto('organization_memberships')
+      .values([
+        {
+          tenant_id: tenant.id,
+          organization_id: organization.id,
+          application_user_id: administrator.id,
+          status: 'active',
+          provisioning_method: 'admin_invite',
+          external_id: null,
+          valid_until: null,
+        },
+        {
+          tenant_id: tenant.id,
+          organization_id: organization.id,
+          application_user_id: target.id,
+          status: 'active',
+          provisioning_method: 'admin_invite',
+          external_id: null,
+          valid_until: null,
+        },
+        {
+          tenant_id: tenant.id,
+          organization_id: organization.id,
+          application_user_id: accessAdministrator.id,
+          status: 'active',
+          provisioning_method: 'admin_invite',
+          external_id: null,
+          valid_until: null,
+        },
+      ])
+      .returning('id')
+      .execute();
+    const roles = await database
+      .selectFrom('roles')
+      .select(['id', 'code'])
+      .where('tenant_id', 'is', null)
+      .where('code', 'in', [
+        'ACCESS_ADMIN',
+        'BILLING_APPROVER',
+        'PRACTICE_ADMIN',
+        'RECEPTION',
+      ])
+      .execute();
+    const practiceAdminRole = roles.find(
+      (role) => role.code === 'PRACTICE_ADMIN',
+    )!;
+    const accessAdminRole = roles.find((role) => role.code === 'ACCESS_ADMIN')!;
+    const receptionRole = roles.find((role) => role.code === 'RECEPTION')!;
+    const billingApproverRole = roles.find(
+      (role) => role.code === 'BILLING_APPROVER',
+    )!;
+    await database
+      .insertInto('role_assignments')
+      .values([
+        {
+          tenant_id: tenant.id,
+          membership_id: administratorMembership.id,
+          role_id: practiceAdminRole.id,
+          scope_organization_id: organization.id,
+          facility_id: null,
+          include_descendants: false,
+          assignment_source: 'admin',
+          assigned_by_user_id: administrator.id,
+          source_role_request_id: null,
+          valid_until: null,
+          revoked_at: null,
+          revoked_by_user_id: null,
+          revocation_reason: null,
+        },
+        {
+          tenant_id: tenant.id,
+          membership_id: accessAdministratorMembership.id,
+          role_id: accessAdminRole.id,
+          scope_organization_id: organization.id,
+          facility_id: null,
+          include_descendants: false,
+          assignment_source: 'admin',
+          assigned_by_user_id: administrator.id,
+          source_role_request_id: null,
+          valid_until: null,
+          revoked_at: null,
+          revoked_by_user_id: null,
+          revocation_reason: null,
+        },
+      ])
+      .execute();
+    const repository = new WorkforceDirectoryRepository(
+      { client: database } as DatabaseService,
+      {
+        getOrThrow: (name: string) =>
+          ({
+            COGNITO_REGION: 'ap-south-1',
+            COGNITO_USER_POOL_ID: 'ap-south-1_synthetic',
+          })[name],
+      } as ConfigService,
+    );
+
+    await expect(
+      repository.authorizeRoleManagement(administratorSubject, organization.id),
+    ).resolves.toMatchObject({
+      actorUserId: administrator.id,
+      organizationId: organization.id,
+      tenantId: tenant.id,
+    });
+    await expect(
+      repository.authorizeRoleManagement(
+        accessAdministratorSubject,
+        organization.id,
+      ),
+    ).resolves.toBeNull();
+    await expect(repository.listAssignableGlobalRoles()).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          roleId: receptionRole.id,
+          code: 'RECEPTION',
+        }),
+      ]),
+    );
+    await expect(repository.listAssignableGlobalRoles()).resolves.not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          roleId: billingApproverRole.id,
+          code: 'BILLING_APPROVER',
+        }),
+      ]),
+    );
+
+    const assignment = await repository.assignGlobalRole({
+      actorCognitoSubject: administratorSubject,
+      membershipId: targetMembership.id,
+      organizationId: organization.id,
+      roleId: receptionRole.id,
+      reason: 'Synthetic front-desk role assignment test.',
+    });
+    expect(assignment).toMatchObject({
+      membershipId: targetMembership.id,
+      roleId: receptionRole.id,
+      roleCode: 'RECEPTION',
+      organizationId: organization.id,
+    });
+    await expect(
+      repository.listRoleAssignments(tenant.id, organization.id),
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ assignmentId: assignment.assignmentId }),
+      ]),
+    );
+    await expect(
+      database
+        .selectFrom('audit_events')
+        .select(['action', 'reason', 'after_data'])
+        .where('target_entity_id', '=', assignment.assignmentId)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toMatchObject({
+      action: 'identity.role_assigned',
+      reason: 'Synthetic front-desk role assignment test.',
+      after_data: {
+        roleCode: 'RECEPTION',
+        scopeOrganizationId: organization.id,
+      },
+    });
+    await expect(
+      repository.assignGlobalRole({
+        actorCognitoSubject: administratorSubject,
+        membershipId: targetMembership.id,
+        organizationId: organization.id,
+        roleId: receptionRole.id,
+        reason: 'Synthetic duplicate role assignment test.',
+      }),
+    ).rejects.toThrow('This role is already assigned to the membership.');
+    await expect(
+      repository.assignGlobalRole({
+        actorCognitoSubject: administratorSubject,
+        membershipId: targetMembership.id,
+        organizationId: organization.id,
+        roleId: billingApproverRole.id,
+        reason: 'Synthetic privileged role assignment rejection test.',
+      }),
+    ).rejects.toThrow('This global role is not available for assignment.');
+    await expect(
+      repository.assignGlobalRole({
+        actorCognitoSubject: administratorSubject,
+        membershipId: administratorMembership.id,
+        organizationId: organization.id,
+        roleId: receptionRole.id,
+        reason: 'Synthetic self role assignment rejection test.',
+      }),
+    ).rejects.toThrow(
+      'Administrators cannot change their own role assignments.',
+    );
+    await expect(
+      repository.assignGlobalRole({
+        actorCognitoSubject: accessAdministratorSubject,
+        membershipId: targetMembership.id,
+        organizationId: organization.id,
+        roleId: receptionRole.id,
+        reason: 'Synthetic role authority rejection test.',
+      }),
+    ).rejects.toThrow(
+      'Workforce role-management authorization is no longer active.',
+    );
+
+    await expect(
+      repository.revokeRoleAssignment({
+        actorCognitoSubject: administratorSubject,
+        assignmentId: assignment.assignmentId,
+        organizationId: organization.id,
+        reason: 'Synthetic front-desk role revocation test.',
+      }),
+    ).resolves.toMatchObject({
+      assignmentId: assignment.assignmentId,
+      roleCode: 'RECEPTION',
+    });
+    await expect(
+      database
+        .selectFrom('role_assignments')
+        .select(['revoked_at', 'revoked_by_user_id', 'revocation_reason'])
+        .where('id', '=', assignment.assignmentId)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toMatchObject({
+      revoked_by_user_id: administrator.id,
+      revocation_reason: 'Synthetic front-desk role revocation test.',
+    });
+    await expect(
+      database
+        .selectFrom('audit_events')
+        .select(['action', 'reason', 'after_data'])
+        .where('target_entity_id', '=', assignment.assignmentId)
+        .where('action', '=', 'identity.role_revoked')
+        .executeTakeFirstOrThrow(),
+    ).resolves.toMatchObject({
+      action: 'identity.role_revoked',
+      reason: 'Synthetic front-desk role revocation test.',
+      after_data: { revoked: true },
+    });
+    await expect(
+      repository.listRoleAssignments(tenant.id, organization.id),
+    ).resolves.not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ assignmentId: assignment.assignmentId }),
+      ]),
+    );
+  });
+
   it('prevents organization cycles', async () => {
     const tenant = await database
       .insertInto('tenants')

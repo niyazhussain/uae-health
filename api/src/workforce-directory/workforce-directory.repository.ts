@@ -5,20 +5,26 @@ import { sql, type Kysely, type Transaction } from 'kysely';
 import { DatabaseService } from '../database/database.service.js';
 import type { DatabaseSchema } from '../database/database.types.js';
 import type {
+  AssignWorkforceGlobalRoleRepositoryInput,
   ChangeWorkforceMembershipStatusRepositoryInput,
   PersistWorkforceInvitationInput,
+  RevokeWorkforceRoleAssignmentRepositoryInput,
+  WorkforceAssignableGlobalRole,
   WorkforceDirectoryContext,
   WorkforceDirectoryMember,
   WorkforceDirectoryRepositoryPort,
   WorkforceInvitationAuthorization,
   WorkforceInvitationResponse,
   WorkforceMembershipStatusResponse,
+  WorkforceRoleAssignment,
 } from './workforce-directory.types.js';
 import {
   WorkforceIdentityConflictError,
   WorkforceInvitationAuthorizationLostError,
   WorkforceMembershipConflictError,
   WorkforceMembershipManagementAuthorizationLostError,
+  WorkforceRoleAssignmentConflictError,
+  WorkforceRoleManagementAuthorizationLostError,
   WorkforceMembershipStateConflictError,
 } from './workforce-directory.types.js';
 
@@ -47,6 +53,23 @@ interface InvitationAuthorizationRow {
   tenant_is_synthetic: boolean;
   organization_id: string;
   organization_name: string;
+}
+
+interface RoleAssignmentRow {
+  assignment_id: string;
+  membership_id: string;
+  role_id: string;
+  role_code: string;
+  role_name: string;
+  role_description: string;
+  organization_id: string;
+}
+
+interface AssignableGlobalRoleRow {
+  role_id: string;
+  code: string;
+  name: string;
+  description: string;
 }
 
 type DatabaseExecutor = Kysely<DatabaseSchema> | Transaction<DatabaseSchema>;
@@ -199,14 +222,98 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
     }));
   }
 
+  async listRoleAssignments(
+    tenantId: string,
+    organizationId: string,
+  ): Promise<WorkforceRoleAssignment[]> {
+    const result = await sql<RoleAssignmentRow>`
+      select
+        assignment.id as assignment_id,
+        assignment.membership_id,
+        assignment.role_id,
+        role.code as role_code,
+        role.name as role_name,
+        role.description as role_description,
+        assignment.scope_organization_id as organization_id
+      from role_assignments assignment
+      join organization_memberships membership
+        on membership.id = assignment.membership_id
+       and membership.tenant_id = assignment.tenant_id
+      join roles role
+        on role.id = assignment.role_id
+      where membership.tenant_id = ${tenantId}
+        and membership.organization_id = ${organizationId}
+        and assignment.scope_organization_id = ${organizationId}
+        and assignment.facility_id is null
+        and assignment.include_descendants = false
+        and assignment.revoked_at is null
+        and assignment.valid_from <= now()
+        and (assignment.valid_until is null or assignment.valid_until > now())
+        and role.status = 'active'
+      order by role.name, assignment.id
+    `.execute(this.database.client);
+
+    return result.rows.map((row) => ({
+      assignmentId: row.assignment_id,
+      membershipId: row.membership_id,
+      roleId: row.role_id,
+      roleCode: row.role_code,
+      roleName: row.role_name,
+      roleDescription: row.role_description,
+      organizationId: row.organization_id,
+    }));
+  }
+
+  async listAssignableGlobalRoles(): Promise<WorkforceAssignableGlobalRole[]> {
+    const result = await sql<AssignableGlobalRoleRow>`
+      select
+        role.id as role_id,
+        role.code,
+        role.name,
+        role.description
+      from roles role
+      where role.tenant_id is null
+        and role.status = 'active'
+        and not exists (
+          select 1
+          from role_permissions role_permission
+          join permissions permission
+            on permission.id = role_permission.permission_id
+          where role_permission.role_id = role.id
+            and permission.is_delegable = false
+        )
+      order by role.name, role.id
+    `.execute(this.database.client);
+
+    return result.rows.map((row) => ({
+      roleId: row.role_id,
+      code: row.code,
+      name: row.name,
+      description: row.description,
+    }));
+  }
+
   authorizeInvitation(
     cognitoSubject: string,
     organizationId: string,
   ): Promise<WorkforceInvitationAuthorization | null> {
-    return this.findInvitationAuthorization(
+    return this.findOrganizationPermissionAuthorization(
       this.database.client,
       cognitoSubject,
       organizationId,
+      'tenant.memberships.manage',
+    );
+  }
+
+  authorizeRoleManagement(
+    cognitoSubject: string,
+    organizationId: string,
+  ): Promise<WorkforceInvitationAuthorization | null> {
+    return this.findOrganizationPermissionAuthorization(
+      this.database.client,
+      cognitoSubject,
+      organizationId,
+      'tenant.roles.manage',
     );
   }
 
@@ -234,11 +341,13 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
         .transaction()
         .setIsolationLevel('serializable')
         .execute(async (trx) => {
-          const currentAuthorization = await this.findInvitationAuthorization(
-            trx,
-            input.actorCognitoSubject,
-            input.authorization.organizationId,
-          );
+          const currentAuthorization =
+            await this.findOrganizationPermissionAuthorization(
+              trx,
+              input.actorCognitoSubject,
+              input.authorization.organizationId,
+              'tenant.memberships.manage',
+            );
 
           if (
             !currentAuthorization ||
@@ -441,11 +550,13 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
       .transaction()
       .setIsolationLevel('serializable')
       .execute(async (trx) => {
-        const authorization = await this.findInvitationAuthorization(
-          trx,
-          input.actorCognitoSubject,
-          input.organizationId,
-        );
+        const authorization =
+          await this.findOrganizationPermissionAuthorization(
+            trx,
+            input.actorCognitoSubject,
+            input.organizationId,
+            'tenant.memberships.manage',
+          );
 
         if (!authorization) {
           throw new WorkforceMembershipManagementAuthorizationLostError();
@@ -568,10 +679,351 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
       });
   }
 
-  private async findInvitationAuthorization(
+  async assignGlobalRole(
+    input: AssignWorkforceGlobalRoleRepositoryInput,
+  ): Promise<WorkforceRoleAssignment> {
+    try {
+      return await this.database.client
+        .transaction()
+        .setIsolationLevel('serializable')
+        .execute(async (trx) => {
+          const authorization =
+            await this.findOrganizationPermissionAuthorization(
+              trx,
+              input.actorCognitoSubject,
+              input.organizationId,
+              'tenant.roles.manage',
+            );
+
+          if (!authorization) {
+            throw new WorkforceRoleManagementAuthorizationLostError();
+          }
+
+          const membership = await trx
+            .selectFrom('organization_memberships as membership')
+            .select([
+              'membership.id as membership_id',
+              'membership.application_user_id as application_user_id',
+              'membership.tenant_id as tenant_id',
+              'membership.organization_id as organization_id',
+              'membership.status as membership_status',
+              'membership.valid_from as valid_from',
+              'membership.valid_until as valid_until',
+            ])
+            .where('membership.id', '=', input.membershipId)
+            .forUpdate()
+            .executeTakeFirst();
+
+          if (
+            !membership ||
+            membership.tenant_id !== authorization.tenantId ||
+            membership.organization_id !== authorization.organizationId
+          ) {
+            throw new WorkforceRoleManagementAuthorizationLostError();
+          }
+
+          if (membership.application_user_id === authorization.actorUserId) {
+            throw new WorkforceRoleAssignmentConflictError(
+              'Administrators cannot change their own role assignments.',
+            );
+          }
+
+          const now = new Date();
+          if (
+            membership.membership_status !== 'active' ||
+            membership.valid_from > now ||
+            (membership.valid_until !== null && membership.valid_until <= now)
+          ) {
+            throw new WorkforceRoleAssignmentConflictError(
+              'Roles can be assigned only to an active membership.',
+            );
+          }
+
+          const role = await trx
+            .selectFrom('roles as role')
+            .select([
+              'role.id as role_id',
+              'role.code as role_code',
+              'role.name as role_name',
+              'role.description as role_description',
+            ])
+            .where('role.id', '=', input.roleId)
+            .where('role.tenant_id', 'is', null)
+            .where('role.status', '=', 'active')
+            .forUpdate()
+            .executeTakeFirst();
+
+          if (!role) {
+            throw new WorkforceRoleAssignmentConflictError(
+              'This global role is not available for assignment.',
+            );
+          }
+
+          const nonDelegablePermission = await trx
+            .selectFrom('role_permissions as role_permission')
+            .innerJoin(
+              'permissions as permission',
+              'permission.id',
+              'role_permission.permission_id',
+            )
+            .select('role_permission.permission_id')
+            .where('role_permission.role_id', '=', role.role_id)
+            .where('permission.is_delegable', '=', false)
+            .executeTakeFirst();
+
+          if (nonDelegablePermission) {
+            throw new WorkforceRoleAssignmentConflictError(
+              'This global role is not available for assignment.',
+            );
+          }
+
+          const existingAssignment = await trx
+            .selectFrom('role_assignments')
+            .select('id')
+            .where('membership_id', '=', membership.membership_id)
+            .where('role_id', '=', role.role_id)
+            .where('scope_organization_id', '=', authorization.organizationId)
+            .where('facility_id', 'is', null)
+            .where('include_descendants', '=', false)
+            .where('revoked_at', 'is', null)
+            .executeTakeFirst();
+
+          if (existingAssignment) {
+            throw new WorkforceRoleAssignmentConflictError(
+              'This role is already assigned to the membership.',
+            );
+          }
+
+          const assignment = await trx
+            .insertInto('role_assignments')
+            .values({
+              tenant_id: authorization.tenantId,
+              membership_id: membership.membership_id,
+              role_id: role.role_id,
+              scope_organization_id: authorization.organizationId,
+              facility_id: null,
+              include_descendants: false,
+              assignment_source: 'admin',
+              assigned_by_user_id: authorization.actorUserId,
+              source_role_request_id: null,
+              valid_until: null,
+              revoked_at: null,
+              revoked_by_user_id: null,
+              revocation_reason: null,
+            })
+            .returning('id')
+            .executeTakeFirstOrThrow();
+
+          await trx
+            .insertInto('audit_events')
+            .values({
+              actor_type: 'user',
+              actor_identifier: input.actorCognitoSubject,
+              actor_user_id: authorization.actorUserId,
+              effective_user_id: membership.application_user_id,
+              tenant_id: authorization.tenantId,
+              organization_id: authorization.organizationId,
+              facility_id: null,
+              action: 'identity.role_assigned',
+              target_entity_type: 'role_assignment',
+              target_entity_id: assignment.id,
+              outcome: 'success',
+              correlation_id: randomUUID(),
+              reason: input.reason,
+              before_data: null,
+              after_data: {
+                roleCode: role.role_code,
+                scopeOrganizationId: authorization.organizationId,
+                facilityScope: null,
+                includeDescendants: false,
+              },
+            })
+            .execute();
+
+          return {
+            assignmentId: assignment.id,
+            membershipId: membership.membership_id,
+            roleId: role.role_id,
+            roleCode: role.role_code,
+            roleName: role.role_name,
+            roleDescription: role.role_description,
+            organizationId: authorization.organizationId,
+          };
+        });
+    } catch (error) {
+      if (
+        error instanceof WorkforceRoleManagementAuthorizationLostError ||
+        error instanceof WorkforceRoleAssignmentConflictError
+      ) {
+        throw error;
+      }
+
+      if (isUniqueViolation(error)) {
+        throw new WorkforceRoleAssignmentConflictError(
+          'This role is already assigned to the membership.',
+        );
+      }
+
+      throw error;
+    }
+  }
+
+  async revokeRoleAssignment(
+    input: RevokeWorkforceRoleAssignmentRepositoryInput,
+  ): Promise<WorkforceRoleAssignment> {
+    return this.database.client
+      .transaction()
+      .setIsolationLevel('serializable')
+      .execute(async (trx) => {
+        const authorization =
+          await this.findOrganizationPermissionAuthorization(
+            trx,
+            input.actorCognitoSubject,
+            input.organizationId,
+            'tenant.roles.manage',
+          );
+
+        if (!authorization) {
+          throw new WorkforceRoleManagementAuthorizationLostError();
+        }
+
+        const assignment = await trx
+          .selectFrom('role_assignments as assignment')
+          .innerJoin('organization_memberships as membership', (join) =>
+            join
+              .onRef('membership.id', '=', 'assignment.membership_id')
+              .onRef('membership.tenant_id', '=', 'assignment.tenant_id'),
+          )
+          .innerJoin('roles as role', 'role.id', 'assignment.role_id')
+          .select([
+            'assignment.id as assignment_id',
+            'assignment.membership_id as membership_id',
+            'assignment.tenant_id as tenant_id',
+            'assignment.scope_organization_id as scope_organization_id',
+            'assignment.facility_id as facility_id',
+            'assignment.include_descendants as include_descendants',
+            'assignment.valid_from as valid_from',
+            'assignment.valid_until as valid_until',
+            'assignment.revoked_at as revoked_at',
+            'membership.application_user_id as application_user_id',
+            'membership.organization_id as organization_id',
+            'membership.status as membership_status',
+            'membership.valid_from as membership_valid_from',
+            'membership.valid_until as membership_valid_until',
+            'role.id as role_id',
+            'role.tenant_id as role_tenant_id',
+            'role.status as role_status',
+            'role.code as role_code',
+            'role.name as role_name',
+            'role.description as role_description',
+          ])
+          .where('assignment.id', '=', input.assignmentId)
+          .forUpdate()
+          .executeTakeFirst();
+
+        if (
+          !assignment ||
+          assignment.tenant_id !== authorization.tenantId ||
+          assignment.organization_id !== authorization.organizationId ||
+          assignment.scope_organization_id !== authorization.organizationId ||
+          assignment.facility_id !== null ||
+          assignment.include_descendants
+        ) {
+          throw new WorkforceRoleManagementAuthorizationLostError();
+        }
+
+        if (assignment.application_user_id === authorization.actorUserId) {
+          throw new WorkforceRoleAssignmentConflictError(
+            'Administrators cannot change their own role assignments.',
+          );
+        }
+
+        const now = new Date();
+        if (
+          assignment.membership_status !== 'active' ||
+          assignment.membership_valid_from > now ||
+          (assignment.membership_valid_until !== null &&
+            assignment.membership_valid_until <= now) ||
+          assignment.role_tenant_id !== null ||
+          assignment.role_status !== 'active' ||
+          assignment.revoked_at !== null ||
+          assignment.valid_from > now ||
+          (assignment.valid_until !== null && assignment.valid_until <= now)
+        ) {
+          throw new WorkforceRoleAssignmentConflictError(
+            'This role assignment cannot be revoked.',
+          );
+        }
+
+        const nonDelegablePermission = await trx
+          .selectFrom('role_permissions as role_permission')
+          .innerJoin(
+            'permissions as permission',
+            'permission.id',
+            'role_permission.permission_id',
+          )
+          .select('role_permission.permission_id')
+          .where('role_permission.role_id', '=', assignment.role_id)
+          .where('permission.is_delegable', '=', false)
+          .executeTakeFirst();
+
+        if (nonDelegablePermission) {
+          throw new WorkforceRoleAssignmentConflictError(
+            'This role assignment cannot be revoked.',
+          );
+        }
+
+        await trx
+          .updateTable('role_assignments')
+          .set({
+            revoked_at: now,
+            revoked_by_user_id: authorization.actorUserId,
+            revocation_reason: input.reason,
+          })
+          .where('id', '=', assignment.assignment_id)
+          .executeTakeFirstOrThrow();
+
+        await trx
+          .insertInto('audit_events')
+          .values({
+            actor_type: 'user',
+            actor_identifier: input.actorCognitoSubject,
+            actor_user_id: authorization.actorUserId,
+            effective_user_id: assignment.application_user_id,
+            tenant_id: authorization.tenantId,
+            organization_id: authorization.organizationId,
+            facility_id: null,
+            action: 'identity.role_revoked',
+            target_entity_type: 'role_assignment',
+            target_entity_id: assignment.assignment_id,
+            outcome: 'success',
+            correlation_id: randomUUID(),
+            reason: input.reason,
+            before_data: {
+              roleCode: assignment.role_code,
+              scopeOrganizationId: assignment.scope_organization_id,
+            },
+            after_data: { revoked: true },
+          })
+          .execute();
+
+        return {
+          assignmentId: assignment.assignment_id,
+          membershipId: assignment.membership_id,
+          roleId: assignment.role_id,
+          roleCode: assignment.role_code,
+          roleName: assignment.role_name,
+          roleDescription: assignment.role_description,
+          organizationId: assignment.scope_organization_id,
+        };
+      });
+  }
+
+  private async findOrganizationPermissionAuthorization(
     executor: DatabaseExecutor,
     cognitoSubject: string,
     organizationId: string,
+    permissionCode: string,
   ): Promise<WorkforceInvitationAuthorization | null> {
     const result = await sql<InvitationAuthorizationRow>`
       with recursive resolved_actors as (
@@ -620,7 +1072,7 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
           and assignment.revoked_at is null
           and assignment.valid_from <= now()
           and (assignment.valid_until is null or assignment.valid_until > now())
-          and permission.code = 'tenant.memberships.manage'
+          and permission.code = ${permissionCode}
 
         union
 

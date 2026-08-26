@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Delete,
   Param,
   ParseUUIDPipe,
   Patch,
@@ -24,13 +25,16 @@ import { WorkforceSessionAuthenticationGuard } from '../auth/workforce-session-a
 import { CurrentPrincipal } from '../auth/current-principal.decorator.js';
 import type { AuthenticatedPrincipal } from '../auth/auth.types.js';
 import { ChangeWorkforceMembershipStatusDto } from './dto/change-workforce-membership-status.dto.js';
+import { AssignWorkforceGlobalRoleDto } from './dto/assign-workforce-global-role.dto.js';
 import { CreateWorkforceInvitationDto } from './dto/create-workforce-invitation.dto.js';
+import { RevokeWorkforceRoleAssignmentDto } from './dto/revoke-workforce-role-assignment.dto.js';
 import { WorkforceDirectoryQueryDto } from './dto/workforce-directory-query.dto.js';
 import { WorkforceDirectoryService } from './workforce-directory.service.js';
 import type {
   WorkforceDirectoryResponse,
   WorkforceInvitationResponse,
   WorkforceMembershipStatusResponse,
+  WorkforceRoleAssignment,
 } from './workforce-directory.types.js';
 
 @ApiTags('Workforce administration')
@@ -108,5 +112,52 @@ export class WorkforceDirectoryController {
       membershipId,
       input,
     );
+  }
+
+  @Post('memberships/:membershipId/role-assignments')
+  @ApiOperation({
+    summary:
+      'Assign an approved global workforce role in an authorized practice',
+  })
+  @ApiCreatedResponse({ description: 'The practice-scoped role assignment.' })
+  @ApiUnauthorizedResponse({ description: 'An active session is required.' })
+  @ApiForbiddenResponse({
+    description: 'The caller cannot manage roles in the target organization.',
+  })
+  @ApiConflictResponse({
+    description: 'The role or membership cannot be changed.',
+  })
+  @ApiServiceUnavailableResponse({
+    description: 'Role assignment persistence is temporarily unavailable.',
+  })
+  assignGlobalRole(
+    @CurrentPrincipal() principal: AuthenticatedPrincipal,
+    @Param('membershipId', new ParseUUIDPipe()) membershipId: string,
+    @Body() input: AssignWorkforceGlobalRoleDto,
+  ): Promise<WorkforceRoleAssignment> {
+    return this.directory.assignGlobalRole(principal, membershipId, input);
+  }
+
+  @Delete('role-assignments/:assignmentId')
+  @ApiOperation({
+    summary: 'Revoke a workforce role assignment in an authorized practice',
+  })
+  @ApiOkResponse({ description: 'The role assignment was revoked.' })
+  @ApiUnauthorizedResponse({ description: 'An active session is required.' })
+  @ApiForbiddenResponse({
+    description: 'The caller cannot manage roles in the target organization.',
+  })
+  @ApiConflictResponse({
+    description: 'The role assignment cannot be revoked.',
+  })
+  @ApiServiceUnavailableResponse({
+    description: 'Role assignment persistence is temporarily unavailable.',
+  })
+  revokeRoleAssignment(
+    @CurrentPrincipal() principal: AuthenticatedPrincipal,
+    @Param('assignmentId', new ParseUUIDPipe()) assignmentId: string,
+    @Body() input: RevokeWorkforceRoleAssignmentDto,
+  ): Promise<WorkforceRoleAssignment> {
+    return this.directory.revokeRoleAssignment(principal, assignmentId, input);
   }
 }

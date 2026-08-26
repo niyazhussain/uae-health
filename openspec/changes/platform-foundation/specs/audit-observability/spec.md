@@ -31,6 +31,10 @@ The platform SHALL record policy-selected business audit events in one append-on
 - **WHEN** an authorized administrator suspends or restores a workforce membership
 - **THEN** the membership state, server-session revocation count where applicable, and safe access-authority audit evidence commit atomically without storing session identifiers, Cognito tokens, passwords, TOTP values, or MFA secrets
 
+#### Scenario: Workforce role assignment changes
+- **WHEN** an authorized administrator assigns or revokes a workforce role assignment
+- **THEN** the assignment state and safe access-authority audit evidence commit atomically without storing Cognito tokens, session identifiers, passwords, TOTP values, or MFA secrets
+
 ### Requirement: Protect audit-event integrity
 Ordinary application identities SHALL NOT update or delete committed audit events, and audit access SHALL itself be permission-controlled and auditable.
 

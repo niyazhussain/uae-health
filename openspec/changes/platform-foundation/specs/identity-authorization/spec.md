@@ -88,6 +88,18 @@ Native workforce users SHALL sign in with real verified email addresses compared
 - **WHEN** a caller attempts to suspend or restore a membership outside current database-backed permission and organization scope
 - **THEN** the platform rejects the request without changing the membership, Cognito account, or server session state
 
+#### Scenario: Authorized administrator assigns a safe global role
+- **WHEN** an administrator with current `tenant.roles.manage` assigns an active global role whose permissions are all delegable to another active membership inside the administrator's current organization scope
+- **THEN** the platform creates only that practice-scoped role assignment, evaluates it on subsequent HIS authorization decisions, and does not change Cognito groups, tokens, sessions, or the target's other memberships
+
+#### Scenario: Authorized administrator revokes a role assignment
+- **WHEN** an administrator with current `tenant.roles.manage` revokes another user's active role assignment inside the administrator's current organization scope
+- **THEN** the platform revokes only that assignment and subsequent HIS authorization decisions no longer use it
+
+#### Scenario: Administrator attempts unsafe role mutation
+- **WHEN** an administrator attempts to assign or revoke their own role, assign a tenant-local or non-delegable global role, assign an inactive membership, duplicate an active assignment, or mutate a role assignment outside current scope
+- **THEN** the platform rejects the request without changing Cognito, the target's membership, or any role assignment
+
 ### Requirement: Support approved identity federation without replacing authorization
 Cognito MAY broker approved tenant-specific OIDC or SAML workforce providers and UAE PASS after approved service-provider onboarding. Cognito SHALL provide authentication while the HIS retains the application user profile, identity bindings, tenant and facility memberships, roles, permissions, and approval limits. The HIS SHALL not grant access solely because an external identity is authenticated or because a token contains an external group claim.
 

@@ -10,6 +10,8 @@ import {
   WorkforceMembershipConflictError,
   WorkforceMembershipManagementAuthorizationLostError,
   WorkforceMembershipStateConflictError,
+  WorkforceRoleAssignmentConflictError,
+  WorkforceRoleManagementAuthorizationLostError,
   WorkforceInvitationAuthorizationLostError,
   type CognitoWorkforceDirectoryPort,
   type WorkforceDirectoryRepositoryPort,
@@ -25,6 +27,16 @@ const invitationInput = {
   displayName: 'Synthetic Invited Clinician',
   email: 'invited.clinician@example.invalid',
   reason: 'Approved synthetic staging access.',
+};
+
+const roleAssignment = {
+  assignmentId: '70000000-0000-4000-8000-000000000001',
+  membershipId: '60000000-0000-4000-8000-000000000002',
+  roleId: '80000000-0000-4000-8000-000000000001',
+  roleCode: 'RECEPTION',
+  roleName: 'Reception and registration',
+  roleDescription: 'Synthetic registration access.',
+  organizationId: invitationInput.organizationId,
 };
 
 function createDependencies() {
@@ -66,6 +78,23 @@ function createDependencies() {
     organizationId: invitationInput.organizationId,
     organizationName: 'Synthetic Care Practice',
   });
+  const authorizeRoleManagement = jest.fn().mockResolvedValue({
+    actorUserId: '30000000-0000-4000-8000-000000000001',
+    tenantId: '10000000-0000-4000-8000-000000000001',
+    tenantName: 'Synthetic Practice Group',
+    tenantIsSynthetic: true,
+    organizationId: invitationInput.organizationId,
+    organizationName: 'Synthetic Care Practice',
+  });
+  const listRoleAssignments = jest.fn().mockResolvedValue([roleAssignment]);
+  const listAssignableGlobalRoles = jest.fn().mockResolvedValue([
+    {
+      roleId: roleAssignment.roleId,
+      code: roleAssignment.roleCode,
+      name: roleAssignment.roleName,
+      description: roleAssignment.roleDescription,
+    },
+  ]);
   const isCognitoSubjectBound = jest.fn().mockResolvedValue(false);
   const persistInvitation = jest.fn().mockResolvedValue({
     applicationUserId: '30000000-0000-4000-8000-000000000003',
@@ -82,13 +111,20 @@ function createDependencies() {
     membershipStatus: 'suspended',
     sessionsRevoked: 2,
   });
+  const assignGlobalRole = jest.fn().mockResolvedValue(roleAssignment);
+  const revokeRoleAssignment = jest.fn().mockResolvedValue(roleAssignment);
   const repository: WorkforceDirectoryRepositoryPort = {
     listManageableContexts,
     listMembers,
     authorizeInvitation,
+    authorizeRoleManagement,
+    listRoleAssignments,
+    listAssignableGlobalRoles,
     isCognitoSubjectBound,
     persistInvitation,
     changeMembershipStatus,
+    assignGlobalRole,
+    revokeRoleAssignment,
   };
   const listAccounts = jest.fn().mockResolvedValue([
     {
@@ -120,9 +156,14 @@ function createDependencies() {
     listMembers,
     listAccounts,
     authorizeInvitation,
+    authorizeRoleManagement,
+    listRoleAssignments,
+    listAssignableGlobalRoles,
     isCognitoSubjectBound,
     persistInvitation,
     changeMembershipStatus,
+    assignGlobalRole,
+    revokeRoleAssignment,
     provisionAccount,
     deleteAccount,
   };
@@ -151,11 +192,21 @@ describe('WorkforceDirectoryService', () => {
         organizationId: '20000000-0000-4000-8000-000000000001',
         organizationName: 'Synthetic Care Practice',
       },
+      canManageRoles: true,
+      assignableGlobalRoles: [
+        {
+          roleId: roleAssignment.roleId,
+          code: roleAssignment.roleCode,
+          name: roleAssignment.roleName,
+          description: roleAssignment.roleDescription,
+        },
+      ],
       users: [
         {
           membershipId: '60000000-0000-4000-8000-000000000001',
           applicationUserId: '30000000-0000-4000-8000-000000000001',
           canChangeMembership: false,
+          roleAssignments: [],
           displayName: 'Synthetic Practice Administrator',
           email: 'practice.admin@example.invalid',
           membershipStatus: 'active',
@@ -170,6 +221,7 @@ describe('WorkforceDirectoryService', () => {
           membershipId: '60000000-0000-4000-8000-000000000002',
           applicationUserId: '30000000-0000-4000-8000-000000000002',
           canChangeMembership: true,
+          roleAssignments: [roleAssignment],
           displayName: 'Pending Synthetic User',
           email: 'pending.user@example.invalid',
           membershipStatus: 'pending',
@@ -439,6 +491,59 @@ describe('WorkforceDirectoryService', () => {
           reason: 'Synthetic authorization rejection test.',
         },
       ),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('assigns an approved global role after checking current database authority', async () => {
+    const { repository, cognito, assignGlobalRole } = createDependencies();
+    const service = new WorkforceDirectoryService(repository, cognito);
+
+    await expect(
+      service.assignGlobalRole(principal, roleAssignment.membershipId, {
+        organizationId: invitationInput.organizationId,
+        roleId: roleAssignment.roleId,
+        reason: 'Synthetic role-assignment test.',
+      }),
+    ).resolves.toEqual(roleAssignment);
+    expect(assignGlobalRole).toHaveBeenCalledWith({
+      actorCognitoSubject: principal.subject,
+      membershipId: roleAssignment.membershipId,
+      organizationId: invitationInput.organizationId,
+      roleId: roleAssignment.roleId,
+      reason: 'Synthetic role-assignment test.',
+    });
+  });
+
+  it('maps an unsafe role assignment to a conflict', async () => {
+    const { repository, cognito, assignGlobalRole } = createDependencies();
+    assignGlobalRole.mockRejectedValue(
+      new WorkforceRoleAssignmentConflictError(
+        'Administrators cannot change their own role assignments.',
+      ),
+    );
+    const service = new WorkforceDirectoryService(repository, cognito);
+
+    await expect(
+      service.assignGlobalRole(principal, roleAssignment.membershipId, {
+        organizationId: invitationInput.organizationId,
+        roleId: roleAssignment.roleId,
+        reason: 'Synthetic role conflict test.',
+      }),
+    ).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('rejects role revocation when current database authority changed', async () => {
+    const { repository, cognito, revokeRoleAssignment } = createDependencies();
+    revokeRoleAssignment.mockRejectedValue(
+      new WorkforceRoleManagementAuthorizationLostError(),
+    );
+    const service = new WorkforceDirectoryService(repository, cognito);
+
+    await expect(
+      service.revokeRoleAssignment(principal, roleAssignment.assignmentId, {
+        organizationId: invitationInput.organizationId,
+        reason: 'Synthetic role authorization rejection test.',
+      }),
     ).rejects.toBeInstanceOf(ForbiddenException);
   });
 });

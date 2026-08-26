@@ -87,6 +87,44 @@ export interface WorkforceMembershipStatusResponse {
   sessionsRevoked: number;
 }
 
+export interface WorkforceRoleAssignment {
+  assignmentId: string;
+  membershipId: string;
+  roleId: string;
+  roleCode: string;
+  roleName: string;
+  roleDescription: string;
+  organizationId: string;
+}
+
+export interface WorkforceAssignableGlobalRole {
+  roleId: string;
+  code: string;
+  name: string;
+  description: string;
+}
+
+export interface AssignWorkforceGlobalRoleInput {
+  organizationId: string;
+  roleId: string;
+  reason: string;
+}
+
+export interface AssignWorkforceGlobalRoleRepositoryInput extends AssignWorkforceGlobalRoleInput {
+  actorCognitoSubject: string;
+  membershipId: string;
+}
+
+export interface RevokeWorkforceRoleAssignmentInput {
+  organizationId: string;
+  reason: string;
+}
+
+export interface RevokeWorkforceRoleAssignmentRepositoryInput extends RevokeWorkforceRoleAssignmentInput {
+  actorCognitoSubject: string;
+  assignmentId: string;
+}
+
 export class WorkforceMembershipConflictError extends Error {
   constructor(message = 'This user already has membership in the practice.') {
     super(message);
@@ -122,10 +160,25 @@ export class WorkforceMembershipManagementAuthorizationLostError extends Error {
   }
 }
 
+export class WorkforceRoleManagementAuthorizationLostError extends Error {
+  constructor() {
+    super('Workforce role-management authorization is no longer active.');
+    this.name = 'WorkforceRoleManagementAuthorizationLostError';
+  }
+}
+
+export class WorkforceRoleAssignmentConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'WorkforceRoleAssignmentConflictError';
+  }
+}
+
 export interface WorkforceDirectoryUser {
   membershipId: string;
   applicationUserId: string;
   canChangeMembership: boolean;
+  roleAssignments: WorkforceRoleAssignment[];
   displayName: string;
   email: string | null;
   membershipStatus: WorkforceDirectoryMember['membershipStatus'];
@@ -140,6 +193,8 @@ export interface WorkforceDirectoryUser {
 export interface WorkforceDirectoryResponse {
   contexts: WorkforceDirectoryContext[];
   selectedContext: WorkforceDirectoryContext;
+  canManageRoles: boolean;
+  assignableGlobalRoles: WorkforceAssignableGlobalRole[];
   users: WorkforceDirectoryUser[];
 }
 
@@ -155,6 +210,15 @@ export interface WorkforceDirectoryRepositoryPort {
     cognitoSubject: string,
     organizationId: string,
   ): Promise<WorkforceInvitationAuthorization | null>;
+  authorizeRoleManagement(
+    cognitoSubject: string,
+    organizationId: string,
+  ): Promise<WorkforceInvitationAuthorization | null>;
+  listRoleAssignments(
+    tenantId: string,
+    organizationId: string,
+  ): Promise<WorkforceRoleAssignment[]>;
+  listAssignableGlobalRoles(): Promise<WorkforceAssignableGlobalRole[]>;
   isCognitoSubjectBound(cognitoSubject: string): Promise<boolean>;
   persistInvitation(
     input: PersistWorkforceInvitationInput,
@@ -162,6 +226,12 @@ export interface WorkforceDirectoryRepositoryPort {
   changeMembershipStatus(
     input: ChangeWorkforceMembershipStatusRepositoryInput,
   ): Promise<WorkforceMembershipStatusResponse>;
+  assignGlobalRole(
+    input: AssignWorkforceGlobalRoleRepositoryInput,
+  ): Promise<WorkforceRoleAssignment>;
+  revokeRoleAssignment(
+    input: RevokeWorkforceRoleAssignmentRepositoryInput,
+  ): Promise<WorkforceRoleAssignment>;
 }
 
 export interface CognitoWorkforceDirectoryPort {

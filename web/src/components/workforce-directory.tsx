@@ -4,9 +4,11 @@ import {
   CheckCircleIcon,
   EnvelopeSimpleIcon,
   MagnifyingGlassIcon,
+  MinusCircleIcon,
   PauseCircleIcon,
   PlayCircleIcon,
   ShieldCheckIcon,
+  ShieldPlusIcon,
   UserCircleIcon,
   UserPlusIcon,
   UsersThreeIcon,
@@ -36,11 +38,14 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  assignWorkforceGlobalRole,
   changeWorkforceMembershipStatus,
   createWorkforceInvitation,
   getWorkforceDirectory,
+  revokeWorkforceRoleAssignment,
   WorkforceApiError,
   type WorkforceDirectoryResponse,
+  type WorkforceRoleAssignment,
   type WorkforceDirectoryUser,
 } from "@/lib/workforce-directory";
 
@@ -116,6 +121,18 @@ export function WorkforceDirectory({
     string | null
   >(null);
   const [membershipChangeSuccess, setMembershipChangeSuccess] = useState<
+    string | null
+  >(null);
+  const [roleManagementTarget, setRoleManagementTarget] =
+    useState<WorkforceDirectoryUser | null>(null);
+  const [selectedRoleId, setSelectedRoleId] = useState("");
+  const [roleManagementReason, setRoleManagementReason] = useState("");
+  const [roleManagementSubmitting, setRoleManagementSubmitting] =
+    useState(false);
+  const [roleManagementError, setRoleManagementError] = useState<string | null>(
+    null,
+  );
+  const [roleManagementSuccess, setRoleManagementSuccess] = useState<
     string | null
   >(null);
 
@@ -293,6 +310,114 @@ export function WorkforceDirectory({
     }
   };
 
+  const setRoleManagementDialogOpen = (open: boolean) => {
+    if (roleManagementSubmitting || open) return;
+
+    setRoleManagementTarget(null);
+    setSelectedRoleId("");
+    setRoleManagementReason("");
+    setRoleManagementError(null);
+  };
+
+  const openRoleManagementDialog = (user: WorkforceDirectoryUser) => {
+    setSelectedRoleId("");
+    setRoleManagementReason("");
+    setRoleManagementError(null);
+    setRoleManagementTarget(user);
+  };
+
+  const submitRoleAssignment = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    if (!activeOrganizationId || !roleManagementTarget || !selectedRoleId) {
+      setRoleManagementError(
+        "Select a practice, user, and role before continuing.",
+      );
+      return;
+    }
+
+    setRoleManagementSubmitting(true);
+    setRoleManagementError(null);
+    setRoleManagementSuccess(null);
+
+    try {
+      const assignment = await assignWorkforceGlobalRole(
+        csrfToken,
+        roleManagementTarget.membershipId,
+        {
+          organizationId: activeOrganizationId,
+          roleId: selectedRoleId,
+          reason: roleManagementReason.trim(),
+        },
+      );
+      setRoleManagementSuccess(
+        `${assignment.roleName} was assigned to ${roleManagementTarget.displayName}.`,
+      );
+      setSelectedRoleId("");
+      setRoleManagementReason("");
+      retry();
+    } catch (reason: unknown) {
+      if (reason instanceof WorkforceApiError && reason.status === 401) {
+        onSessionExpired();
+        return;
+      }
+      setRoleManagementError(
+        reason instanceof Error
+          ? reason.message
+          : "The global role could not be assigned.",
+      );
+    } finally {
+      setRoleManagementSubmitting(false);
+    }
+  };
+
+  const revokeRoleAssignment = async (assignment: WorkforceRoleAssignment) => {
+    if (!activeOrganizationId || !roleManagementTarget) {
+      setRoleManagementError("Select a practice and user before continuing.");
+      return;
+    }
+
+    const reason = roleManagementReason.trim();
+    if (reason.length < 3) {
+      setRoleManagementError(
+        "Enter an access-change reason of at least 3 characters.",
+      );
+      return;
+    }
+
+    setRoleManagementSubmitting(true);
+    setRoleManagementError(null);
+    setRoleManagementSuccess(null);
+
+    try {
+      const revoked = await revokeWorkforceRoleAssignment(
+        csrfToken,
+        assignment.assignmentId,
+        {
+          organizationId: activeOrganizationId,
+          reason,
+        },
+      );
+      setRoleManagementSuccess(
+        `${revoked.roleName} was removed from ${roleManagementTarget.displayName}.`,
+      );
+      setRoleManagementReason("");
+      retry();
+    } catch (reason: unknown) {
+      if (reason instanceof WorkforceApiError && reason.status === 401) {
+        onSessionExpired();
+        return;
+      }
+      setRoleManagementError(
+        reason instanceof Error
+          ? reason.message
+          : "The role assignment could not be revoked.",
+      );
+    } finally {
+      setRoleManagementSubmitting(false);
+    }
+  };
+
   return (
     <main className="mx-auto w-full max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
       <section className="flex flex-col gap-5 border-b pb-7 lg:flex-row lg:items-end lg:justify-between">
@@ -382,6 +507,29 @@ export function WorkforceDirectory({
             size="sm"
             variant="ghost"
             onClick={() => setMembershipChangeSuccess(null)}
+          >
+            Dismiss
+          </Button>
+        </div>
+      )}
+
+      {roleManagementSuccess && (
+        <div
+          className="mt-6 flex items-start gap-3 rounded-xl border border-success/30 bg-success/10 p-4 text-sm"
+          role="status"
+        >
+          <CheckCircleIcon className="mt-0.5 size-5 shrink-0 text-success" />
+          <div className="flex-1">
+            <p className="font-medium text-foreground">Role access updated</p>
+            <p className="mt-1 text-muted-foreground">
+              {roleManagementSuccess}
+            </p>
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            onClick={() => setRoleManagementSuccess(null)}
           >
             Dismiss
           </Button>
@@ -478,11 +626,12 @@ export function WorkforceDirectory({
 
         {!loading && !error && visibleUsers.length > 0 && (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[54rem] text-start text-sm">
+            <table className="w-full min-w-[64rem] text-start text-sm">
               <thead className="bg-muted/60 text-xs text-muted-foreground">
                 <tr>
                   <th className="px-5 py-3 text-start font-medium">User</th>
                   <th className="px-5 py-3 text-start font-medium">Access</th>
+                  <th className="px-5 py-3 text-start font-medium">Roles</th>
                   <th className="px-5 py-3 text-start font-medium">Cognito</th>
                   <th className="px-5 py-3 text-start font-medium">Data</th>
                   <th className="px-5 py-3 text-end font-medium">Actions</th>
@@ -509,6 +658,24 @@ export function WorkforceDirectory({
                     </td>
                     <td className="px-5 py-4">{statusBadge(user)}</td>
                     <td className="px-5 py-4">
+                      {user.roleAssignments.length > 0 ? (
+                        <div className="flex max-w-64 flex-wrap gap-1.5">
+                          {user.roleAssignments.map((assignment) => (
+                            <Badge
+                              key={assignment.assignmentId}
+                              variant="outline"
+                            >
+                              {assignment.roleName}
+                            </Badge>
+                          ))}
+                        </div>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">
+                          No roles assigned
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-5 py-4">
                       <p>{user.cognitoStatus ?? "Not linked"}</p>
                       <p className="mt-0.5 text-xs text-muted-foreground">
                         {user.identityStatus
@@ -527,29 +694,44 @@ export function WorkforceDirectory({
                       )}
                     </td>
                     <td className="px-5 py-4 text-end">
-                      {user.canChangeMembership &&
-                        user.membershipStatus === "active" && (
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="outline"
-                          onClick={() => openMembershipChangeDialog(user)}
-                        >
-                          <PauseCircleIcon />
-                          Suspend
-                        </Button>
-                      )}
-                      {user.canChangeMembership &&
-                        user.membershipStatus === "suspended" && (
-                        <Button
-                          type="button"
-                          size="sm"
-                          onClick={() => openMembershipChangeDialog(user)}
-                        >
-                          <PlayCircleIcon />
-                          Restore
-                        </Button>
-                      )}
+                      <div className="flex justify-end gap-2">
+                        {directory?.canManageRoles &&
+                          user.canChangeMembership &&
+                          user.membershipStatus === "active" && (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() => openRoleManagementDialog(user)}
+                            >
+                              <ShieldPlusIcon />
+                              Manage roles
+                            </Button>
+                          )}
+                        {user.canChangeMembership &&
+                          user.membershipStatus === "active" && (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() => openMembershipChangeDialog(user)}
+                            >
+                              <PauseCircleIcon />
+                              Suspend
+                            </Button>
+                          )}
+                        {user.canChangeMembership &&
+                          user.membershipStatus === "suspended" && (
+                            <Button
+                              type="button"
+                              size="sm"
+                              onClick={() => openMembershipChangeDialog(user)}
+                            >
+                              <PlayCircleIcon />
+                              Restore
+                            </Button>
+                          )}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -625,8 +807,8 @@ export function WorkforceDirectory({
               />
               <p className="text-xs leading-5 text-muted-foreground">
                 This reason is stored in the audit trail. No role or facility
-                access is assigned by this invitation. Do not include patient
-                or clinical details.
+                access is assigned by this invitation. Do not include patient or
+                clinical details.
               </p>
             </div>
 
@@ -651,9 +833,139 @@ export function WorkforceDirectory({
               </Button>
               <Button type="submit" disabled={inviteSubmitting}>
                 <EnvelopeSimpleIcon />
-                {inviteSubmitting
-                  ? "Creating invitation"
-                  : "Create invitation"}
+                {inviteSubmitting ? "Creating invitation" : "Create invitation"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={roleManagementTarget !== null}
+        onOpenChange={setRoleManagementDialogOpen}
+      >
+        <DialogContent className="sm:max-w-lg">
+          <form className="grid gap-5" onSubmit={submitRoleAssignment}>
+            <DialogHeader>
+              <DialogTitle>Manage practice roles</DialogTitle>
+              <DialogDescription>
+                Assign only approved global roles for this practice, or remove
+                an existing eligible role. Cognito sign-in and other practice
+                access are unchanged.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="rounded-lg border bg-muted/45 p-3">
+              <p className="text-xs font-medium text-muted-foreground">User</p>
+              <p className="mt-1 font-medium">
+                {roleManagementTarget?.displayName}
+              </p>
+              <p className="mt-0.5 text-sm text-muted-foreground">
+                {roleManagementTarget?.email ?? "No primary email"}
+              </p>
+            </div>
+
+            <div className="grid gap-2">
+              <Label>Current roles</Label>
+              {roleManagementTarget?.roleAssignments.length ? (
+                <div className="grid gap-2">
+                  {roleManagementTarget.roleAssignments.map((assignment) => (
+                    <div
+                      key={assignment.assignmentId}
+                      className="flex items-center justify-between gap-3 rounded-lg border p-3"
+                    >
+                      <div>
+                        <p className="font-medium">{assignment.roleName}</p>
+                        <p className="mt-0.5 text-xs text-muted-foreground">
+                          {assignment.roleDescription}
+                        </p>
+                      </div>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => void revokeRoleAssignment(assignment)}
+                        disabled={roleManagementSubmitting}
+                      >
+                        <MinusCircleIcon />
+                        Remove
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="rounded-lg border border-dashed p-3 text-sm text-muted-foreground">
+                  No role is currently assigned for this practice.
+                </p>
+              )}
+            </div>
+
+            <div className="grid gap-2">
+              <Label htmlFor="global-role">Global role to assign</Label>
+              <Select value={selectedRoleId} onValueChange={setSelectedRoleId}>
+                <SelectTrigger id="global-role">
+                  <SelectValue placeholder="Select a safe global role" />
+                </SelectTrigger>
+                <SelectContent>
+                  {directory?.assignableGlobalRoles.map((role) => (
+                    <SelectItem key={role.roleId} value={role.roleId}>
+                      {role.name} · {role.description}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs leading-5 text-muted-foreground">
+                Privileged roles and tenant-local role design are intentionally
+                excluded from this screen.
+              </p>
+            </div>
+
+            <div className="grid gap-2">
+              <Label htmlFor="role-management-reason">
+                Reason for access change
+              </Label>
+              <Textarea
+                id="role-management-reason"
+                name="reason"
+                minLength={3}
+                maxLength={500}
+                required
+                value={roleManagementReason}
+                onChange={(event) =>
+                  setRoleManagementReason(event.target.value)
+                }
+              />
+              <p className="text-xs leading-5 text-muted-foreground">
+                This reason is stored in the audit trail. Do not include patient
+                or clinical details.
+              </p>
+            </div>
+
+            {roleManagementError && (
+              <div
+                className="flex gap-2 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive"
+                role="alert"
+              >
+                <WarningCircleIcon className="mt-0.5 size-4 shrink-0" />
+                <p>{roleManagementError}</p>
+              </div>
+            )}
+
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setRoleManagementDialogOpen(false)}
+                disabled={roleManagementSubmitting}
+              >
+                Close
+              </Button>
+              <Button
+                type="submit"
+                disabled={roleManagementSubmitting || !selectedRoleId}
+              >
+                <ShieldPlusIcon />
+                {roleManagementSubmitting ? "Updating roles" : "Assign role"}
               </Button>
             </DialogFooter>
           </form>
@@ -705,8 +1017,8 @@ export function WorkforceDirectory({
                 }
               />
               <p className="text-xs leading-5 text-muted-foreground">
-                This reason is stored in the audit trail. Do not include
-                patient or clinical details.
+                This reason is stored in the audit trail. Do not include patient
+                or clinical details.
               </p>
             </div>
 

@@ -12,13 +12,16 @@ import {
   WORKFORCE_DIRECTORY_REPOSITORY,
 } from './workforce-directory.constants.js';
 import type {
+  AssignWorkforceGlobalRoleInput,
   ChangeWorkforceMembershipStatusInput,
   CreateWorkforceInvitationInput,
   CognitoWorkforceDirectoryPort,
+  RevokeWorkforceRoleAssignmentInput,
   WorkforceDirectoryRepositoryPort,
   WorkforceDirectoryResponse,
   WorkforceInvitationResponse,
   WorkforceMembershipStatusResponse,
+  WorkforceRoleAssignment,
 } from './workforce-directory.types.js';
 import {
   WorkforceIdentityConflictError,
@@ -26,6 +29,8 @@ import {
   WorkforceMembershipConflictError,
   WorkforceMembershipManagementAuthorizationLostError,
   WorkforceMembershipStateConflictError,
+  WorkforceRoleAssignmentConflictError,
+  WorkforceRoleManagementAuthorizationLostError,
 } from './workforce-directory.types.js';
 
 @Injectable()
@@ -58,10 +63,21 @@ export class WorkforceDirectoryService {
       );
     }
 
-    const members = await this.repository.listMembers(
-      selectedContext.tenantId,
-      selectedContext.organizationId,
-    );
+    const [members, roleAssignments, roleManagementAuthorization] =
+      await Promise.all([
+        this.repository.listMembers(
+          selectedContext.tenantId,
+          selectedContext.organizationId,
+        ),
+        this.repository.listRoleAssignments(
+          selectedContext.tenantId,
+          selectedContext.organizationId,
+        ),
+        this.repository.authorizeRoleManagement(
+          principal.subject,
+          selectedContext.organizationId,
+        ),
+      ]);
 
     let accounts;
 
@@ -76,10 +92,26 @@ export class WorkforceDirectoryService {
     const accountBySubject = new Map(
       accounts.map((account) => [account.subject, account]),
     );
+    const roleAssignmentsByMembership = new Map<
+      string,
+      WorkforceRoleAssignment[]
+    >();
+
+    for (const assignment of roleAssignments) {
+      const assignments =
+        roleAssignmentsByMembership.get(assignment.membershipId) ?? [];
+      assignments.push(assignment);
+      roleAssignmentsByMembership.set(assignment.membershipId, assignments);
+    }
+    const assignableGlobalRoles = roleManagementAuthorization
+      ? await this.repository.listAssignableGlobalRoles()
+      : [];
 
     return {
       contexts,
       selectedContext,
+      canManageRoles: roleManagementAuthorization !== null,
+      assignableGlobalRoles,
       users: members.map((member) => {
         const account = member.cognitoSubject
           ? accountBySubject.get(member.cognitoSubject)
@@ -89,6 +121,8 @@ export class WorkforceDirectoryService {
           membershipId: member.membershipId,
           applicationUserId: member.applicationUserId,
           canChangeMembership: member.cognitoSubject !== principal.subject,
+          roleAssignments:
+            roleAssignmentsByMembership.get(member.membershipId) ?? [],
           displayName: member.displayName,
           email: member.email,
           membershipStatus: member.membershipStatus,
@@ -212,6 +246,65 @@ export class WorkforceDirectoryService {
 
       throw new ServiceUnavailableException(
         'The workforce membership could not be changed.',
+      );
+    }
+  }
+
+  async assignGlobalRole(
+    principal: AuthenticatedPrincipal,
+    membershipId: string,
+    input: AssignWorkforceGlobalRoleInput,
+  ): Promise<WorkforceRoleAssignment> {
+    try {
+      return await this.repository.assignGlobalRole({
+        actorCognitoSubject: principal.subject,
+        membershipId,
+        organizationId: input.organizationId,
+        roleId: input.roleId,
+        reason: input.reason,
+      });
+    } catch (error) {
+      if (error instanceof WorkforceRoleManagementAuthorizationLostError) {
+        throw new ForbiddenException(
+          'Workforce role management is not permitted for this organization.',
+        );
+      }
+
+      if (error instanceof WorkforceRoleAssignmentConflictError) {
+        throw new ConflictException(error.message);
+      }
+
+      throw new ServiceUnavailableException(
+        'The workforce role could not be assigned.',
+      );
+    }
+  }
+
+  async revokeRoleAssignment(
+    principal: AuthenticatedPrincipal,
+    assignmentId: string,
+    input: RevokeWorkforceRoleAssignmentInput,
+  ): Promise<WorkforceRoleAssignment> {
+    try {
+      return await this.repository.revokeRoleAssignment({
+        actorCognitoSubject: principal.subject,
+        assignmentId,
+        organizationId: input.organizationId,
+        reason: input.reason,
+      });
+    } catch (error) {
+      if (error instanceof WorkforceRoleManagementAuthorizationLostError) {
+        throw new ForbiddenException(
+          'Workforce role management is not permitted for this organization.',
+        );
+      }
+
+      if (error instanceof WorkforceRoleAssignmentConflictError) {
+        throw new ConflictException(error.message);
+      }
+
+      throw new ServiceUnavailableException(
+        'The workforce role could not be revoked.',
       );
     }
   }

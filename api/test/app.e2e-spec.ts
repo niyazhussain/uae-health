@@ -113,6 +113,45 @@ describe('AppController (e2e)', () => {
       });
   });
 
+  it('/v1/admin/workforce-directory role assignment changes reject an unauthenticated request', () => {
+    const server = app.getHttpServer() as Server;
+
+    return request(server)
+      .post(
+        '/v1/admin/workforce-directory/memberships/60000000-0000-4000-8000-000000000001/role-assignments',
+      )
+      .send({
+        organizationId: '20000000-0000-4000-8000-000000000001',
+        roleId: '70000000-0000-4000-8000-000000000001',
+        reason: 'Synthetic role assignment test.',
+      })
+      .expect(401)
+      .expect({
+        message: 'Active workforce session required.',
+        error: 'Unauthorized',
+        statusCode: 401,
+      });
+  });
+
+  it('/v1/admin/workforce-directory role assignment revocation rejects an unauthenticated request', () => {
+    const server = app.getHttpServer() as Server;
+
+    return request(server)
+      .delete(
+        '/v1/admin/workforce-directory/role-assignments/70000000-0000-4000-8000-000000000001',
+      )
+      .send({
+        organizationId: '20000000-0000-4000-8000-000000000001',
+        reason: 'Synthetic role revocation test.',
+      })
+      .expect(401)
+      .expect({
+        message: 'Active workforce session required.',
+        error: 'Unauthorized',
+        statusCode: 401,
+      });
+  });
+
   afterEach(async () => {
     await app.close();
   });
