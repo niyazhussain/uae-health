@@ -30,7 +30,7 @@ raw identifier as a host-only HttpOnly cookie. The browser clears all Cognito
 tokens and uses credentialed cookie requests from that point onward. Cognito
 groups are not treated as HIS authorization.
 
-The default session has a 15-minute sliding idle timeout and a fixed 8-hour
+The default session has a 30-minute sliding idle timeout and a fixed 8-hour
 absolute timeout. Valid authenticated API activity renews idle expiry at most
 once every five minutes; static UI assets do not renew it. Staging and
 production require `SESSION_COOKIE_SECURE=true`. State-changing requests also

@@ -175,7 +175,7 @@ export function validateEnvironment(
     'SESSION_COOKIE_SECURE',
   );
   const sessionIdleMinutes = readPositiveInteger(
-    environment.SESSION_IDLE_MINUTES ?? 15,
+    environment.SESSION_IDLE_MINUTES ?? 30,
     'SESSION_IDLE_MINUTES',
   );
   const sessionAbsoluteMinutes = readPositiveInteger(

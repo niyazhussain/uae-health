@@ -143,7 +143,7 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
 
   it('stores only hashed browser session values with bounded expiry', async () => {
     const now = new Date();
-    const idleExpiry = new Date(now.getTime() + 15 * 60_000);
+    const idleExpiry = new Date(now.getTime() + 30 * 60_000);
     const absoluteExpiry = new Date(now.getTime() + 8 * 60 * 60_000);
     const session = await database
       .insertInto('workforce_sessions')
@@ -175,7 +175,7 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
 
   it('creates, restores, slides, and revokes an opaque workforce session', async () => {
     const configValues: Record<string, string | number> = {
-      SESSION_IDLE_MINUTES: 15,
+      SESSION_IDLE_MINUTES: 30,
       SESSION_ABSOLUTE_MINUTES: 480,
       SESSION_RENEWAL_MINUTES: 5,
       COGNITO_REGION: 'ap-south-1',

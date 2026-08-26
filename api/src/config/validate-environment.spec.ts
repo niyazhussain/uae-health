@@ -81,7 +81,7 @@ describe('validateEnvironment authentication', () => {
   it('configures a bounded local workforce session by default', () => {
     expect(validateEnvironment({})).toMatchObject({
       SESSION_COOKIE_SECURE: 'false',
-      SESSION_IDLE_MINUTES: 15,
+      SESSION_IDLE_MINUTES: 30,
       SESSION_ABSOLUTE_MINUTES: 480,
       SESSION_RENEWAL_MINUTES: 5,
     });

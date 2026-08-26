@@ -266,6 +266,10 @@ Browser authentication SHALL use a backend-for-frontend session that prevents Ja
 - **WHEN** valid authenticated API activity occurs before idle expiry and before the fixed absolute expiry
 - **THEN** the API may extend the server-side idle expiry and renew the cookie without extending the absolute expiry
 
+#### Scenario: Default idle session policy is applied
+- **WHEN** an environment does not override the workforce idle-session setting
+- **THEN** the server creates and renews sessions with a 30-minute sliding idle expiry and retains the fixed 8-hour absolute expiry
+
 #### Scenario: User signs out
 - **WHEN** a user completes sign-out
 - **THEN** the application revokes the server-side session, clears the browser cookie, and protected API calls no longer succeed with that session
