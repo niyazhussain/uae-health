@@ -164,6 +164,10 @@ Site administrators SHALL control the permission catalogue and immutable, clonab
 - **WHEN** an administrator with current `tenant.roles.manage` opens the role catalogue for their current practice
 - **THEN** the platform returns active global templates and only the current tenant's active local roles with their permissions, delegation status, and current-practice assignment counts, without changing authorization state
 
+#### Scenario: Role manager browses a large catalogue
+- **WHEN** an authorized administrator searches, filters, or moves between bounded pages of the role catalogue
+- **THEN** the API returns only role summaries from the current practice scope and the requested page metadata; opening one summary returns only that role's full read-only permissions through the same authorization check
+
 #### Scenario: Role manager requests another tenant's catalogue
 - **WHEN** an administrator requests a role catalogue outside their current tenant and practice authority
 - **THEN** the platform denies the request without disclosing roles, assignments, members, or counts from that tenant

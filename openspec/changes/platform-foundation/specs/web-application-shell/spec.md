@@ -22,6 +22,14 @@ The web application SHALL provide a consistent shell for authenticated HIS modul
 - **WHEN** an authenticated user opens the Roles route
 - **THEN** the shell preserves the selected practice context and the page requests only the read-only catalogue that the API authorizes for that context
 
+#### Scenario: Role manager inspects a listed role
+- **WHEN** an authorized role manager selects a role from the current-practice catalogue list
+- **THEN** the page shows the role's complete read-only description and permissions in a responsive details panel through a scoped role-detail request, without changing access or disclosing another practice's data
+
+#### Scenario: Role manager browses many practice roles
+- **WHEN** the current practice has more roles than one catalogue page
+- **THEN** the page offers server-backed search, System/Practice filtering, and bounded pagination while showing only one page of role summaries at a time
+
 #### Scenario: User navigates from the top bar
 - **WHEN** an authenticated user selects Workforce or Roles from the top-bar navigation
 - **THEN** the shell changes the requested page while preserving the selected practice context and the API remains the authorization authority

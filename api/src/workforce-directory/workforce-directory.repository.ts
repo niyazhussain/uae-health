@@ -21,8 +21,10 @@ import type {
   WorkforceInvitationResponse,
   WorkforceMembershipStatusResponse,
   WorkforceRoleAssignment,
-  WorkforceRoleCataloguePermission,
   WorkforceRoleCatalogueRole,
+  WorkforceRoleCatalogueRoleDetail,
+  WorkforceRoleCataloguePage,
+  WorkforceRoleCatalogueQuery,
   WorkforceTenantLocalRole,
 } from './workforce-directory.types.js';
 import {
@@ -107,6 +109,8 @@ interface RoleCatalogueRoleRow {
   description: string;
   source: WorkforceRoleCatalogueRole['source'];
   assignment_count: string | number;
+  permission_count: string | number;
+  is_delegable: boolean;
 }
 
 interface RoleCataloguePermissionRow {
@@ -431,8 +435,11 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
   async listRoleCatalogue(
     tenantId: string,
     organizationId: string,
-  ): Promise<WorkforceRoleCatalogueRole[]> {
-    const [roles, permissionRows] = await Promise.all([
+    query: WorkforceRoleCatalogueQuery,
+  ): Promise<WorkforceRoleCataloguePage> {
+    const searchPattern = query.search ? `%${query.search}%` : null;
+    const offset = (query.page - 1) * query.pageSize;
+    const [roles, total] = await Promise.all([
       sql<RoleCatalogueRoleRow>`
         select
           role.id as role_id,
@@ -443,7 +450,9 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
             when role.tenant_id is null then 'global'
             else 'tenant-local'
           end as source,
-          coalesce(assignment_counts.assignment_count, 0) as assignment_count
+          coalesce(assignment_counts.assignment_count, 0) as assignment_count,
+          coalesce(permission_counts.permission_count, 0) as permission_count,
+          coalesce(permission_counts.is_delegable, false) as is_delegable
         from roles role
         left join lateral (
           select count(*) as assignment_count
@@ -464,70 +473,195 @@ export class WorkforceDirectoryRepository implements WorkforceDirectoryRepositor
             and assignment.valid_from <= now()
             and (assignment.valid_until is null or assignment.valid_until > now())
         ) assignment_counts on true
+        left join lateral (
+          select
+            count(*) as permission_count,
+            coalesce(bool_and(permission.is_delegable), false) as is_delegable
+          from role_permissions role_permission
+          join permissions permission
+            on permission.id = role_permission.permission_id
+          where role_permission.role_id = role.id
+        ) permission_counts on true
         where role.status = 'active'
           and (
             (role.tenant_id is null and role.is_system_template = true)
             or role.tenant_id = ${tenantId}
+          )
+          and (
+            ${query.source} = 'all'
+            or (
+              ${query.source} = 'global'
+              and role.tenant_id is null
+              and role.is_system_template = true
+            )
+            or (${query.source} = 'tenant-local' and role.tenant_id = ${tenantId})
+          )
+          and (
+            ${searchPattern}::text is null
+            or role.name ilike ${searchPattern}
+            or role.code ilike ${searchPattern}
+            or role.description ilike ${searchPattern}
+            or exists (
+              select 1
+              from role_permissions role_permission
+              join permissions permission
+                on permission.id = role_permission.permission_id
+              where role_permission.role_id = role.id
+                and (
+                  permission.name ilike ${searchPattern}
+                  or permission.code ilike ${searchPattern}
+                  or permission.description ilike ${searchPattern}
+                )
+            )
           )
         order by
           case when role.tenant_id is null then 0 else 1 end,
           role.name,
           role.id
+        limit ${query.pageSize}
+        offset ${offset}
       `.execute(this.database.client),
-      sql<RoleCataloguePermissionRow>`
-        select
-          role.id as role_id,
-          permission.id as permission_id,
-          permission.code,
-          permission.name,
-          permission.description,
-          permission.is_delegable
+      sql<{ total: string | number }>`
+        select count(*) as total
         from roles role
-        join role_permissions role_permission
-          on role_permission.role_id = role.id
-        join permissions permission
-          on permission.id = role_permission.permission_id
         where role.status = 'active'
           and (
             (role.tenant_id is null and role.is_system_template = true)
             or role.tenant_id = ${tenantId}
           )
-        order by permission.name, permission.id
+          and (
+            ${query.source} = 'all'
+            or (
+              ${query.source} = 'global'
+              and role.tenant_id is null
+              and role.is_system_template = true
+            )
+            or (${query.source} = 'tenant-local' and role.tenant_id = ${tenantId})
+          )
+          and (
+            ${searchPattern}::text is null
+            or role.name ilike ${searchPattern}
+            or role.code ilike ${searchPattern}
+            or role.description ilike ${searchPattern}
+            or exists (
+              select 1
+              from role_permissions role_permission
+              join permissions permission
+                on permission.id = role_permission.permission_id
+              where role_permission.role_id = role.id
+                and (
+                  permission.name ilike ${searchPattern}
+                  or permission.code ilike ${searchPattern}
+                  or permission.description ilike ${searchPattern}
+                )
+            )
+          )
       `.execute(this.database.client),
     ]);
-    const permissionsByRole = new Map<
-      string,
-      WorkforceRoleCataloguePermission[]
-    >();
 
-    for (const permission of permissionRows.rows) {
-      const rolePermissions = permissionsByRole.get(permission.role_id) ?? [];
-      rolePermissions.push({
+    return {
+      roles: roles.rows.map((role) => this.toRoleCatalogueRole(role)),
+      total: Number(total.rows[0]?.total ?? 0),
+    };
+  }
+
+  async getRoleCatalogueRole(
+    tenantId: string,
+    organizationId: string,
+    roleId: string,
+  ): Promise<WorkforceRoleCatalogueRoleDetail | null> {
+    const roleResult = await sql<RoleCatalogueRoleRow>`
+      select
+        role.id as role_id,
+        role.code,
+        role.name,
+        role.description,
+        case
+          when role.tenant_id is null then 'global'
+          else 'tenant-local'
+        end as source,
+        coalesce(assignment_counts.assignment_count, 0) as assignment_count,
+        coalesce(permission_counts.permission_count, 0) as permission_count,
+        coalesce(permission_counts.is_delegable, false) as is_delegable
+      from roles role
+      left join lateral (
+        select count(*) as assignment_count
+        from role_assignments assignment
+        join organization_memberships membership
+          on membership.id = assignment.membership_id
+         and membership.tenant_id = assignment.tenant_id
+        where assignment.role_id = role.id
+          and assignment.tenant_id = ${tenantId}
+          and membership.organization_id = ${organizationId}
+          and membership.status = 'active'
+          and membership.valid_from <= now()
+          and (membership.valid_until is null or membership.valid_until > now())
+          and assignment.scope_organization_id = ${organizationId}
+          and assignment.facility_id is null
+          and assignment.include_descendants = false
+          and assignment.revoked_at is null
+          and assignment.valid_from <= now()
+          and (assignment.valid_until is null or assignment.valid_until > now())
+      ) assignment_counts on true
+      left join lateral (
+        select
+          count(*) as permission_count,
+          coalesce(bool_and(permission.is_delegable), false) as is_delegable
+        from role_permissions role_permission
+        join permissions permission
+          on permission.id = role_permission.permission_id
+        where role_permission.role_id = role.id
+      ) permission_counts on true
+      where role.id = ${roleId}
+        and role.status = 'active'
+        and (
+          (role.tenant_id is null and role.is_system_template = true)
+          or role.tenant_id = ${tenantId}
+        )
+    `.execute(this.database.client);
+    const role = roleResult.rows[0];
+
+    if (!role) return null;
+
+    const permissionRows = await sql<RoleCataloguePermissionRow>`
+      select
+        permission.id as permission_id,
+        permission.code,
+        permission.name,
+        permission.description,
+        permission.is_delegable
+      from role_permissions role_permission
+      join permissions permission
+        on permission.id = role_permission.permission_id
+      where role_permission.role_id = ${roleId}
+      order by permission.name, permission.id
+    `.execute(this.database.client);
+
+    return {
+      ...this.toRoleCatalogueRole(role),
+      permissions: permissionRows.rows.map((permission) => ({
         permissionId: permission.permission_id,
         code: permission.code,
         name: permission.name,
         description: permission.description,
         isDelegable: permission.is_delegable,
-      });
-      permissionsByRole.set(permission.role_id, rolePermissions);
-    }
+      })),
+    };
+  }
 
-    return roles.rows.map((role) => {
-      const permissions = permissionsByRole.get(role.role_id) ?? [];
-
-      return {
-        roleId: role.role_id,
-        code: role.code,
-        name: role.name,
-        description: role.description,
-        source: role.source,
-        isDelegable:
-          permissions.length > 0 &&
-          permissions.every((permission) => permission.isDelegable),
-        assignmentCount: Number(role.assignment_count),
-        permissions,
-      };
-    });
+  private toRoleCatalogueRole(
+    role: RoleCatalogueRoleRow,
+  ): WorkforceRoleCatalogueRole {
+    return {
+      roleId: role.role_id,
+      code: role.code,
+      name: role.name,
+      description: role.description,
+      source: role.source,
+      isDelegable: role.is_delegable,
+      assignmentCount: Number(role.assignment_count),
+      permissionCount: Number(role.permission_count),
+    };
   }
 
   async listDelegablePermissions(): Promise<WorkforceDelegablePermission[]> {

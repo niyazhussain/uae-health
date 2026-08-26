@@ -67,6 +67,11 @@ export interface WorkforceRoleCatalogueRole {
   source: "global" | "tenant-local";
   isDelegable: boolean;
   assignmentCount: number;
+  permissionCount: number;
+}
+
+export interface WorkforceRoleCatalogueRoleDetail
+  extends WorkforceRoleCatalogueRole {
   permissions: WorkforceRoleCataloguePermission[];
 }
 
@@ -83,7 +88,20 @@ export interface WorkforceDirectoryResponse {
 export interface WorkforceRoleCatalogueResponse {
   contexts: WorkforceDirectoryContext[];
   selectedContext: WorkforceDirectoryContext;
+  page: number;
+  pageSize: number;
+  total: number;
   roles: WorkforceRoleCatalogueRole[];
+}
+
+export type WorkforceRoleCatalogueSource = "all" | "global" | "tenant-local";
+
+export interface WorkforceRoleCatalogueRequest {
+  organizationId?: string;
+  page?: number;
+  pageSize?: number;
+  source?: WorkforceRoleCatalogueSource;
+  search?: string;
 }
 
 export interface CreateWorkforceInvitationInput {
@@ -202,7 +220,7 @@ export async function getWorkforceDirectory(
 }
 
 export async function getWorkforceRoleCatalogue(
-  organizationId?: string,
+  request: WorkforceRoleCatalogueRequest = {},
 ): Promise<WorkforceRoleCatalogueResponse> {
   const apiBaseUrl =
     import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3000";
@@ -211,8 +229,24 @@ export async function getWorkforceRoleCatalogue(
     apiBaseUrl,
   );
 
-  if (organizationId) {
-    url.searchParams.set("organizationId", organizationId);
+  if (request.organizationId) {
+    url.searchParams.set("organizationId", request.organizationId);
+  }
+
+  if (request.page) {
+    url.searchParams.set("page", String(request.page));
+  }
+
+  if (request.pageSize) {
+    url.searchParams.set("pageSize", String(request.pageSize));
+  }
+
+  if (request.source && request.source !== "all") {
+    url.searchParams.set("source", request.source);
+  }
+
+  if (request.search?.trim()) {
+    url.searchParams.set("search", request.search.trim());
   }
 
   const response = await fetch(url, {
@@ -239,6 +273,44 @@ export async function getWorkforceRoleCatalogue(
   }
 
   return (await response.json()) as WorkforceRoleCatalogueResponse;
+}
+
+export async function getWorkforceRoleCatalogueRole(
+  roleId: string,
+  organizationId?: string,
+): Promise<WorkforceRoleCatalogueRoleDetail> {
+  const apiBaseUrl =
+    import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3000";
+  const url = new URL(
+    `/v1/admin/workforce-directory/role-catalogue/${roleId}`,
+    apiBaseUrl,
+  );
+
+  if (organizationId) {
+    url.searchParams.set("organizationId", organizationId);
+  }
+
+  const response = await fetch(url, {
+    cache: "no-store",
+    credentials: "include",
+  });
+
+  if (!response.ok) {
+    let error: ErrorResponse = {};
+
+    try {
+      error = (await response.json()) as ErrorResponse;
+    } catch {
+      // The status-based fallback below is safe for non-JSON upstream errors.
+    }
+
+    throw new WorkforceApiError(
+      errorMessage(error, `Role detail request failed (${response.status}).`),
+      response.status,
+    );
+  }
+
+  return (await response.json()) as WorkforceRoleCatalogueRoleDetail;
 }
 
 export async function createWorkforceInvitation(

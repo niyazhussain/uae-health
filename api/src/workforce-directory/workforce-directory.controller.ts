@@ -16,6 +16,7 @@ import {
   ApiConflictResponse,
   ApiCreatedResponse,
   ApiForbiddenResponse,
+  ApiNotFoundResponse,
   ApiOkResponse,
   ApiOperation,
   ApiServiceUnavailableResponse,
@@ -33,6 +34,7 @@ import { CreateWorkforceTenantLocalRoleDto } from './dto/create-workforce-tenant
 import { RevokeWorkforceRoleAssignmentDto } from './dto/revoke-workforce-role-assignment.dto.js';
 import { WorkforceDirectoryQueryDto } from './dto/workforce-directory-query.dto.js';
 import { WorkforceRoleCatalogueQueryDto } from './dto/workforce-role-catalogue-query.dto.js';
+import { WorkforceRoleCatalogueRoleQueryDto } from './dto/workforce-role-catalogue-role-query.dto.js';
 import { WorkforceDirectoryService } from './workforce-directory.service.js';
 import type {
   WorkforceDirectoryResponse,
@@ -40,6 +42,7 @@ import type {
   WorkforceMembershipStatusResponse,
   WorkforceRoleAssignment,
   WorkforceRoleCatalogueResponse,
+  WorkforceRoleCatalogueRoleDetail,
   WorkforceTenantLocalRole,
 } from './workforce-directory.types.js';
 
@@ -65,7 +68,33 @@ export class WorkforceDirectoryController {
     @CurrentPrincipal() principal: AuthenticatedPrincipal,
     @Query() query: WorkforceRoleCatalogueQueryDto,
   ): Promise<WorkforceRoleCatalogueResponse> {
-    return this.directory.getRoleCatalogue(principal, query.organizationId);
+    return this.directory.getRoleCatalogue(principal, query);
+  }
+
+  @Get('role-catalogue/:roleId')
+  @ApiOperation({
+    summary:
+      'Read one active role and its permissions for an authorized practice',
+  })
+  @ApiOkResponse({ description: 'The scoped, read-only role detail.' })
+  @ApiUnauthorizedResponse({ description: 'An active session is required.' })
+  @ApiForbiddenResponse({
+    description: 'The caller cannot manage roles for the requested practice.',
+  })
+  @ApiNotFoundResponse({
+    description: 'The role is not available in this practice.',
+  })
+  @Header('Cache-Control', 'no-store')
+  getRoleCatalogueRole(
+    @CurrentPrincipal() principal: AuthenticatedPrincipal,
+    @Param('roleId', new ParseUUIDPipe()) roleId: string,
+    @Query() query: WorkforceRoleCatalogueRoleQueryDto,
+  ): Promise<WorkforceRoleCatalogueRoleDetail> {
+    return this.directory.getRoleCatalogueRole(
+      principal,
+      roleId,
+      query.organizationId,
+    );
   }
 
   @Get()

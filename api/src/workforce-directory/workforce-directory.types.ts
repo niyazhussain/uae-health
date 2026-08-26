@@ -120,6 +120,16 @@ export interface WorkforceRoleCataloguePermission {
   isDelegable: boolean;
 }
 
+export type WorkforceRoleCatalogueSource = 'all' | 'global' | 'tenant-local';
+
+export interface WorkforceRoleCatalogueQuery {
+  organizationId?: string;
+  page: number;
+  pageSize: number;
+  source: WorkforceRoleCatalogueSource;
+  search?: string;
+}
+
 export interface WorkforceRoleCatalogueRole {
   roleId: string;
   code: string;
@@ -128,7 +138,16 @@ export interface WorkforceRoleCatalogueRole {
   source: 'global' | 'tenant-local';
   isDelegable: boolean;
   assignmentCount: number;
+  permissionCount: number;
+}
+
+export interface WorkforceRoleCatalogueRoleDetail extends WorkforceRoleCatalogueRole {
   permissions: WorkforceRoleCataloguePermission[];
+}
+
+export interface WorkforceRoleCataloguePage {
+  roles: WorkforceRoleCatalogueRole[];
+  total: number;
 }
 
 export interface AssignWorkforceGlobalRoleInput {
@@ -258,6 +277,9 @@ export interface WorkforceDirectoryResponse {
 export interface WorkforceRoleCatalogueResponse {
   contexts: WorkforceDirectoryContext[];
   selectedContext: WorkforceDirectoryContext;
+  page: number;
+  pageSize: number;
+  total: number;
   roles: WorkforceRoleCatalogueRole[];
 }
 
@@ -287,7 +309,13 @@ export interface WorkforceDirectoryRepositoryPort {
   listRoleCatalogue(
     tenantId: string,
     organizationId: string,
-  ): Promise<WorkforceRoleCatalogueRole[]>;
+    query: WorkforceRoleCatalogueQuery,
+  ): Promise<WorkforceRoleCataloguePage>;
+  getRoleCatalogueRole(
+    tenantId: string,
+    organizationId: string,
+    roleId: string,
+  ): Promise<WorkforceRoleCatalogueRoleDetail | null>;
   listDelegablePermissions(): Promise<WorkforceDelegablePermission[]>;
   isIdentitySubjectBound(subject: string): Promise<boolean>;
   persistInvitation(

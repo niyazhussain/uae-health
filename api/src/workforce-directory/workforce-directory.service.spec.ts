@@ -1,6 +1,7 @@
 import {
   ConflictException,
   ForbiddenException,
+  NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { jest } from '@jest/globals';
@@ -73,6 +74,11 @@ const roleCatalogueRole = {
   source: 'global' as const,
   isDelegable: false,
   assignmentCount: 2,
+  permissionCount: 1,
+};
+
+const roleCatalogueRoleDetail = {
+  ...roleCatalogueRole,
   permissions: [
     {
       ...tenantLocalRole.permissions[0],
@@ -153,7 +159,13 @@ function createDependencies() {
   const listDelegablePermissions = jest
     .fn()
     .mockResolvedValue(tenantLocalRole.permissions);
-  const listRoleCatalogue = jest.fn().mockResolvedValue([roleCatalogueRole]);
+  const listRoleCatalogue = jest.fn().mockResolvedValue({
+    roles: [roleCatalogueRole],
+    total: 1,
+  });
+  const getRoleCatalogueRole = jest
+    .fn()
+    .mockResolvedValue(roleCatalogueRoleDetail);
   const isIdentitySubjectBound = jest.fn().mockResolvedValue(false);
   const persistInvitation = jest.fn().mockResolvedValue({
     applicationUserId: '30000000-0000-4000-8000-000000000003',
@@ -187,6 +199,7 @@ function createDependencies() {
     listTenantLocalRoles,
     listDelegablePermissions,
     listRoleCatalogue,
+    getRoleCatalogueRole,
     isIdentitySubjectBound,
     persistInvitation,
     changeMembershipStatus,
@@ -222,6 +235,7 @@ function createDependencies() {
     listTenantLocalRoles,
     listDelegablePermissions,
     listRoleCatalogue,
+    getRoleCatalogueRole,
     isIdentitySubjectBound,
     persistInvitation,
     changeMembershipStatus,
@@ -323,7 +337,13 @@ describe('WorkforceDirectoryService', () => {
     const service = new WorkforceDirectoryService(repository, cognito);
 
     await expect(
-      service.getRoleCatalogue(principal, invitationInput.organizationId),
+      service.getRoleCatalogue(principal, {
+        organizationId: invitationInput.organizationId,
+        page: 2,
+        pageSize: 25,
+        source: 'global',
+        search: 'reception',
+      }),
     ).resolves.toEqual({
       contexts: [
         {
@@ -339,6 +359,9 @@ describe('WorkforceDirectoryService', () => {
         organizationId: invitationInput.organizationId,
         organizationName: 'Synthetic Care Practice',
       },
+      page: 2,
+      pageSize: 25,
+      total: 1,
       roles: [roleCatalogueRole],
     });
     expect(listRoleManageableContexts).toHaveBeenCalledWith(principal.subject);
@@ -349,6 +372,13 @@ describe('WorkforceDirectoryService', () => {
     expect(listRoleCatalogue).toHaveBeenCalledWith(
       '10000000-0000-4000-8000-000000000001',
       invitationInput.organizationId,
+      {
+        organizationId: invitationInput.organizationId,
+        page: 2,
+        pageSize: 25,
+        source: 'global',
+        search: 'reception',
+      },
     );
   });
 
@@ -359,9 +389,55 @@ describe('WorkforceDirectoryService', () => {
     const service = new WorkforceDirectoryService(repository, cognito);
 
     await expect(
-      service.getRoleCatalogue(principal, invitationInput.organizationId),
+      service.getRoleCatalogue(principal, {
+        organizationId: invitationInput.organizationId,
+        page: 1,
+        pageSize: 25,
+        source: 'all',
+      }),
     ).rejects.toBeInstanceOf(ForbiddenException);
     expect(listRoleCatalogue).not.toHaveBeenCalled();
+  });
+
+  it('reads one role detail only after the same scoped role-management check', async () => {
+    const {
+      repository,
+      cognito,
+      authorizeRoleManagement,
+      getRoleCatalogueRole,
+    } = createDependencies();
+    const service = new WorkforceDirectoryService(repository, cognito);
+
+    await expect(
+      service.getRoleCatalogueRole(
+        principal,
+        roleCatalogueRole.roleId,
+        invitationInput.organizationId,
+      ),
+    ).resolves.toEqual(roleCatalogueRoleDetail);
+    expect(authorizeRoleManagement).toHaveBeenCalledWith(
+      principal.subject,
+      invitationInput.organizationId,
+    );
+    expect(getRoleCatalogueRole).toHaveBeenCalledWith(
+      '10000000-0000-4000-8000-000000000001',
+      invitationInput.organizationId,
+      roleCatalogueRole.roleId,
+    );
+  });
+
+  it('does not disclose a missing or other-tenant role detail', async () => {
+    const { repository, cognito, getRoleCatalogueRole } = createDependencies();
+    getRoleCatalogueRole.mockResolvedValue(null);
+    const service = new WorkforceDirectoryService(repository, cognito);
+
+    await expect(
+      service.getRoleCatalogueRole(
+        principal,
+        roleCatalogueRole.roleId,
+        invitationInput.organizationId,
+      ),
+    ).rejects.toBeInstanceOf(NotFoundException);
   });
 
   it('lists database-authoritative users without calling the identity provider', async () => {

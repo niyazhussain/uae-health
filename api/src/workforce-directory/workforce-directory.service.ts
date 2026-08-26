@@ -1,6 +1,7 @@
 import {
   ConflictException,
   ForbiddenException,
+  NotFoundException,
   Inject,
   Injectable,
   ServiceUnavailableException,
@@ -16,11 +17,14 @@ import type {
   CreateWorkforceTenantLocalRoleInput,
   CreateWorkforceInvitationInput,
   RevokeWorkforceRoleAssignmentInput,
+  WorkforceDirectoryContext,
   WorkforceDirectoryRepositoryPort,
   WorkforceDirectoryResponse,
   WorkforceInvitationResponse,
   WorkforceMembershipStatusResponse,
   WorkforceRoleCatalogueResponse,
+  WorkforceRoleCatalogueRoleDetail,
+  WorkforceRoleCatalogueQuery,
   WorkforceRoleAssignment,
   WorkforceTenantLocalRole,
 } from './workforce-directory.types.js';
@@ -127,8 +131,58 @@ export class WorkforceDirectoryService {
 
   async getRoleCatalogue(
     principal: AuthenticatedPrincipal,
-    requestedOrganizationId?: string,
+    query: WorkforceRoleCatalogueQuery,
   ): Promise<WorkforceRoleCatalogueResponse> {
+    const { contexts, selectedContext } =
+      await this.resolveRoleCatalogueContext(principal, query.organizationId);
+    const page = await this.repository.listRoleCatalogue(
+      selectedContext.tenantId,
+      selectedContext.organizationId,
+      {
+        ...query,
+        ...(query.search ? { search: query.search } : {}),
+      },
+    );
+
+    return {
+      contexts,
+      selectedContext,
+      page: query.page,
+      pageSize: query.pageSize,
+      total: page.total,
+      roles: page.roles,
+    };
+  }
+
+  async getRoleCatalogueRole(
+    principal: AuthenticatedPrincipal,
+    roleId: string,
+    requestedOrganizationId?: string,
+  ): Promise<WorkforceRoleCatalogueRoleDetail> {
+    const { selectedContext } = await this.resolveRoleCatalogueContext(
+      principal,
+      requestedOrganizationId,
+    );
+    const role = await this.repository.getRoleCatalogueRole(
+      selectedContext.tenantId,
+      selectedContext.organizationId,
+      roleId,
+    );
+
+    if (!role) {
+      throw new NotFoundException('Role is not available for this practice.');
+    }
+
+    return role;
+  }
+
+  private async resolveRoleCatalogueContext(
+    principal: AuthenticatedPrincipal,
+    requestedOrganizationId?: string,
+  ): Promise<{
+    contexts: WorkforceDirectoryContext[];
+    selectedContext: WorkforceDirectoryContext;
+  }> {
     const contexts = await this.repository.listRoleManageableContexts(
       principal.subject,
     );
@@ -155,12 +209,7 @@ export class WorkforceDirectoryService {
       );
     }
 
-    const roles = await this.repository.listRoleCatalogue(
-      selectedContext.tenantId,
-      selectedContext.organizationId,
-    );
-
-    return { contexts, selectedContext, roles };
+    return { contexts, selectedContext };
   }
 
   async createInvitation(
