@@ -38,4 +38,4 @@ None. The archived OpenSpec baseline does not yet contain implementation capabil
 - Records AWS Asia Pacific (Mumbai) as the only region for the shared synthetic staging identity boundary used by local, development, and staging.
 - Records Amazon Cognito as the initial native authentication boundary while keeping application identity and authorization provider-neutral.
 - Defers enterprise federation, SCIM, advanced patient proofing, tenant domains, and real-data production infrastructure to [`phase-2-identity-and-production`](../phase-2-identity-and-production/proposal.md).
-- Does not implement patient registration, clinical records, ADT, insurance, packages, billing, or communication business workflows; it includes only basic patient identity and appointment access in the POC.
+- Does not implement clinical records, ADT, insurance, packages, billing, or communication business workflows; the POC includes basic patient self-registration and practice-invitation identity flows plus limited appointment access.

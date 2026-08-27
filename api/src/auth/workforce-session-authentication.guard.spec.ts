@@ -51,7 +51,12 @@ function createGuard(session: AuthenticatedSessionContext | null) {
     clear,
   } as unknown as WorkforceSessionCookieService;
   const config = {
-    getOrThrow: () => 'http://localhost:5173',
+    getOrThrow: (name: string) => {
+      if (name !== 'WORKFORCE_CORS_ORIGIN') {
+        throw new Error('Unexpected config');
+      }
+      return 'http://localhost:5173';
+    },
   } as ConfigService;
 
   return {

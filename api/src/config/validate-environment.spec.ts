@@ -4,10 +4,16 @@ describe('validateEnvironment authentication', () => {
   it('defaults local authentication to disabled', () => {
     expect(validateEnvironment({})).toMatchObject({
       AUTH_MODE: 'disabled',
+      PATIENT_AUTH_MODE: 'disabled',
       DEPLOYMENT_ENVIRONMENT: 'local',
       COGNITO_REGION: 'ap-south-1',
       COGNITO_USER_POOL_ID: '',
       COGNITO_USER_POOL_CLIENT_ID: '',
+      PATIENT_COGNITO_USER_POOL_ID: '',
+      PATIENT_COGNITO_USER_POOL_CLIENT_ID: '',
+      CORS_ORIGIN: 'http://localhost:5173',
+      WORKFORCE_CORS_ORIGIN: 'http://localhost:5173',
+      PATIENT_CORS_ORIGIN: 'http://localhost:5173',
     });
   });
 
@@ -27,6 +33,73 @@ describe('validateEnvironment authentication', () => {
         COGNITO_USER_POOL_CLIENT_ID: 'client-id',
       }),
     ).toThrow('COGNITO_USER_POOL_ID must belong to COGNITO_REGION.');
+  });
+
+  it('requires a separate configured patient pool when patient authentication is enabled', () => {
+    expect(() => validateEnvironment({ PATIENT_AUTH_MODE: 'cognito' })).toThrow(
+      'PATIENT_COGNITO_USER_POOL_ID is required.',
+    );
+
+    expect(() =>
+      validateEnvironment({
+        AUTH_MODE: 'cognito',
+        PATIENT_AUTH_MODE: 'cognito',
+        COGNITO_REGION: 'ap-south-1',
+        COGNITO_USER_POOL_ID: 'ap-south-1_workforce',
+        COGNITO_USER_POOL_CLIENT_ID: 'workforce-client',
+        PATIENT_COGNITO_USER_POOL_ID: 'ap-south-1_workforce',
+        PATIENT_COGNITO_USER_POOL_CLIENT_ID: 'patient-client',
+      }),
+    ).toThrow(
+      'PATIENT_COGNITO_USER_POOL_ID must be separate from COGNITO_USER_POOL_ID.',
+    );
+  });
+
+  it('accepts an independent patient pool in the configured region', () => {
+    expect(
+      validateEnvironment({
+        PATIENT_AUTH_MODE: 'cognito',
+        COGNITO_REGION: 'ap-south-1',
+        PATIENT_COGNITO_USER_POOL_ID: 'ap-south-1_patient',
+        PATIENT_COGNITO_USER_POOL_CLIENT_ID: 'patient-client',
+      }),
+    ).toMatchObject({
+      PATIENT_AUTH_MODE: 'cognito',
+      PATIENT_COGNITO_USER_POOL_ID: 'ap-south-1_patient',
+    });
+  });
+
+  it('requires separate patient and workforce mutation origins outside local', () => {
+    expect(() =>
+      validateEnvironment({
+        PATIENT_AUTH_MODE: 'cognito',
+        DEPLOYMENT_ENVIRONMENT: 'staging',
+        COGNITO_REGION: 'ap-south-1',
+        PATIENT_COGNITO_USER_POOL_ID: 'ap-south-1_patient',
+        PATIENT_COGNITO_USER_POOL_CLIENT_ID: 'patient-client',
+        CORS_ORIGIN: 'https://stage.uae-health.com',
+        WORKFORCE_CORS_ORIGIN: 'https://stage.uae-health.com',
+        PATIENT_CORS_ORIGIN: 'https://stage.uae-health.com',
+      }),
+    ).toThrow(
+      'WORKFORCE_CORS_ORIGIN and PATIENT_CORS_ORIGIN must be separate for staging and production.',
+    );
+
+    expect(
+      validateEnvironment({
+        PATIENT_AUTH_MODE: 'cognito',
+        DEPLOYMENT_ENVIRONMENT: 'staging',
+        COGNITO_REGION: 'ap-south-1',
+        PATIENT_COGNITO_USER_POOL_ID: 'ap-south-1_patient',
+        PATIENT_COGNITO_USER_POOL_CLIENT_ID: 'patient-client',
+        CORS_ORIGIN:
+          'https://stage.uae-health.com,https://patient.stage.uae-health.com',
+        WORKFORCE_CORS_ORIGIN: 'https://stage.uae-health.com',
+        PATIENT_CORS_ORIGIN: 'https://patient.stage.uae-health.com',
+      }),
+    ).toMatchObject({
+      PATIENT_CORS_ORIGIN: 'https://patient.stage.uae-health.com',
+    });
   });
 
   it('requires the UAE Cognito region for production', () => {

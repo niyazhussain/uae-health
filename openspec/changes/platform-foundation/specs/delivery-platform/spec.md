@@ -73,6 +73,8 @@ GitHub Actions SHALL deploy `develop` only to the synthetic-data staging environ
 ### Requirement: Serve the SPA securely
 The production UI edge SHALL use a dedicated production CloudFront distribution to serve the static React application from a private S3 origin in AWS UAE. The synthetic staging UI MAY use a separate staging CloudFront distribution with a Singapore static origin. Each distribution SHALL have its own hostname, origin, cache namespace, and certificate binding. Both SHALL redirect HTTP to HTTPS, serve client-route fallback, apply approved security headers, cache fingerprinted assets immutably, and prevent stale long-lived caching of the application entry document. They SHALL NOT cache authenticated responses, API responses, sessions, or patient data.
 
+Workforce and patient portal entry points SHALL use separate approved hostnames (`uae-health.com` and `patient.uae-health.com`, with staging equivalents). They MAY use the same immutable frontend artifact when host-aware routing is verified, but one hostname SHALL NOT render the other audience's application shell or reuse its authentication configuration.
+
 #### Scenario: User opens a client-side route directly
 - **WHEN** a user requests a valid SPA route that is not a physical file
 - **THEN** the UI edge returns the application entry document and the client router displays the requested route

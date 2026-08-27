@@ -8,9 +8,9 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { timingSafeEqual } from 'node:crypto';
 import type { Response } from 'express';
-import type { AuthenticatedRequest } from './auth.types.js';
-import { WorkforceSessionCookieService } from './workforce-session-cookie.service.js';
-import { WorkforceSessionService } from './workforce-session.service.js';
+import type { PatientPortalAuthenticatedRequest } from './patient-portal-auth.types.js';
+import { PatientPortalSessionCookieService } from './patient-portal-session-cookie.service.js';
+import { PatientPortalSessionService } from './patient-portal-session.service.js';
 
 const safeMethods = new Set(['GET', 'HEAD', 'OPTIONS']);
 
@@ -25,17 +25,17 @@ function safeEqual(left: string, right: string): boolean {
 }
 
 @Injectable()
-export class WorkforceSessionAuthenticationGuard implements CanActivate {
+export class PatientPortalSessionAuthenticationGuard implements CanActivate {
   private readonly allowedOrigins: Set<string>;
 
   constructor(
-    private readonly sessions: WorkforceSessionService,
-    private readonly cookies: WorkforceSessionCookieService,
+    private readonly sessions: PatientPortalSessionService,
+    private readonly cookies: PatientPortalSessionCookieService,
     config: ConfigService,
   ) {
     this.allowedOrigins = new Set(
       config
-        .getOrThrow<string>('WORKFORCE_CORS_ORIGIN')
+        .getOrThrow<string>('PATIENT_CORS_ORIGIN')
         .split(',')
         .map((origin) => origin.trim())
         .filter(Boolean),
@@ -44,19 +44,23 @@ export class WorkforceSessionAuthenticationGuard implements CanActivate {
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const http = context.switchToHttp();
-    const request = http.getRequest<AuthenticatedRequest>();
+    const request = http.getRequest<PatientPortalAuthenticatedRequest>();
     const response = http.getResponse<Response>();
     const sessionToken = this.cookies.read(request);
 
     if (!sessionToken) {
-      throw new UnauthorizedException('Active workforce session required.');
+      throw new UnauthorizedException(
+        'Active patient portal session required.',
+      );
     }
 
     const session = await this.sessions.authenticate(sessionToken);
 
     if (!session) {
       this.cookies.clear(response);
-      throw new UnauthorizedException('Active workforce session required.');
+      throw new UnauthorizedException(
+        'Active patient portal session required.',
+      );
     }
 
     if (!safeMethods.has(request.method.toUpperCase())) {
@@ -69,12 +73,14 @@ export class WorkforceSessionAuthenticationGuard implements CanActivate {
         typeof csrf !== 'string' ||
         !safeEqual(csrf, session.csrfToken)
       ) {
-        throw new ForbiddenException('Valid session CSRF proof required.');
+        throw new ForbiddenException(
+          'Valid patient portal session CSRF proof required.',
+        );
       }
     }
 
-    request.principal = session.principal;
-    request.workforceSession = session;
+    request.patientPortalPrincipal = session.principal;
+    request.patientPortalSession = session;
 
     if (session.renewed) {
       this.cookies.set(response, sessionToken, session.idleExpiresAt);

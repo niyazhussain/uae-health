@@ -76,6 +76,38 @@ function readRequiredString(value: unknown, name: string): string {
   return parsed;
 }
 
+function parseOrigins(value: string, name: string): string[] {
+  const origins = value
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+
+  if (origins.length === 0) {
+    throw new Error(`${name} must contain at least one origin.`);
+  }
+
+  for (const origin of origins) {
+    let parsed: URL;
+
+    try {
+      parsed = new URL(origin);
+    } catch {
+      throw new Error(`${name} must contain valid HTTP origins.`);
+    }
+
+    if (
+      (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') ||
+      parsed.origin !== origin ||
+      parsed.username ||
+      parsed.password
+    ) {
+      throw new Error(`${name} must contain exact HTTP origins.`);
+    }
+  }
+
+  return origins;
+}
+
 export function validateEnvironment(
   environment: Record<string, unknown>,
 ): Record<string, unknown> {
@@ -89,6 +121,16 @@ export function validateEnvironment(
 
   if (!validAuthModes.has(authMode)) {
     throw new Error('AUTH_MODE must be disabled or cognito.');
+  }
+
+  const patientAuthMode = readString(
+    environment.PATIENT_AUTH_MODE,
+    'disabled',
+    'PATIENT_AUTH_MODE',
+  );
+
+  if (!validAuthModes.has(patientAuthMode)) {
+    throw new Error('PATIENT_AUTH_MODE must be disabled or cognito.');
   }
 
   const defaultDeploymentEnvironment =
@@ -137,6 +179,29 @@ export function validateEnvironment(
           'COGNITO_USER_POOL_CLIENT_ID',
         );
 
+  const patientCognitoUserPoolId =
+    patientAuthMode === 'cognito'
+      ? readRequiredString(
+          environment.PATIENT_COGNITO_USER_POOL_ID,
+          'PATIENT_COGNITO_USER_POOL_ID',
+        )
+      : readString(
+          environment.PATIENT_COGNITO_USER_POOL_ID,
+          '',
+          'PATIENT_COGNITO_USER_POOL_ID',
+        );
+  const patientCognitoUserPoolClientId =
+    patientAuthMode === 'cognito'
+      ? readRequiredString(
+          environment.PATIENT_COGNITO_USER_POOL_CLIENT_ID,
+          'PATIENT_COGNITO_USER_POOL_CLIENT_ID',
+        )
+      : readString(
+          environment.PATIENT_COGNITO_USER_POOL_CLIENT_ID,
+          '',
+          'PATIENT_COGNITO_USER_POOL_CLIENT_ID',
+        );
+
   if (authMode === 'cognito') {
     if (cognitoRegion !== expectedCognitoRegion) {
       throw new Error(
@@ -146,6 +211,29 @@ export function validateEnvironment(
 
     if (!cognitoUserPoolId.startsWith(`${cognitoRegion}_`)) {
       throw new Error('COGNITO_USER_POOL_ID must belong to COGNITO_REGION.');
+    }
+  }
+
+  if (patientAuthMode === 'cognito') {
+    if (cognitoRegion !== expectedCognitoRegion) {
+      throw new Error(
+        `COGNITO_REGION must be ${expectedCognitoRegion} for ${deploymentEnvironment}.`,
+      );
+    }
+
+    if (!patientCognitoUserPoolId.startsWith(`${cognitoRegion}_`)) {
+      throw new Error(
+        'PATIENT_COGNITO_USER_POOL_ID must belong to COGNITO_REGION.',
+      );
+    }
+
+    if (
+      authMode === 'cognito' &&
+      patientCognitoUserPoolId === cognitoUserPoolId
+    ) {
+      throw new Error(
+        'PATIENT_COGNITO_USER_POOL_ID must be separate from COGNITO_USER_POOL_ID.',
+      );
     }
   }
 
@@ -209,21 +297,65 @@ export function validateEnvironment(
     );
   }
 
+  const corsOrigin = readString(
+    environment.CORS_ORIGIN,
+    'http://localhost:5173',
+    'CORS_ORIGIN',
+  );
+  const workforceCorsOrigin = readString(
+    environment.WORKFORCE_CORS_ORIGIN,
+    'http://localhost:5173',
+    'WORKFORCE_CORS_ORIGIN',
+  );
+  const patientCorsOrigin = readString(
+    environment.PATIENT_CORS_ORIGIN,
+    'http://localhost:5173',
+    'PATIENT_CORS_ORIGIN',
+  );
+  const transportOrigins = new Set(parseOrigins(corsOrigin, 'CORS_ORIGIN'));
+  const workforceOrigins = parseOrigins(
+    workforceCorsOrigin,
+    'WORKFORCE_CORS_ORIGIN',
+  );
+  const patientOrigins = parseOrigins(patientCorsOrigin, 'PATIENT_CORS_ORIGIN');
+
+  if (
+    [...workforceOrigins, ...patientOrigins].some(
+      (origin) => !transportOrigins.has(origin),
+    )
+  ) {
+    throw new Error(
+      'CORS_ORIGIN must include every workforce and patient session origin.',
+    );
+  }
+
+  if (
+    patientAuthMode === 'cognito' &&
+    (deploymentEnvironment === 'staging' ||
+      deploymentEnvironment === 'production') &&
+    workforceOrigins.some((origin) => patientOrigins.includes(origin))
+  ) {
+    throw new Error(
+      'WORKFORCE_CORS_ORIGIN and PATIENT_CORS_ORIGIN must be separate for staging and production.',
+    );
+  }
+
   return {
     ...environment,
     NODE_ENV: nodeEnv,
     PORT: port,
     AUTH_MODE: authMode,
+    PATIENT_AUTH_MODE: patientAuthMode,
     DEPLOYMENT_ENVIRONMENT: deploymentEnvironment,
     COGNITO_REGION: cognitoRegion,
     COGNITO_USER_POOL_ID: cognitoUserPoolId,
     COGNITO_USER_POOL_CLIENT_ID: cognitoUserPoolClientId,
+    PATIENT_COGNITO_USER_POOL_ID: patientCognitoUserPoolId,
+    PATIENT_COGNITO_USER_POOL_CLIENT_ID: patientCognitoUserPoolClientId,
     SYNTHETIC_ADMIN_COGNITO_SUBJECT: syntheticAdminCognitoSubject,
-    CORS_ORIGIN: readString(
-      environment.CORS_ORIGIN,
-      'http://localhost:5173',
-      'CORS_ORIGIN',
-    ),
+    CORS_ORIGIN: corsOrigin,
+    WORKFORCE_CORS_ORIGIN: workforceCorsOrigin,
+    PATIENT_CORS_ORIGIN: patientCorsOrigin,
     ENABLE_API_DOCS: readBooleanString(
       environment.ENABLE_API_DOCS,
       nodeEnv === 'production' ? 'false' : 'true',

@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import type { SessionStep } from "@/lib/cognito-session";
 
 interface SignInPanelProps {
+  audience?: "workforce" | "patient";
   configured: boolean;
   step: SessionStep;
   onSignIn: (email: string, password: string) => void;
@@ -18,6 +19,7 @@ interface SignInPanelProps {
 }
 
 export function SignInPanel({
+  audience = "workforce",
   configured,
   step,
   onSignIn,
@@ -26,6 +28,7 @@ export function SignInPanel({
   onSubmitTotp,
   onReset,
 }: SignInPanelProps) {
+  const isPatientPortal = audience === "patient";
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -73,26 +76,33 @@ export function SignInPanel({
     <main className="mx-auto grid min-h-[calc(100dvh-4rem)] w-full max-w-6xl items-center gap-10 px-4 py-10 lg:grid-cols-[minmax(0,1fr)_26rem] lg:px-8">
       <section className="max-w-2xl">
         <p className="text-sm font-semibold uppercase tracking-[0.18em] text-primary">
-          Workforce access
+          {isPatientPortal ? "Patient portal" : "Workforce access"}
         </p>
         <h1 className="mt-4 text-4xl font-semibold tracking-[-0.04em] text-balance sm:text-5xl">
-          Secure access for every practice you serve.
+          {isPatientPortal
+            ? "A secure place to manage your appointments."
+            : "Secure access for every practice you serve."}
         </h1>
         <p className="mt-5 max-w-xl text-base leading-7 text-muted-foreground">
-          Sign in with your real work email. Practice access, roles, and
-          approval limits are evaluated by UAE Health after Cognito verifies
-          your identity.
+          {isPatientPortal
+            ? "Sign in with your patient portal email. Choose one practice context after identity verification."
+            : "Sign in with your real work email. Practice access, roles, and approval limits are evaluated by UAE Health after identity verification."}
         </p>
         <div className="mt-8 grid gap-3 text-sm text-muted-foreground sm:grid-cols-3">
           <span className="flex items-center gap-2">
-            <CheckCircleIcon className="size-5 text-success" /> No public
-            sign-up
+            <CheckCircleIcon className="size-5 text-success" /> {isPatientPortal
+              ? "Separate patient access"
+              : "No public sign-up"}
           </span>
           <span className="flex items-center gap-2">
-            <LockKeyIcon className="size-5 text-primary" /> TOTP required
+            <LockKeyIcon className="size-5 text-primary" /> {isPatientPortal
+              ? "One practice at a time"
+              : "TOTP required"}
           </span>
           <span className="flex items-center gap-2">
-            <KeyIcon className="size-5 text-info" /> 15-minute idle timeout
+            <KeyIcon className="size-5 text-info" /> {isPatientPortal
+              ? "No clinical records"
+              : "30-minute idle timeout"}
           </span>
         </div>
       </section>
@@ -113,7 +123,9 @@ export function SignInPanel({
 
         {!configured && (
           <p className="mt-4 rounded-md bg-warning-soft p-3 text-sm text-warning">
-            Staging Cognito configuration is missing from the web environment.
+            {isPatientPortal
+              ? "Patient portal identity configuration is missing from the web environment."
+              : "Workforce identity configuration is missing from the web environment."}
           </p>
         )}
 
@@ -143,7 +155,9 @@ export function SignInPanel({
         {(step.kind === "signed-out" || step.kind === "error") && (
           <form className="mt-6 grid gap-5" onSubmit={submitSignIn}>
             <div className="grid gap-2">
-              <Label htmlFor="email">Work email</Label>
+              <Label htmlFor="email">
+                {isPatientPortal ? "Email address" : "Work email"}
+              </Label>
               <Input
                 id="email"
                 type="email"

@@ -1,0 +1,5 @@
+export const PATIENT_PORTAL_ACCESS_TOKEN_VERIFIER = Symbol(
+  'PATIENT_PORTAL_ACCESS_TOKEN_VERIFIER',
+);
+
+export const PATIENT_PORTAL_COOKIE_AUTH = 'patientPortalCookie';

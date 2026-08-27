@@ -14,6 +14,8 @@ The web application SHALL use repository-owned shadcn/ui component source built 
 ### Requirement: Provide an authenticated application shell
 The web application SHALL provide a consistent shell for authenticated HIS modules, including the current authorized practice context, primary navigation, page hierarchy, current-user controls, and session state. When facility selection is implemented, the shell SHALL also show the active facility without using frontend navigation state to decide authorization.
 
+The workforce application and patient portal SHALL use separate approved browser hosts. The workforce host SHALL not render the patient portal and the patient host SHALL not render workforce administration. Local development MAY expose an explicit patient-portal path on `localhost` while preserving the same separate authentication and session boundaries.
+
 #### Scenario: Authenticated user enters the application
 - **WHEN** an authenticated user opens an authorized application route
 - **THEN** the system displays the application shell, active authorized practice, user identity, primary navigation, and requested page
@@ -45,6 +47,18 @@ The web application SHALL provide a consistent shell for authenticated HIS modul
 #### Scenario: Authenticated user reloads the application
 - **WHEN** a user reloads the browser with an active backend session
 - **THEN** the application restores the authenticated shell through a credentialed session request without reading or persisting a Cognito token in JavaScript storage
+
+#### Scenario: User opens the patient hostname
+- **WHEN** a browser opens `patient.uae-health.com` or its configured staging equivalent
+- **THEN** the web application renders only the patient portal entry point and never restores or displays the workforce shell from a workforce session cookie
+
+#### Scenario: Patient chooses an active practice
+- **WHEN** an authenticated patient has one or more explicitly linked practices but no selected practice context
+- **THEN** the patient portal shows human-readable practice choices, never requires a UUID to be entered, and establishes only the practice the patient explicitly selects
+
+#### Scenario: Patient has no linked practice
+- **WHEN** an authenticated patient restores a restricted onboarding session with no active practice links
+- **THEN** the portal presents a safe onboarding state without claiming appointment or clinical-record access
 
 ### Requirement: Enforce accessible and responsive interaction patterns
 The web application SHALL support keyboard operation, visible focus, semantic structure, accessible names, sufficient status communication, and responsive layouts for supported viewport sizes.

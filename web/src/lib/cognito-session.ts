@@ -28,20 +28,42 @@ class MemoryStorage implements ICognitoStorage {
   }
 }
 
+export interface PatientPracticeChoice {
+  portalProfileId: string;
+  practiceName: string;
+}
+
+export type PatientSessionContext =
+  | { kind: "onboarding" }
+  | {
+      kind: "practice";
+      portalProfileId: string;
+      practiceName: string;
+    };
+
+interface SignedInSessionBase {
+  kind: "signed-in";
+  expiresAt: Date;
+  absoluteExpiresAt: Date;
+  username: string;
+  csrfToken: string;
+}
+
 export type SessionStep =
   | { kind: "signed-out" }
   | { kind: "submitting"; message: string }
   | { kind: "new-password" }
   | { kind: "totp-setup"; secret: string; username: string }
   | { kind: "totp-challenge" }
-  | {
-      kind: "signed-in";
-      expiresAt: Date;
-      absoluteExpiresAt: Date;
-      username: string;
-      csrfToken: string;
-    }
+  | (SignedInSessionBase & { audience: "workforce" })
+  | (SignedInSessionBase & {
+      audience: "patient";
+      context: PatientSessionContext;
+      availablePractices: PatientPracticeChoice[];
+    })
   | { kind: "error"; message: string };
+
+type SignedInSessionStep = Extract<SessionStep, { kind: "signed-in" }>;
 
 function errorMessage(error: unknown): string {
   if (error instanceof Error && error.message) {
@@ -52,8 +74,10 @@ function errorMessage(error: unknown): string {
 }
 
 interface ServerSessionResponse {
-  subject: string;
   username?: string;
+  displayName?: string;
+  context?: unknown;
+  availablePractices?: unknown;
   csrfToken: string;
   expiresAt: string;
   absoluteExpiresAt: string;
@@ -70,6 +94,104 @@ class SessionApiError extends Error {
 }
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3000";
+
+interface CognitoSessionOptions {
+  userPoolId?: string;
+  clientId?: string;
+  sessionPath: string;
+  logoutPath: string;
+  contextPath?: string;
+  fallbackUsername: string;
+  unavailableMessage: string;
+  toSignedInStep: (
+    session: ServerSessionResponse,
+    fallbackUsername: string,
+  ) => SignedInSessionStep;
+}
+
+function patientSessionContext(value: unknown): PatientSessionContext {
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    "kind" in value &&
+    value.kind === "onboarding"
+  ) {
+    return { kind: "onboarding" };
+  }
+
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    "kind" in value &&
+    value.kind === "practice" &&
+    "portalProfileId" in value &&
+    typeof value.portalProfileId === "string" &&
+    "practiceName" in value &&
+    typeof value.practiceName === "string"
+  ) {
+    return {
+      kind: "practice",
+      portalProfileId: value.portalProfileId,
+      practiceName: value.practiceName,
+    };
+  }
+
+  throw new Error("The patient session returned an invalid practice context.");
+}
+
+function patientPracticeChoices(value: unknown): PatientPracticeChoice[] {
+  if (!Array.isArray(value)) {
+    throw new Error("The patient session returned an invalid practice list.");
+  }
+
+  return value.map((practice) => {
+    if (
+      typeof practice !== "object" ||
+      practice === null ||
+      !("portalProfileId" in practice) ||
+      typeof practice.portalProfileId !== "string" ||
+      !("practiceName" in practice) ||
+      typeof practice.practiceName !== "string"
+    ) {
+      throw new Error("The patient session returned an invalid practice list.");
+    }
+
+    return {
+      portalProfileId: practice.portalProfileId,
+      practiceName: practice.practiceName,
+    };
+  });
+}
+
+function toWorkforceSignedInStep(
+  session: ServerSessionResponse,
+  fallbackUsername: string,
+): SignedInSessionStep {
+  return {
+    kind: "signed-in",
+    audience: "workforce",
+    expiresAt: new Date(session.expiresAt),
+    absoluteExpiresAt: new Date(session.absoluteExpiresAt),
+    username: session.username ?? fallbackUsername,
+    csrfToken: session.csrfToken,
+  };
+}
+
+function toPatientSignedInStep(
+  session: ServerSessionResponse,
+  fallbackUsername: string,
+): SignedInSessionStep {
+  return {
+    kind: "signed-in",
+    audience: "patient",
+    expiresAt: new Date(session.expiresAt),
+    absoluteExpiresAt: new Date(session.absoluteExpiresAt),
+    username: session.displayName ?? fallbackUsername,
+    csrfToken: session.csrfToken,
+    context: patientSessionContext(session.context),
+    availablePractices: patientPracticeChoices(session.availablePractices),
+  };
+}
 
 async function sessionRequest(
   path: string,
@@ -92,18 +214,29 @@ async function sessionRequest(
   return (await response.json()) as ServerSessionResponse;
 }
 
-export function useCognitoSession() {
+function useConfiguredCognitoSession({
+  userPoolId,
+  clientId,
+  sessionPath,
+  logoutPath,
+  contextPath,
+  fallbackUsername,
+  unavailableMessage,
+  toSignedInStep,
+}: CognitoSessionOptions) {
   const [step, setStep] = useState<SessionStep>({
     kind: "submitting",
     message: "Restoring secure session…",
   });
   const activeUser = useRef<CognitoUser | null>(null);
   const csrfToken = useRef<string | null>(null);
+  const contextChangeInFlight = useRef(false);
+  const [contextChangePending, setContextChangePending] = useState(false);
+  const [contextChangeError, setContextChangeError] = useState<string | null>(
+    null,
+  );
   const storage = useMemo(() => new MemoryStorage(), []);
   const pool = useMemo(() => {
-    const userPoolId = import.meta.env.VITE_COGNITO_USER_POOL_ID;
-    const clientId = import.meta.env.VITE_COGNITO_USER_POOL_CLIENT_ID;
-
     if (!userPoolId || !clientId) {
       return null;
     }
@@ -113,20 +246,19 @@ export function useCognitoSession() {
       ClientId: clientId,
       Storage: storage,
     });
-  }, [storage]);
+  }, [clientId, storage, userPoolId]);
 
   const applyServerSession = useCallback(
-    (session: ServerSessionResponse, fallbackUsername?: string) => {
+    (session: ServerSessionResponse, fallbackDisplayName?: string) => {
+      const signedInStep = toSignedInStep(
+        session,
+        fallbackDisplayName ?? fallbackUsername,
+      );
       csrfToken.current = session.csrfToken;
-      setStep({
-        kind: "signed-in",
-        expiresAt: new Date(session.expiresAt),
-        absoluteExpiresAt: new Date(session.absoluteExpiresAt),
-        username: session.username ?? fallbackUsername ?? "Workforce user",
-        csrfToken: session.csrfToken,
-      });
+      setContextChangeError(null);
+      setStep(signedInStep);
     },
-    [],
+    [fallbackUsername, toSignedInStep],
   );
 
   const clearProviderCredentials = useCallback(() => {
@@ -138,13 +270,16 @@ export function useCognitoSession() {
   const clearLocalSession = useCallback(() => {
     clearProviderCredentials();
     csrfToken.current = null;
+    contextChangeInFlight.current = false;
+    setContextChangePending(false);
+    setContextChangeError(null);
     setStep({ kind: "signed-out" });
   }, [clearProviderCredentials]);
 
   useEffect(() => {
     const controller = new AbortController();
 
-    sessionRequest("/v1/auth/session", { signal: controller.signal })
+    sessionRequest(sessionPath, { signal: controller.signal })
       .then((session) => {
         if (!controller.signal.aborted) applyServerSession(session);
       })
@@ -158,33 +293,38 @@ export function useCognitoSession() {
       });
 
     return () => controller.abort();
-  }, [applyServerSession, clearLocalSession]);
+  }, [applyServerSession, clearLocalSession, sessionPath]);
 
   const finishAuthentication = useCallback(
     (session: CognitoUserSession) => {
-      const token = session.getAccessToken();
       const authenticatedUser = activeUser.current;
-      const username = authenticatedUser?.getUsername() ?? "Workforce user";
-      const accessToken = token.getJwtToken();
+      const username = authenticatedUser?.getUsername() ?? fallbackUsername;
+      let accessToken = session.getAccessToken().getJwtToken();
       setStep({
         kind: "submitting",
         message: "Establishing secure session…",
       });
 
-      void sessionRequest("/v1/auth/session", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${accessToken}` },
-      })
-        .then((serverSession) => {
+      void (async () => {
+        try {
+          const serverSession = await sessionRequest(sessionPath, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${accessToken}` },
+          });
+
+          accessToken = "";
           clearProviderCredentials();
           applyServerSession(serverSession, username);
-        })
-        .catch((error: unknown) => {
+        } catch (error: unknown) {
           clearProviderCredentials();
           setStep({ kind: "error", message: errorMessage(error) });
-        });
+        } finally {
+          accessToken = "";
+          clearProviderCredentials();
+        }
+      })();
     },
-    [applyServerSession, clearProviderCredentials],
+    [applyServerSession, clearProviderCredentials, fallbackUsername, sessionPath],
   );
 
   const callbacks = useCallback((): IAuthenticationCallback => {
@@ -205,7 +345,7 @@ export function useCognitoSession() {
             setStep({
               kind: "totp-setup",
               secret,
-              username: activeUser.current?.getUsername() ?? "workforce-user",
+              username: activeUser.current?.getUsername() ?? fallbackUsername,
             });
           },
           onFailure: (error: unknown) => {
@@ -214,14 +354,14 @@ export function useCognitoSession() {
         });
       },
     };
-  }, [finishAuthentication]);
+  }, [fallbackUsername, finishAuthentication]);
 
   const signIn = useCallback(
     (email: string, password: string) => {
       if (!pool) {
         setStep({
           kind: "error",
-          message: "Staging Cognito configuration is unavailable.",
+          message: unavailableMessage,
         });
         return;
       }
@@ -241,7 +381,7 @@ export function useCognitoSession() {
         callbacks(),
       );
     },
-    [callbacks, pool, storage],
+    [callbacks, pool, storage, unavailableMessage],
   );
 
   const completeNewPassword = useCallback(
@@ -288,12 +428,69 @@ export function useCognitoSession() {
       return;
     }
 
-    void fetch(new URL("/v1/auth/logout", apiBaseUrl), {
+    void fetch(new URL(logoutPath, apiBaseUrl), {
       method: "POST",
       credentials: "include",
       headers: { "X-CSRF-Token": currentCsrfToken },
     }).finally(clearLocalSession);
-  }, [clearLocalSession]);
+  }, [clearLocalSession, logoutPath]);
+
+  const selectPatientPractice = useCallback(
+    async (portalProfileId: string | null) => {
+      if (contextChangeInFlight.current) return;
+
+      const currentCsrfToken = csrfToken.current;
+
+      if (!contextPath || !currentCsrfToken) {
+        setContextChangeError(
+          "The secure session cannot change practice right now. Sign in again.",
+        );
+        return;
+      }
+
+      contextChangeInFlight.current = true;
+      setContextChangePending(true);
+      setContextChangeError(null);
+
+      try {
+        const serverSession = await sessionRequest(contextPath, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-CSRF-Token": currentCsrfToken,
+          },
+          body: JSON.stringify({ portalProfileId }),
+        });
+        applyServerSession(serverSession);
+      } catch (error: unknown) {
+        if (error instanceof SessionApiError && error.status === 401) {
+          clearLocalSession();
+          return;
+        }
+
+        if (error instanceof SessionApiError && error.status === 403) {
+          setContextChangeError(
+            "That practice is no longer available for this patient account.",
+          );
+          return;
+        }
+
+        try {
+          const restoredSession = await sessionRequest(sessionPath);
+          applyServerSession(restoredSession);
+          setContextChangeError(
+            "The practice request could not be confirmed. The current secure session was restored.",
+          );
+        } catch {
+          clearLocalSession();
+        }
+      } finally {
+        contextChangeInFlight.current = false;
+        setContextChangePending(false);
+      }
+    },
+    [applyServerSession, clearLocalSession, contextPath, sessionPath],
+  );
 
   return {
     step,
@@ -303,6 +500,34 @@ export function useCognitoSession() {
     verifyTotpSetup,
     submitTotp,
     signOut,
+    selectPatientPractice,
+    contextChangePending,
+    contextChangeError,
     handleUnauthorized: clearLocalSession,
   };
+}
+
+export function useCognitoSession() {
+  return useConfiguredCognitoSession({
+    userPoolId: import.meta.env.VITE_COGNITO_USER_POOL_ID,
+    clientId: import.meta.env.VITE_COGNITO_USER_POOL_CLIENT_ID,
+    sessionPath: "/v1/auth/session",
+    logoutPath: "/v1/auth/logout",
+    fallbackUsername: "Workforce user",
+    unavailableMessage: "Workforce identity configuration is unavailable.",
+    toSignedInStep: toWorkforceSignedInStep,
+  });
+}
+
+export function usePatientPortalCognitoSession() {
+  return useConfiguredCognitoSession({
+    userPoolId: import.meta.env.VITE_PATIENT_COGNITO_USER_POOL_ID,
+    clientId: import.meta.env.VITE_PATIENT_COGNITO_USER_POOL_CLIENT_ID,
+    sessionPath: "/v1/patient-auth/session",
+    logoutPath: "/v1/patient-auth/logout",
+    contextPath: "/v1/patient-auth/session/context",
+    fallbackUsername: "Patient",
+    unavailableMessage: "Patient portal identity configuration is unavailable.",
+    toSignedInStep: toPatientSignedInStep,
+  });
 }

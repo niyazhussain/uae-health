@@ -176,15 +176,45 @@ Workforce authentication SHALL use a provider-neutral identity boundary. Each id
 - **THEN** it returns HIS-managed lifecycle and provider-sync state without making a provider account-status read, exposing a provider SDK field, or allowing the frontend to call the provider
 
 ### Requirement: Separate patient and workforce identity boundaries
-The POC SHALL use a Cognito User Pool, app client, and trusted token issuer separate from workforce identities for basic patient email sign-in. The API SHALL determine whether a principal is a patient or workforce user from the validated issuer and immutable subject rather than from email, username format, or untrusted claims. Matching email addresses across the pools SHALL NOT automatically link identities. A patient may receive only their explicitly linked portal profile and appointments; clinical-record access and advanced proofing are deferred to Phase 2.
+The POC SHALL use a Cognito User Pool, app client, trusted token issuer, provider-neutral global patient-identity binding, opaque server-session table, and host-only session cookie separate from workforce identities for basic patient email sign-in. The API SHALL determine whether a principal is a patient or workforce user from the validated issuer and immutable subject rather than from email, username format, or untrusted claims. A patient identity binding SHALL NOT inherit the tenant scope of a workforce identity connection. Matching email addresses across the pools SHALL NOT automatically link identities. A patient may have several explicitly linked portal profiles across independent practice tenants. A restricted onboarding session may have no selected practice but SHALL NOT access private practice data; every practice-owned operation SHALL operate in exactly one selected practice context. Clinical-record access and advanced proofing are deferred to Phase 2.
+
+The POC SHALL support patient email self-registration and practice-issued invitations. Registration SHALL establish only the authentication identity and a restricted onboarding account; it SHALL NOT discover, merge, or grant access to a clinical record by matching email or phone. An approved portal-profile link SHALL be an explicit HIS mutation with safe audit evidence and SHALL not be inferred at session creation. Synthetic environments SHALL continue to prohibit real patient and clinical data.
 
 #### Scenario: Provider is also a patient
 - **WHEN** a workforce user creates or receives access to a patient portal account using the same real email address
 - **THEN** Cognito issues distinct subjects from distinct pools and neither identity inherits the other's sessions, roles, memberships, or record access
 
 #### Scenario: Patient identity is not linked to a portal profile
-- **WHEN** a valid patient-pool principal requests appointment information before an explicit approved portal-profile link exists
-- **THEN** the API denies access without searching for or linking a profile solely by email or phone number
+- **WHEN** a valid patient-pool principal has no explicit approved portal-profile link
+- **THEN** the API may create a restricted onboarding session but denies private appointment or practice data without searching for or linking a profile solely by email or phone number
+
+#### Scenario: Patient has access to multiple practices
+- **WHEN** a valid patient-pool principal has active explicit portal-profile links for more than one practice
+- **THEN** the API returns only those safe linked practice choices and requires one profile to be selected before creating or rotating to a practice-scoped patient session
+
+#### Scenario: Patient switches active practice
+- **WHEN** an authenticated patient selects another active linked practice
+- **THEN** the API rotates the opaque server session, stores only the newly selected practice context, and does not combine the former and current practice data
+
+#### Scenario: Patient attempts cross-practice aggregation
+- **WHEN** a patient session selected for one practice requests appointments or a portal profile belonging to another practice
+- **THEN** the API denies the request without returning the other practice's data or combining results across practices
+
+#### Scenario: Wrong browser audience attempts a patient mutation
+- **WHEN** a cookie-authenticated patient mutation originates from an approved workforce host rather than an approved patient host
+- **THEN** the patient session guard rejects it even when the shared API transport accepts both origins
+
+#### Scenario: Patient self-registers
+- **WHEN** a patient completes the approved email-registration and verification flow
+- **THEN** the system creates one patient authentication identity and a restricted onboarding account without creating or discovering a practice clinical record
+
+#### Scenario: Practice invites an existing patient identity
+- **WHEN** a practice sends an invitation to an address already used by a patient account and that authenticated patient accepts it
+- **THEN** the system creates an explicit audited relationship for the inviting practice without revealing or merging the patient's relationships with other practices
+
+#### Scenario: Patient books with a different practice
+- **WHEN** an authenticated patient chooses a bookable practice for which no active relationship exists
+- **THEN** the appointment workflow creates an explicit pending relationship for that practice and does not expose or merge another practice's data
 
 ### Requirement: Enforce authorization in the API
 The API SHALL deny protected operations by default and SHALL enforce permissions independently of frontend navigation or visibility.

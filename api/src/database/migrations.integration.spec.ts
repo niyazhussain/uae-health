@@ -11,6 +11,9 @@ import * as createIdentityAuthorizationAudit from './migrations/2026-08-24T00000
 import * as createWorkforceSessions from './migrations/2026-08-24T010000_create_workforce_sessions.js';
 import * as addTenantLocalRoleNameUniqueness from './migrations/2026-08-26T000000_add_tenant_local_role_name_uniqueness.js';
 import * as addIdentityProviderSyncStatus from './migrations/2026-08-26T010000_add_identity_provider_sync_status.js';
+import * as createPatientPortalIdentity from './migrations/2026-08-26T020000_create_patient_portal_identity.js';
+import { PatientPortalProfileLinkService } from '../patient-portal-auth/patient-portal-profile-link.service.js';
+import { PatientPortalSessionService } from '../patient-portal-auth/patient-portal-session.service.js';
 
 const databaseUrl = process.env.DATABASE_URL;
 const describeWithDatabase = databaseUrl ? describe : describe.skip;
@@ -54,10 +57,12 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
     await createWorkforceSessions.up(database);
     await addTenantLocalRoleNameUniqueness.up(database);
     await addIdentityProviderSyncStatus.up(database);
+    await createPatientPortalIdentity.up(database);
   });
 
   afterAll(async () => {
     if (database) {
+      await createPatientPortalIdentity.down(database);
       await addIdentityProviderSyncStatus.down(database);
       await addTenantLocalRoleNameUniqueness.down(database);
       await createWorkforceSessions.down(database);
@@ -253,6 +258,254 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
       { action: 'identity.session_created' },
       { action: 'identity.session_revoked' },
     ]);
+  });
+
+  it('creates restricted patient onboarding and rotates one explicit cross-tenant practice context at a time', async () => {
+    const issuer =
+      'https://cognito-idp.ap-south-1.amazonaws.com/ap-south-1_patient';
+    const user = await database
+      .insertInto('application_users')
+      .values({
+        display_name: 'Synthetic Portal Patient',
+        primary_email: 'patient@example.invalid',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const identity = await database
+      .insertInto('patient_portal_identities')
+      .values({
+        application_user_id: user.id,
+        issuer,
+        subject: 'synthetic-patient-subject',
+        client_id: 'synthetic-patient-client',
+        username: 'patient@example.invalid',
+        status: 'active',
+        last_authenticated_at: null,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const practices: Array<{
+      tenantId: string;
+      organizationId: string;
+      profileId: string;
+      practiceName: string;
+    }> = [];
+
+    for (const suffix of ['A', 'B'] as const) {
+      const tenant = await database
+        .insertInto('tenants')
+        .values({
+          code: `PATIENT-PORTAL-${suffix}`,
+          name: `Synthetic Patient Portal Tenant ${suffix}`,
+          is_synthetic: true,
+        })
+        .returning('id')
+        .executeTakeFirstOrThrow();
+      const practiceName = `Synthetic Patient Portal Practice ${suffix}`;
+      const organization = await database
+        .insertInto('organizations')
+        .values({
+          tenant_id: tenant.id,
+          parent_organization_id: null,
+          kind: 'practice',
+          code: `PATIENT-PORTAL-PRACTICE-${suffix}`,
+          name: practiceName,
+          is_synthetic: true,
+        })
+        .returning('id')
+        .executeTakeFirstOrThrow();
+      const profile = await database
+        .insertInto('patient_portal_profiles')
+        .values({
+          tenant_id: tenant.id,
+          organization_id: organization.id,
+          application_user_id: user.id,
+          status: 'active',
+          is_synthetic: true,
+        })
+        .returning('id')
+        .executeTakeFirstOrThrow();
+      practices.push({
+        tenantId: tenant.id,
+        organizationId: organization.id,
+        profileId: profile.id,
+        practiceName,
+      });
+    }
+
+    const config = {
+      getOrThrow: (name: string) =>
+        ({
+          SESSION_IDLE_MINUTES: 30,
+          SESSION_ABSOLUTE_MINUTES: 480,
+          SESSION_RENEWAL_MINUTES: 5,
+        })[name],
+    } as ConfigService;
+    const sessions = new PatientPortalSessionService(
+      { client: database } as DatabaseService,
+      config,
+    );
+    const principal = {
+      issuer,
+      subject: 'synthetic-patient-subject',
+      clientId: 'synthetic-patient-client',
+      username: 'patient@example.invalid',
+      providerExpiresAt: new Date(Date.now() + 10 * 60_000),
+    };
+
+    await expect(
+      sessions.create({
+        ...principal,
+        subject: 'unregistered-patient-subject',
+      }),
+    ).rejects.toMatchObject({
+      message: 'An active patient portal account is required.',
+    });
+
+    const onboarding = await sessions.create(principal);
+    const stored = await database
+      .selectFrom('patient_portal_sessions')
+      .select([
+        'session_token_hash',
+        'csrf_token_hash',
+        'patient_portal_profile_id',
+      ])
+      .where('id', '=', onboarding.sessionId)
+      .executeTakeFirstOrThrow();
+
+    expect(stored.session_token_hash).not.toContain(onboarding.sessionToken);
+    expect(stored.csrf_token_hash).not.toContain(onboarding.csrfToken);
+    expect(stored.patient_portal_profile_id).toBeNull();
+    expect(onboarding).toMatchObject({
+      applicationUserId: user.id,
+      context: { kind: 'onboarding' },
+      availablePractices: [],
+    });
+
+    const links = new PatientPortalProfileLinkService({
+      client: database,
+    } as DatabaseService);
+
+    for (const [index, practice] of practices.entries()) {
+      await links.createApprovedLink({
+        patientPortalProfileId: practice.profileId,
+        patientPortalIdentityId: identity.id,
+        actorUserId: null,
+        reason: `Link deterministic synthetic patient portal practice ${index + 1}.`,
+        correlationId: `10000000-0000-4000-8000-00000000010${index}`,
+      });
+    }
+
+    const restoredOnboarding = await sessions.authenticate(
+      onboarding.sessionToken,
+    );
+    expect(restoredOnboarding).toMatchObject({
+      context: { kind: 'onboarding' },
+      availablePractices: practices.map((practice) => ({
+        portalProfileId: practice.profileId,
+        practiceName: practice.practiceName,
+      })),
+    });
+
+    const firstPracticeSession = await sessions.rotateContext(
+      restoredOnboarding!,
+      practices[0].profileId,
+    );
+    expect(firstPracticeSession.sessionToken).not.toBe(onboarding.sessionToken);
+    expect(firstPracticeSession.csrfToken).not.toBe(onboarding.csrfToken);
+    expect(firstPracticeSession.absoluteExpiresAt).toEqual(
+      onboarding.absoluteExpiresAt,
+    );
+    expect(firstPracticeSession.context).toEqual({
+      kind: 'practice',
+      portalProfileId: practices[0].profileId,
+      practiceName: practices[0].practiceName,
+      tenantId: practices[0].tenantId,
+      organizationId: practices[0].organizationId,
+    });
+    await expect(
+      sessions.authenticate(onboarding.sessionToken),
+    ).resolves.toBeNull();
+
+    const secondPracticeSession = await sessions.rotateContext(
+      firstPracticeSession,
+      practices[1].profileId,
+    );
+    expect(secondPracticeSession.context).toMatchObject({
+      kind: 'practice',
+      portalProfileId: practices[1].profileId,
+      practiceName: practices[1].practiceName,
+    });
+    expect(secondPracticeSession.absoluteExpiresAt).toEqual(
+      onboarding.absoluteExpiresAt,
+    );
+    await expect(
+      sessions.authenticate(firstPracticeSession.sessionToken),
+    ).resolves.toBeNull();
+
+    const unlinkedOrganization = await database
+      .insertInto('organizations')
+      .values({
+        tenant_id: practices[0].tenantId,
+        parent_organization_id: null,
+        kind: 'practice',
+        code: 'PATIENT-PORTAL-UNLINKED',
+        name: 'Synthetic Unlinked Patient Portal Practice',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const unlinkedProfile = await database
+      .insertInto('patient_portal_profiles')
+      .values({
+        tenant_id: practices[0].tenantId,
+        organization_id: unlinkedOrganization.id,
+        application_user_id: user.id,
+        status: 'active',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    await expect(
+      sessions.rotateContext(secondPracticeSession, unlinkedProfile.id),
+    ).rejects.toMatchObject({
+      message: 'The selected practice is unavailable.',
+    });
+    await expect(
+      sessions.authenticate(secondPracticeSession.sessionToken),
+    ).resolves.toMatchObject({
+      context: { kind: 'practice', portalProfileId: practices[1].profileId },
+    });
+
+    const returnedToOnboarding = await sessions.rotateContext(
+      secondPracticeSession,
+      null,
+    );
+    expect(returnedToOnboarding.context).toEqual({ kind: 'onboarding' });
+    await expect(
+      sessions.authenticate(secondPracticeSession.sessionToken),
+    ).resolves.toBeNull();
+    await sessions.revoke(returnedToOnboarding);
+    await expect(
+      sessions.authenticate(returnedToOnboarding.sessionToken),
+    ).resolves.toBeNull();
+    const contextAudits = await database
+      .selectFrom('audit_events')
+      .select(['action', 'outcome'])
+      .where('actor_user_id', '=', user.id)
+      .where('action', 'in', [
+        'identity.patient_portal_session_context_changed',
+        'identity.patient_portal_context_change_denied',
+      ])
+      .execute();
+
+    expect(
+      contextAudits.filter(({ outcome }) => outcome === 'success'),
+    ).toHaveLength(3);
+    expect(
+      contextAudits.filter(({ outcome }) => outcome === 'denied'),
+    ).toHaveLength(1);
   });
 
   it('persists an authorized invitation without merging by email or assigning a role', async () => {

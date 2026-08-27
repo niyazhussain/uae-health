@@ -6,6 +6,9 @@ export type UserStatus = 'active' | 'suspended' | 'closed';
 export type IdentityProtocol = 'cognito' | 'oidc' | 'saml';
 export type IdentityStatus = 'active' | 'suspended';
 export type ProviderSyncStatus = 'pending' | 'synchronized' | 'failed';
+export type PatientPortalIdentityStatus = 'active' | 'suspended';
+export type PatientPortalProfileStatus = 'active' | 'suspended' | 'closed';
+export type PatientPortalProfileLinkStatus = 'active' | 'revoked';
 export type MembershipStatus = 'pending' | 'active' | 'suspended' | 'revoked';
 export type ProvisioningMethod = 'admin_invite' | 'jit' | 'scim';
 export type RoleRequestPolicy = 'admin_only' | 'approval_required';
@@ -228,6 +231,62 @@ export interface WorkforceSessionTable {
   updated_at: Generated<Date>;
 }
 
+export interface PatientPortalProfileTable {
+  id: Generated<string>;
+  tenant_id: string;
+  organization_id: string;
+  application_user_id: string;
+  status: Generated<PatientPortalProfileStatus>;
+  is_synthetic: Generated<boolean>;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+}
+
+export interface PatientPortalIdentityTable {
+  id: Generated<string>;
+  application_user_id: string;
+  issuer: string;
+  subject: string;
+  client_id: string;
+  username: string | null;
+  status: Generated<PatientPortalIdentityStatus>;
+  last_authenticated_at: Date | null;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+}
+
+export interface PatientPortalProfileLinkTable {
+  id: Generated<string>;
+  patient_portal_profile_id: string;
+  patient_portal_identity_id: string;
+  status: Generated<PatientPortalProfileLinkStatus>;
+  linked_by_user_id: string | null;
+  link_reason: string;
+  revoked_at: Date | null;
+  revoked_by_user_id: string | null;
+  revocation_reason: string | null;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+}
+
+export interface PatientPortalSessionTable {
+  id: Generated<string>;
+  session_token_hash: string;
+  csrf_token_hash: string;
+  patient_portal_identity_id: string;
+  patient_portal_profile_id: string | null;
+  identity_issuer: string;
+  identity_subject: string;
+  identity_client_id: string;
+  identity_username: string | null;
+  idle_expires_at: Date;
+  absolute_expires_at: Date;
+  last_seen_at: Generated<Date>;
+  revoked_at: Date | null;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+}
+
 export interface DatabaseSchema {
   tenants: TenantTable;
   organizations: OrganizationTable;
@@ -245,4 +304,8 @@ export interface DatabaseSchema {
   approval_limits: ApprovalLimitTable;
   audit_events: AuditEventTable;
   workforce_sessions: WorkforceSessionTable;
+  patient_portal_identities: PatientPortalIdentityTable;
+  patient_portal_profiles: PatientPortalProfileTable;
+  patient_portal_profile_links: PatientPortalProfileLinkTable;
+  patient_portal_sessions: PatientPortalSessionTable;
 }

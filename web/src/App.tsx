@@ -8,6 +8,7 @@ import {
   type NavigationPage,
 } from "@/components/application-header";
 import { SignInPanel } from "@/components/sign-in-panel";
+import { isPatientPortalLocation } from "@/lib/application-audience";
 import { useCognitoSession } from "@/lib/cognito-session";
 import type { WorkforceDirectoryContext } from "@/lib/workforce-directory";
 
@@ -21,6 +22,10 @@ const WorkforceRoleCatalogue = lazy(async () => {
   return { default: module.WorkforceRoleCatalogue };
 });
 
+const PatientPortalPage = lazy(async () => {
+  const module = await import("@/pages/patient-portal/page");
+  return { default: module.PatientPortalPage };
+});
 
 const modules: MainModule[] = [
   {
@@ -94,6 +99,23 @@ function routeFromLocation(): ApplicationRoute {
 }
 
 function App() {
+  if (
+    isPatientPortalLocation({
+      hostname: window.location.hostname,
+      pathname: window.location.pathname,
+    })
+  ) {
+    return (
+      <Suspense fallback={<PatientPortalLoading />}>
+        <PatientPortalPage />
+      </Suspense>
+    );
+  }
+
+  return <WorkforceApplication />;
+}
+
+function WorkforceApplication() {
   const session = useCognitoSession();
   const [route, setRoute] = useState<ApplicationRoute>(routeFromLocation);
   const [navigationOpen, setNavigationOpen] = useState(false);
@@ -205,6 +227,17 @@ function App() {
         )}
       </Suspense>
     </div>
+  );
+}
+
+function PatientPortalLoading() {
+  return (
+    <main
+      className="mx-auto grid min-h-[100dvh] w-full max-w-6xl place-items-center px-4 text-sm text-muted-foreground"
+      role="status"
+    >
+      Loading patient portal…
+    </main>
   );
 }
 
