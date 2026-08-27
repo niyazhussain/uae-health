@@ -36,6 +36,12 @@ import { PatientPortalRegistrationService } from './patient-portal-registration.
   exports: [
     PatientPortalSessionAuthenticationGuard,
     PatientPortalPracticeContextGuard,
+    // Appointment APIs consume the exported session guard from a sibling
+    // module. Export its concrete dependencies too so Nest resolves the guard
+    // within that module boundary at runtime, not only at TypeScript build
+    // time.
+    PatientPortalSessionCookieService,
+    PatientPortalSessionService,
   ],
 })
 export class PatientPortalAuthModule {}

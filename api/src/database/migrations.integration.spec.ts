@@ -19,9 +19,11 @@ import * as addTenantLocalRoleNameUniqueness from './migrations/2026-08-26T00000
 import * as addIdentityProviderSyncStatus from './migrations/2026-08-26T010000_add_identity_provider_sync_status.js';
 import * as createPatientPortalIdentity from './migrations/2026-08-26T020000_create_patient_portal_identity.js';
 import * as createPatientRegistrationAndInvitations from './migrations/2026-08-27T000000_create_patient_registration_and_invitations.js';
+import * as createPatientPortalAppointments from './migrations/2026-08-27T010000_create_patient_portal_appointments.js';
 import { PatientPortalProfileLinkService } from '../patient-portal-auth/patient-portal-profile-link.service.js';
 import { PatientPortalRegistrationService } from '../patient-portal-auth/patient-portal-registration.service.js';
 import { PatientPortalSessionService } from '../patient-portal-auth/patient-portal-session.service.js';
+import { PatientAppointmentsService } from '../patient-appointments/patient-appointments.service.js';
 
 const databaseUrl = process.env.DATABASE_URL;
 const describeWithDatabase = databaseUrl ? describe : describe.skip;
@@ -67,10 +69,12 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
     await addIdentityProviderSyncStatus.up(database);
     await createPatientPortalIdentity.up(database);
     await createPatientRegistrationAndInvitations.up(database);
+    await createPatientPortalAppointments.up(database);
   });
 
   afterAll(async () => {
     if (database) {
+      await createPatientPortalAppointments.down(database);
       await createPatientRegistrationAndInvitations.down(database);
       await createPatientPortalIdentity.down(database);
       await addIdentityProviderSyncStatus.down(database);
@@ -518,6 +522,644 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
     ).toHaveLength(1);
   });
 
+  it('keeps synthetic appointments in one pending relationship context with idempotent commands', async () => {
+    const sessionConfig = {
+      getOrThrow: (name: string) => {
+        const values: Record<string, number> = {
+          SESSION_IDLE_MINUTES: 30,
+          SESSION_ABSOLUTE_MINUTES: 480,
+          SESSION_RENEWAL_MINUTES: 5,
+        };
+        return values[name];
+      },
+    } as ConfigService;
+    const sessions = new PatientPortalSessionService(
+      { client: database } as DatabaseService,
+      sessionConfig,
+    );
+    const appointments = new PatientAppointmentsService({
+      client: database,
+    } as DatabaseService);
+    const tenant = await database
+      .insertInto('tenants')
+      .values({
+        code: 'PATIENT-APPOINTMENTS',
+        name: 'Synthetic Patient Appointment Tenant',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const [firstPractice, secondPractice] = await database
+      .insertInto('organizations')
+      .values([
+        {
+          tenant_id: tenant.id,
+          parent_organization_id: null,
+          kind: 'practice',
+          code: 'PATIENT-APPOINTMENTS-A',
+          name: 'Synthetic Appointment Practice A',
+          is_synthetic: true,
+        },
+        {
+          tenant_id: tenant.id,
+          parent_organization_id: null,
+          kind: 'practice',
+          code: 'PATIENT-APPOINTMENTS-B',
+          name: 'Synthetic Appointment Practice B',
+          is_synthetic: true,
+        },
+      ])
+      .returning(['id', 'name'])
+      .execute();
+    const [firstBookablePractice, secondBookablePractice] = await database
+      .insertInto('patient_portal_bookable_practices')
+      .values([
+        {
+          tenant_id: tenant.id,
+          organization_id: firstPractice.id,
+          timezone: 'Asia/Dubai',
+          status: 'active',
+          is_synthetic: true,
+        },
+        {
+          tenant_id: tenant.id,
+          organization_id: secondPractice.id,
+          timezone: 'Asia/Dubai',
+          status: 'active',
+          is_synthetic: true,
+        },
+      ])
+      .returning('id')
+      .execute();
+    const slotStart = new Date(Date.now() + 24 * 60 * 60_000);
+    const [firstSlot, rescheduleSlot] = await database
+      .insertInto('patient_portal_appointment_slots')
+      .values([
+        {
+          bookable_practice_id: firstBookablePractice.id,
+          tenant_id: tenant.id,
+          organization_id: firstPractice.id,
+          starts_at: slotStart,
+          ends_at: new Date(slotStart.getTime() + 30 * 60_000),
+          status: 'available',
+          is_synthetic: true,
+        },
+        {
+          bookable_practice_id: firstBookablePractice.id,
+          tenant_id: tenant.id,
+          organization_id: firstPractice.id,
+          starts_at: new Date(slotStart.getTime() + 60 * 60_000),
+          ends_at: new Date(slotStart.getTime() + 90 * 60_000),
+          status: 'available',
+          is_synthetic: true,
+        },
+      ])
+      .returning('id')
+      .execute();
+    const secondSlot = await database
+      .insertInto('patient_portal_appointment_slots')
+      .values({
+        bookable_practice_id: secondBookablePractice.id,
+        tenant_id: tenant.id,
+        organization_id: secondPractice.id,
+        starts_at: new Date(slotStart.getTime() + 2 * 60 * 60_000),
+        ends_at: new Date(slotStart.getTime() + 150 * 60_000),
+        status: 'available',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+
+    const createPatientSession = async (suffix: string) => {
+      const user = await database
+        .insertInto('application_users')
+        .values({
+          display_name: `Synthetic Appointment Patient ${suffix}`,
+          primary_email: `appointment.${suffix}@example.invalid`,
+          is_synthetic: true,
+        })
+        .returning('id')
+        .executeTakeFirstOrThrow();
+      const identity = await database
+        .insertInto('patient_portal_identities')
+        .values({
+          application_user_id: user.id,
+          issuer: 'https://identity.example.invalid/patient-appointments',
+          subject: `synthetic-appointment-patient-${suffix}`,
+          client_id: 'synthetic-appointment-patient-client',
+          username: `appointment.${suffix}@example.invalid`,
+          status: 'active',
+          provider_sync_status: 'synchronized',
+          provider_sync_attempted_at: null,
+          provider_sync_completed_at: null,
+          provider_sync_error_code: null,
+          last_authenticated_at: null,
+        })
+        .returning('id')
+        .executeTakeFirstOrThrow();
+      const onboarding = await sessions.create({
+        issuer: 'https://identity.example.invalid/patient-appointments',
+        subject: `synthetic-appointment-patient-${suffix}`,
+        clientId: 'synthetic-appointment-patient-client',
+        username: `appointment.${suffix}@example.invalid`,
+        providerExpiresAt: new Date(Date.now() + 10 * 60_000),
+      });
+
+      return { user, identity, onboarding };
+    };
+
+    const firstPatient = await createPatientSession('one');
+    const discoveredPractices = await appointments.listBookablePractices(
+      firstPatient.onboarding,
+    );
+    expect(
+      discoveredPractices.bookablePractices.some(
+        (practice) =>
+          practice.bookablePracticeId === firstBookablePractice.id &&
+          practice.practiceName === firstPractice.name &&
+          practice.timezone === 'Asia/Dubai',
+      ),
+    ).toBe(true);
+    expect(
+      discoveredPractices.bookablePractices.some(
+        (practice) =>
+          practice.bookablePracticeId === secondBookablePractice.id &&
+          practice.practiceName === secondPractice.name &&
+          practice.timezone === 'Asia/Dubai',
+      ),
+    ).toBe(true);
+
+    const withConcurrentAppointments = async <T>(
+      work: (
+        first: PatientAppointmentsService,
+        second: PatientAppointmentsService,
+      ) => Promise<T>,
+    ): Promise<T> => {
+      const firstDatabase = createDatabaseClient<DatabaseSchema>({
+        connectionString: databaseUrl!,
+        maxConnections: 1,
+        ssl: false,
+      });
+      const secondDatabase = createDatabaseClient<DatabaseSchema>({
+        connectionString: databaseUrl!,
+        maxConnections: 1,
+        ssl: false,
+      });
+      try {
+        await sql`set search_path to ${sql.id(schemaName)}, public`.execute(
+          firstDatabase,
+        );
+        await sql`set search_path to ${sql.id(schemaName)}, public`.execute(
+          secondDatabase,
+        );
+        return await work(
+          new PatientAppointmentsService({
+            client: firstDatabase,
+          } as DatabaseService),
+          new PatientAppointmentsService({
+            client: secondDatabase,
+          } as DatabaseService),
+        );
+      } finally {
+        await firstDatabase.destroy();
+        await secondDatabase.destroy();
+      }
+    };
+    const [firstRelationship, reusedRelationship] =
+      await withConcurrentAppointments((first, second) =>
+        Promise.all([
+          first.createRelationship(
+            firstPatient.onboarding,
+            'appointment-relationship-key-0001',
+            firstBookablePractice.id,
+          ),
+          second.createRelationship(
+            firstPatient.onboarding,
+            'appointment-relationship-key-0002',
+            firstBookablePractice.id,
+          ),
+        ]),
+      );
+    expect(reusedRelationship).toEqual(firstRelationship);
+    await expect(
+      database
+        .selectFrom('patient_portal_appointment_relationships')
+        .select('id')
+        .where('patient_portal_identity_id', '=', firstPatient.identity.id)
+        .where('organization_id', '=', firstPractice.id)
+        .execute(),
+    ).resolves.toHaveLength(1);
+    await expect(
+      database
+        .selectFrom('patient_portal_appointment_commands')
+        .select('id')
+        .where('patient_portal_identity_id', '=', firstPatient.identity.id)
+        .where('operation', '=', 'relationship_create')
+        .execute(),
+    ).resolves.toHaveLength(2);
+    await expect(
+      database
+        .selectFrom('audit_events')
+        .select('id')
+        .where('action', '=', 'patient.appointment_relationship_requested')
+        .where(
+          'target_entity_id',
+          '=',
+          firstRelationship.appointmentRelationshipId,
+        )
+        .where('outcome', '=', 'success')
+        .execute(),
+    ).resolves.toHaveLength(1);
+    await expect(
+      database
+        .selectFrom('patient_portal_profile_links')
+        .select('id')
+        .where('patient_portal_identity_id', '=', firstPatient.identity.id)
+        .execute(),
+    ).resolves.toHaveLength(0);
+
+    const firstAppointmentContext = await sessions.rotateAppointmentContext(
+      firstPatient.onboarding,
+      firstRelationship.appointmentRelationshipId,
+    );
+    expect(firstAppointmentContext.context).toMatchObject({
+      kind: 'appointment-onboarding',
+      appointmentRelationshipId: firstRelationship.appointmentRelationshipId,
+      practiceName: firstPractice.name,
+    });
+    const availability = await appointments.listAvailability(
+      firstAppointmentContext,
+    );
+    expect(availability.practiceName).toBe(firstPractice.name);
+    expect(
+      availability.slots.some((slot) => slot.slotId === firstSlot.id),
+    ).toBe(true);
+
+    const [requested, replayedRequested] = await withConcurrentAppointments(
+      (first, second) =>
+        Promise.all([
+          first.createAppointment(
+            firstAppointmentContext,
+            'appointment-create-key-0001',
+            firstSlot.id,
+          ),
+          second.createAppointment(
+            firstAppointmentContext,
+            'appointment-create-key-0001',
+            firstSlot.id,
+          ),
+        ]),
+    );
+    expect(replayedRequested).toEqual(requested);
+    await expect(
+      database
+        .selectFrom('patient_portal_appointment_commands')
+        .select('id')
+        .where('patient_portal_identity_id', '=', firstPatient.identity.id)
+        .where('operation', '=', 'appointment_create')
+        .execute(),
+    ).resolves.toHaveLength(1);
+    await expect(
+      appointments.createAppointment(
+        firstAppointmentContext,
+        'appointment-create-key-0001',
+        firstSlot.id,
+      ),
+    ).resolves.toEqual(requested);
+
+    const secondPatient = await createPatientSession('two');
+    const secondRelationship = await appointments.createRelationship(
+      secondPatient.onboarding,
+      'appointment-relationship-key-0003',
+      firstBookablePractice.id,
+    );
+    const secondAppointmentContext = await sessions.rotateAppointmentContext(
+      secondPatient.onboarding,
+      secondRelationship.appointmentRelationshipId,
+    );
+    await expect(
+      appointments.createAppointment(
+        secondAppointmentContext,
+        'appointment-create-key-0002',
+        firstSlot.id,
+      ),
+    ).rejects.toBeInstanceOf(ConflictException);
+
+    const otherPracticeRelationship = await appointments.createRelationship(
+      firstAppointmentContext,
+      'appointment-relationship-key-0004',
+      secondBookablePractice.id,
+    );
+    const otherPracticeContext = await sessions.rotateAppointmentContext(
+      firstAppointmentContext,
+      otherPracticeRelationship.appointmentRelationshipId,
+    );
+    await expect(
+      appointments.listAppointments(otherPracticeContext),
+    ).resolves.toMatchObject({
+      practiceName: secondPractice.name,
+      appointments: [],
+    });
+    await expect(
+      appointments.cancelAppointment(
+        otherPracticeContext,
+        'appointment-cancellation-key-0001',
+        requested.appointment.appointmentId,
+        requested.appointment.version,
+      ),
+    ).rejects.toMatchObject({ message: 'Appointment is unavailable.' });
+
+    const firstContextAgain = await sessions.rotateAppointmentContext(
+      otherPracticeContext,
+      firstRelationship.appointmentRelationshipId,
+    );
+    const [rescheduled, replayedRescheduled] = await withConcurrentAppointments(
+      (first, second) =>
+        Promise.all([
+          first.rescheduleAppointment(
+            firstContextAgain,
+            'appointment-reschedule-key-0001',
+            requested.appointment.appointmentId,
+            rescheduleSlot.id,
+            requested.appointment.version,
+          ),
+          second.rescheduleAppointment(
+            firstContextAgain,
+            'appointment-reschedule-key-0001',
+            requested.appointment.appointmentId,
+            rescheduleSlot.id,
+            requested.appointment.version,
+          ),
+        ]),
+    );
+    expect(replayedRescheduled).toEqual(rescheduled);
+    await expect(
+      database
+        .selectFrom('patient_portal_appointment_commands')
+        .select('id')
+        .where('patient_portal_identity_id', '=', firstPatient.identity.id)
+        .where('operation', '=', 'appointment_reschedule')
+        .execute(),
+    ).resolves.toHaveLength(1);
+    expect(rescheduled.appointment).toMatchObject({
+      status: 'requested',
+      version: requested.appointment.version + 1,
+    });
+    const [cancelled, replayedCancelled] = await withConcurrentAppointments(
+      (first, second) =>
+        Promise.all([
+          first.cancelAppointment(
+            firstContextAgain,
+            'appointment-cancellation-key-0002',
+            requested.appointment.appointmentId,
+            rescheduled.appointment.version,
+          ),
+          second.cancelAppointment(
+            firstContextAgain,
+            'appointment-cancellation-key-0002',
+            requested.appointment.appointmentId,
+            rescheduled.appointment.version,
+          ),
+        ]),
+    );
+    expect(replayedCancelled).toEqual(cancelled);
+    await expect(
+      database
+        .selectFrom('patient_portal_appointment_commands')
+        .select('id')
+        .where('patient_portal_identity_id', '=', firstPatient.identity.id)
+        .where('operation', '=', 'appointment_cancellation')
+        .execute(),
+    ).resolves.toHaveLength(1);
+    expect(cancelled.appointment).toMatchObject({
+      status: 'cancelled',
+      version: rescheduled.appointment.version + 1,
+      canCancel: false,
+      canReschedule: false,
+    });
+    await expect(
+      appointments.cancelAppointment(
+        firstContextAgain,
+        'appointment-cancellation-key-0002',
+        requested.appointment.appointmentId,
+        rescheduled.appointment.version,
+      ),
+    ).resolves.toEqual(cancelled);
+
+    const secondPracticeRelationshipForSecondPatient =
+      await appointments.createRelationship(
+        secondAppointmentContext,
+        'appointment-relationship-key-0006',
+        secondBookablePractice.id,
+      );
+    const secondPatientSecondPracticeContext =
+      await sessions.rotateAppointmentContext(
+        secondAppointmentContext,
+        secondPracticeRelationshipForSecondPatient.appointmentRelationshipId,
+      );
+    const firstPatientSecondPracticeContext =
+      await sessions.rotateAppointmentContext(
+        firstContextAgain,
+        otherPracticeRelationship.appointmentRelationshipId,
+      );
+    const competingBookings = await withConcurrentAppointments(
+      (first, second) =>
+        Promise.allSettled([
+          first.createAppointment(
+            firstPatientSecondPracticeContext,
+            'appointment-create-key-race-0001',
+            secondSlot.id,
+          ),
+          second.createAppointment(
+            secondPatientSecondPracticeContext,
+            'appointment-create-key-race-0002',
+            secondSlot.id,
+          ),
+        ]),
+    );
+    const successfulBookings = competingBookings.filter(
+      (result) => result.status === 'fulfilled',
+    );
+    const rejectedBookings = competingBookings.filter(
+      (result) => result.status === 'rejected',
+    );
+    expect(successfulBookings).toHaveLength(1);
+    expect(rejectedBookings).toHaveLength(1);
+    const rejectedBooking = rejectedBookings[0];
+    expect(rejectedBooking?.status).toBe('rejected');
+    if (rejectedBooking?.status === 'rejected') {
+      expect(rejectedBooking.reason as unknown).toBeInstanceOf(
+        ConflictException,
+      );
+    }
+    await expect(
+      database
+        .selectFrom('patient_portal_appointments')
+        .select('id')
+        .where('appointment_slot_id', '=', secondSlot.id)
+        .where('status', '=', 'requested')
+        .execute(),
+    ).resolves.toHaveLength(1);
+
+    await expect(
+      database
+        .selectFrom('patient_portal_appointments')
+        .select([
+          'patient_portal_profile_id',
+          'patient_portal_appointment_relationship_id',
+          'status',
+        ])
+        .where('id', '=', requested.appointment.appointmentId)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({
+      patient_portal_profile_id: null,
+      patient_portal_appointment_relationship_id:
+        firstRelationship.appointmentRelationshipId,
+      status: 'cancelled',
+    });
+
+    // These direct writes deliberately bypass the service. The migration must
+    // reject cross-identity and cross-practice combinations even if a future
+    // endpoint accidentally supplies forged scope values.
+    const firstProfile = await database
+      .insertInto('patient_portal_profiles')
+      .values({
+        tenant_id: tenant.id,
+        organization_id: firstPractice.id,
+        application_user_id: firstPatient.user.id,
+        status: 'active',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    await database
+      .insertInto('patient_portal_profile_links')
+      .values({
+        patient_portal_profile_id: firstProfile.id,
+        patient_portal_identity_id: firstPatient.identity.id,
+        status: 'active',
+        linked_by_user_id: null,
+        link_reason: 'Synthetic appointment schema integrity verification.',
+        revoked_at: null,
+        revoked_by_user_id: null,
+        revocation_reason: null,
+      })
+      .execute();
+
+    const linkedPracticeSession = await sessions.rotateContext(
+      firstPatientSecondPracticeContext,
+      firstProfile.id,
+    );
+    const linkedDiscovery = await appointments.listBookablePractices(
+      linkedPracticeSession,
+    );
+    expect(
+      linkedDiscovery.bookablePractices.some(
+        (practice) => practice.bookablePracticeId === firstBookablePractice.id,
+      ),
+    ).toBe(false);
+    await expect(
+      appointments.createRelationship(
+        linkedPracticeSession,
+        'appointment-relationship-key-0005',
+        firstBookablePractice.id,
+      ),
+    ).rejects.toBeInstanceOf(ConflictException);
+
+    const linkedAppointment = await appointments.createAppointment(
+      linkedPracticeSession,
+      'appointment-create-key-linked-0001',
+      firstSlot.id,
+    );
+    expect(linkedAppointment.appointment.status).toBe('requested');
+
+    await database
+      .updateTable('patient_portal_profile_links')
+      .set({
+        status: 'revoked',
+        revoked_at: new Date(),
+        revoked_by_user_id: firstPatient.user.id,
+        revocation_reason: 'Synthetic appointment revocation verification.',
+        updated_at: new Date(),
+      })
+      .where('patient_portal_profile_id', '=', firstProfile.id)
+      .executeTakeFirstOrThrow();
+    await expect(
+      appointments.createAppointment(
+        linkedPracticeSession,
+        'appointment-create-key-linked-0001',
+        firstSlot.id,
+      ),
+    ).rejects.toMatchObject({ message: 'Appointment is unavailable.' });
+    await expect(
+      appointments.cancelAppointment(
+        linkedPracticeSession,
+        'appointment-cancellation-key-linked-0001',
+        linkedAppointment.appointment.appointmentId,
+        linkedAppointment.appointment.version,
+      ),
+    ).rejects.toMatchObject({ message: 'Appointment is unavailable.' });
+
+    const invalidCancelledAppointment = {
+      tenant_id: tenant.id,
+      organization_id: firstPractice.id,
+      appointment_slot_id: firstSlot.id,
+      status: 'cancelled' as const,
+      version: 1,
+      cancelled_at: new Date(),
+    };
+    await expect(
+      database
+        .insertInto('patient_portal_appointments')
+        .values({
+          ...invalidCancelledAppointment,
+          patient_portal_identity_id: secondPatient.identity.id,
+          patient_portal_profile_id: firstProfile.id,
+          patient_portal_appointment_relationship_id: null,
+        })
+        .execute(),
+    ).rejects.toThrow();
+    await expect(
+      database
+        .insertInto('patient_portal_appointments')
+        .values({
+          ...invalidCancelledAppointment,
+          patient_portal_identity_id: secondPatient.identity.id,
+          patient_portal_profile_id: null,
+          patient_portal_appointment_relationship_id:
+            firstRelationship.appointmentRelationshipId,
+        })
+        .execute(),
+    ).rejects.toThrow();
+    await expect(
+      database
+        .insertInto('patient_portal_appointments')
+        .values({
+          ...invalidCancelledAppointment,
+          appointment_slot_id: secondSlot.id,
+          patient_portal_identity_id: firstPatient.identity.id,
+          patient_portal_profile_id: null,
+          patient_portal_appointment_relationship_id:
+            firstRelationship.appointmentRelationshipId,
+        })
+        .execute(),
+    ).rejects.toThrow();
+    await expect(
+      database
+        .insertInto('patient_portal_appointment_commands')
+        .values({
+          patient_portal_identity_id: secondPatient.identity.id,
+          operation: 'appointment_cancellation',
+          idempotency_key_hash: 'a'.repeat(64),
+          request_hash: 'b'.repeat(64),
+          response_data: {},
+          patient_portal_appointment_relationship_id: null,
+          patient_portal_appointment_id: requested.appointment.appointmentId,
+        })
+        .execute(),
+    ).rejects.toThrow();
+  });
+
   it('keeps public registration idempotent, rate data short-lived, and activates only an exact verified patient binding', async () => {
     const issuer =
       'https://cognito-idp.ap-south-1.amazonaws.com/ap-south-1_public_registration';
@@ -922,6 +1564,7 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
       displayName: 'Synthetic Invitation Patient',
       context: { kind: 'onboarding' },
       availablePractices: [],
+      appointmentOnboardingPractices: [],
       csrfToken: 'synthetic-invitation-csrf-token',
       idleExpiresAt: new Date(Date.now() + 30 * 60_000),
       absoluteExpiresAt: new Date(Date.now() + 8 * 60 * 60_000),

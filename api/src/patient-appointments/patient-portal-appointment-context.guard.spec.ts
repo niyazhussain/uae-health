@@ -1,6 +1,6 @@
 import { ExecutionContext, ForbiddenException } from '@nestjs/common';
-import type { PatientPortalAuthenticatedRequest } from './patient-portal-auth.types.js';
-import { PatientPortalPracticeContextGuard } from './patient-portal-practice-context.guard.js';
+import type { PatientPortalAuthenticatedRequest } from '../patient-portal-auth/patient-portal-auth.types.js';
+import { PatientPortalAppointmentContextGuard } from './patient-portal-appointment-context.guard.js';
 
 function contextFor(
   request: Partial<PatientPortalAuthenticatedRequest>,
@@ -12,40 +12,20 @@ function contextFor(
   } as ExecutionContext;
 }
 
-describe('PatientPortalPracticeContextGuard', () => {
-  const guard = new PatientPortalPracticeContextGuard();
+describe('PatientPortalAppointmentContextGuard', () => {
+  const guard = new PatientPortalAppointmentContextGuard();
 
   it('denies a restricted onboarding session', () => {
     expect(() =>
       guard.canActivate(
         contextFor({
-          patientPortalSession: {
-            context: { kind: 'onboarding' },
-          } as never,
+          patientPortalSession: { context: { kind: 'onboarding' } } as never,
         }),
       ),
     ).toThrow(ForbiddenException);
   });
 
-  it('does not treat a pending appointment relationship as a general practice context', () => {
-    expect(() =>
-      guard.canActivate(
-        contextFor({
-          patientPortalSession: {
-            context: {
-              kind: 'appointment-onboarding',
-              appointmentRelationshipId: 'relationship-id',
-              practiceName: 'Synthetic Appointment Practice',
-              tenantId: 'tenant-id',
-              organizationId: 'organization-id',
-            },
-          } as never,
-        }),
-      ),
-    ).toThrow(ForbiddenException);
-  });
-
-  it('accepts a session with one server-selected practice', () => {
+  it('accepts a server-selected active practice context', () => {
     expect(
       guard.canActivate(
         contextFor({
@@ -54,6 +34,24 @@ describe('PatientPortalPracticeContextGuard', () => {
               kind: 'practice',
               portalProfileId: 'profile-id',
               practiceName: 'Synthetic Practice',
+              tenantId: 'tenant-id',
+              organizationId: 'organization-id',
+            },
+          } as never,
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it('accepts only the restricted server-selected appointment relationship context', () => {
+    expect(
+      guard.canActivate(
+        contextFor({
+          patientPortalSession: {
+            context: {
+              kind: 'appointment-onboarding',
+              appointmentRelationshipId: 'relationship-id',
+              practiceName: 'Synthetic Appointment Practice',
               tenantId: 'tenant-id',
               organizationId: 'organization-id',
             },

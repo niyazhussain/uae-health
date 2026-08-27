@@ -53,12 +53,27 @@ The platform SHALL store instants in UTC, retain facility timezone context requi
 - **WHEN** a UTC event instant is presented for a facility
 - **THEN** the system converts it using the facility's applicable timezone while retaining the original instant
 
+### Requirement: Represent synthetic patient appointment access safely
+The POC SHALL store opt-in synthetic bookable-practice configuration, UTC appointment windows, explicit pending appointment relationships, and patient appointment requests separately from clinical records and active portal-profile links. Each appointment SHALL belong to exactly one authenticated patient identity and exactly one active portal-profile context or pending appointment relationship. It SHALL not store symptoms, notes, provider details, service details, payments, insurance, or clinical-record identifiers.
+
+#### Scenario: Patient starts an appointment relationship
+- **WHEN** a restricted onboarding patient chooses an opt-in synthetic bookable practice
+- **THEN** the platform records one explicit pending relationship scoped to that patient identity and practice without creating an active portal-profile link
+
+#### Scenario: Appointment is queried in another context
+- **WHEN** a request tries to retrieve or mutate an appointment outside the current server-stored practice or appointment-onboarding context
+- **THEN** the database query returns no appointment and the API does not reveal the other practice's appointment data
+
 ### Requirement: Control concurrent business updates
 The platform SHALL support unique constraints, optimistic concurrency, transactions, and explicit row locking for workflows where concurrent updates could double-book, double-consume, or corrupt balances.
 
 #### Scenario: Concurrent updates use the same record version
 - **WHEN** two commands attempt incompatible updates from the same original record version
 - **THEN** at most one succeeds and the other receives a retriable or user-resolvable conflict
+
+#### Scenario: Two appointment requests reserve the same window
+- **WHEN** two serializable appointment-request transactions attempt to reserve one synthetic bookable window
+- **THEN** a database constraint and row locking permit at most one active request and leave no partial relationship, appointment, idempotency, or audit record for the unsuccessful command
 
 ### Requirement: Recover from transient database conflicts safely
 The platform SHALL classify deadlocks and other approved transient database failures and SHALL retry only operations that are safe and bounded to retry.

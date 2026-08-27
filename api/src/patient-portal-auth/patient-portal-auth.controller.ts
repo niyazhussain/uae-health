@@ -26,6 +26,7 @@ import {
 import { CurrentPatientPortalPrincipal } from './current-patient-portal-principal.decorator.js';
 import { CurrentPatientPortalSession } from './current-patient-portal-session.decorator.js';
 import { SelectPatientPortalContextDto } from './dto/select-patient-portal-context.dto.js';
+import { SelectPatientPortalAppointmentContextDto } from './dto/select-patient-portal-appointment-context.dto.js';
 import { AcceptPatientPortalInvitationDto } from './dto/accept-patient-portal-invitation.dto.js';
 import { CreatePatientPortalRegistrationDto } from './dto/create-patient-portal-registration.dto.js';
 import { PATIENT_PORTAL_COOKIE_AUTH } from './patient-portal-auth.constants.js';
@@ -45,9 +46,18 @@ interface PatientPortalSessionResponse {
   displayName: string;
   context:
     | { kind: 'onboarding' }
-    | { kind: 'practice'; portalProfileId: string; practiceName: string };
+    | { kind: 'practice'; portalProfileId: string; practiceName: string }
+    | {
+        kind: 'appointment-onboarding';
+        appointmentRelationshipId: string;
+        practiceName: string;
+      };
   availablePractices: Array<{
     portalProfileId: string;
+    practiceName: string;
+  }>;
+  appointmentOnboardingPractices: Array<{
+    appointmentRelationshipId: string;
     practiceName: string;
   }>;
   csrfToken: string;
@@ -157,6 +167,33 @@ export class PatientPortalAuthController {
     return this.toResponse(rotated);
   }
 
+  @Post('session/appointment-context')
+  @UseGuards(PatientPortalSessionAuthenticationGuard)
+  @ApiCookieAuth(PATIENT_PORTAL_COOKIE_AUTH)
+  @ApiOperation({
+    summary:
+      'Rotate the patient session into one explicit pending appointment relationship',
+  })
+  @ApiCreatedResponse({
+    description: 'A fresh opaque session in the selected appointment context.',
+  })
+  @ApiForbiddenResponse({
+    description:
+      'The selected pending appointment relationship is not owned by this patient.',
+  })
+  async selectAppointmentContext(
+    @CurrentPatientPortalSession() session: PatientPortalSessionContext,
+    @Body() command: SelectPatientPortalAppointmentContextDto,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<PatientPortalSessionResponse> {
+    const rotated = await this.sessions.rotateAppointmentContext(
+      session,
+      command.appointmentRelationshipId,
+    );
+    this.cookies.set(response, rotated.sessionToken, rotated.idleExpiresAt);
+    return this.toResponse(rotated);
+  }
+
   @Post('invitations/accept')
   @UseGuards(PatientPortalSessionAuthenticationGuard)
   @ApiCookieAuth(PATIENT_PORTAL_COOKIE_AUTH)
@@ -204,8 +241,16 @@ export class PatientPortalAuthController {
               portalProfileId: session.context.portalProfileId,
               practiceName: session.context.practiceName,
             }
-          : { kind: 'onboarding' },
+          : session.context.kind === 'appointment-onboarding'
+            ? {
+                kind: 'appointment-onboarding',
+                appointmentRelationshipId:
+                  session.context.appointmentRelationshipId,
+                practiceName: session.context.practiceName,
+              }
+            : { kind: 'onboarding' },
       availablePractices: session.availablePractices,
+      appointmentOnboardingPractices: session.appointmentOnboardingPractices,
       csrfToken: session.csrfToken,
       expiresAt: session.idleExpiresAt.toISOString(),
       absoluteExpiresAt: session.absoluteExpiresAt.toISOString(),

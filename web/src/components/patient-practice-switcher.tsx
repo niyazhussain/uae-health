@@ -55,9 +55,9 @@ export function PatientPracticeSwitcher({
         </span>
         <div>
           <h3 id="practice-context-title" className="text-lg font-semibold">
-            {context.kind === "practice"
-              ? "Choose a different practice"
-              : "Choose a practice"}
+            {context.kind === "onboarding"
+              ? "Choose a practice"
+              : "Choose a different practice"}
           </h3>
           <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
             You will use only the practice you select. Your other practice
@@ -153,13 +153,13 @@ export function PatientPracticeSwitcher({
         >
           {pending
             ? "Updating access…"
-            : context.kind === "practice"
-              ? "Use selected practice"
-              : "Use this practice"}
+            : context.kind === "onboarding"
+              ? "Use this practice"
+              : "Use selected practice"}
         </Button>
       </div>
 
-      {context.kind === "practice" && (
+      {context.kind !== "onboarding" && (
         <div className="mt-5 flex flex-col gap-3 border-t pt-4 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-sm leading-6 text-muted-foreground">
             Return to your account without a practice selected.

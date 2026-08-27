@@ -1,30 +1,77 @@
 import {
-  BuildingsIcon,
+  CalendarDotsIcon,
   HeartbeatIcon,
-  LockKeyIcon,
+  HouseIcon,
+  MagnifyingGlassIcon,
   SignOutIcon,
 } from "@phosphor-icons/react";
-import { useCallback, useEffect, useRef, useState } from "react";
-
 import {
-  PatientInvitationStatusCard,
-  type PatientInvitationStatus,
-} from "@/components/patient-invitation-status";
-import { PatientPracticeSwitcher } from "@/components/patient-practice-switcher";
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+
+import type { PatientInvitationStatus } from "@/components/patient-invitation-status";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { usePatientPortalCognitoSession } from "@/lib/cognito-session";
+import type { PatientAppointmentRelationship } from "@/lib/patient-appointments";
 import {
   acceptPatientPortalInvitation,
   PatientOnboardingApiError,
   registerPatient,
 } from "@/lib/patient-onboarding";
+import { PatientAppointmentsPage } from "@/pages/patient-portal/appointments/page";
+import { PatientAppointmentRequestPage } from "@/pages/patient-portal/appointments/request/page";
+import { PatientPortalHomePage } from "@/pages/patient-portal/home/page";
 import { PatientAuthGate } from "@/pages/patient-portal/patient-auth-gate";
+import { PatientPracticeDiscoveryPage } from "@/pages/patient-portal/practices/page";
 
 const invitationTokenPattern = /^[A-Za-z0-9_-]{32,256}$/;
 
+type PatientPortalRoute =
+  | "home"
+  | "practices"
+  | "appointments"
+  | "appointment-request";
+
 function isLocalHost(hostname: string): boolean {
   return ["localhost", "127.0.0.1", "[::1]"].includes(hostname);
+}
+
+function patientPortalPath(route: PatientPortalRoute): string {
+  const localPrefix = isLocalHost(window.location.hostname)
+    ? "/patient-portal"
+    : "";
+
+  switch (route) {
+    case "practices":
+      return `${localPrefix}/practices`;
+    case "appointments":
+      return `${localPrefix}/appointments`;
+    case "appointment-request":
+      return `${localPrefix}/appointments/request`;
+    default:
+      return localPrefix || "/";
+  }
+}
+
+function patientPortalRouteFromLocation(): PatientPortalRoute {
+  const pathname = window.location.pathname.replace(/\/+$/, "") || "/";
+  const localPrefix = isLocalHost(window.location.hostname)
+    ? "/patient-portal"
+    : "";
+  const routePath = localPrefix
+    ? pathname.slice(localPrefix.length) || "/"
+    : pathname;
+
+  if (routePath === "/practices") return "practices";
+  if (routePath === "/appointments") return "appointments";
+  if (routePath === "/appointments/request") return "appointment-request";
+
+  return "home";
 }
 
 function captureInvitation(): {
@@ -56,11 +103,6 @@ function removeInvitationFragment(): void {
   );
 }
 
-function finishInvitationRoute(): void {
-  const path = isLocalHost(window.location.hostname) ? "/patient-portal" : "/";
-  window.history.replaceState(window.history.state, "", path);
-}
-
 export function PatientPortalPage() {
   const {
     step,
@@ -72,10 +114,14 @@ export function PatientPortalPage() {
     signOut,
     refreshSession,
     selectPatientPractice,
+    selectPatientAppointmentOnboardingPractice,
     contextChangePending,
     contextChangeError,
     handleUnauthorized,
   } = usePatientPortalCognitoSession();
+  const [route, setRoute] = useState<PatientPortalRoute>(
+    patientPortalRouteFromLocation,
+  );
   const [capturedInvitation, setCapturedInvitation] =
     useState(captureInvitation);
   const invitationToken = capturedInvitation.token;
@@ -85,6 +131,23 @@ export function PatientPortalPage() {
       if (capturedInvitation.token) return "waiting";
       return capturedInvitation.inviteRoute ? "unavailable" : "none";
     });
+
+  const navigate = useCallback((nextRoute: PatientPortalRoute) => {
+    const nextPath = patientPortalPath(nextRoute);
+
+    if (window.location.pathname !== nextPath) {
+      window.history.pushState({}, "", nextPath);
+    }
+
+    setRoute(nextRoute);
+  }, []);
+
+  useEffect(() => {
+    const updateRoute = () => setRoute(patientPortalRouteFromLocation());
+    window.addEventListener("popstate", updateRoute);
+
+    return () => window.removeEventListener("popstate", updateRoute);
+  }, []);
 
   useEffect(() => {
     if (capturedInvitation.inviteRoute) removeInvitationFragment();
@@ -107,7 +170,7 @@ export function PatientPortalPage() {
       return;
     }
 
-    if (step.context.kind === "practice") {
+    if (step.context.kind !== "onboarding") {
       invitationRequestInFlight.current = true;
       void selectPatientPractice(null)
         .then((changed) => {
@@ -124,7 +187,7 @@ export function PatientPortalPage() {
     void acceptPatientPortalInvitation(step.csrfToken, invitationToken)
       .then(async () => {
         setCapturedInvitation((current) => ({ ...current, token: null }));
-        finishInvitationRoute();
+        navigate("home");
 
         try {
           await refreshSession();
@@ -157,12 +220,25 @@ export function PatientPortalPage() {
   }, [
     contextChangePending,
     handleUnauthorized,
-    invitationToken,
     invitationStatus,
+    invitationToken,
+    navigate,
     refreshSession,
     selectPatientPractice,
     step,
   ]);
+
+  const prepareAppointmentRelationship = useCallback(
+    async (relationship: PatientAppointmentRelationship) => {
+      const changed = await selectPatientAppointmentOnboardingPractice(
+        relationship.appointmentRelationshipId,
+      );
+
+      if (changed) navigate("appointment-request");
+      return changed;
+    },
+    [navigate, selectPatientAppointmentOnboardingPractice],
+  );
 
   if (step.kind !== "signed-in") {
     return (
@@ -184,177 +260,233 @@ export function PatientPortalPage() {
     );
   }
 
-  if (step.audience !== "patient") {
-    return null;
-  }
+  if (step.audience !== "patient") return null;
 
   const selectedPractice =
-    step.context.kind === "practice"
-      ? step.context.practiceName
-      : null;
+    step.context.kind === "onboarding" ? null : step.context.practiceName;
+  const hasAppointmentContext = step.context.kind !== "onboarding";
 
   return (
     <div className="min-h-[100dvh] bg-background">
       <PatientPortalHeader
         selectedPractice={selectedPractice}
+        route={route}
         pending={contextChangePending}
+        onNavigate={navigate}
         onSignOut={signOut}
       />
 
-      <main className="mx-auto w-full max-w-5xl px-4 py-10 sm:px-6 sm:py-12 lg:px-8">
-        <section
-          id="patient-overview"
-          className="border-b pb-8 sm:pb-10"
-          aria-labelledby="patient-overview-title"
-        >
-          <p className="text-sm font-semibold text-primary">Your access</p>
-          <div className="mt-3 grid gap-5 lg:grid-cols-[minmax(0,1fr)_16rem] lg:items-end">
-            <div>
-              <h1
-                id="patient-overview-title"
-                className="text-3xl font-semibold tracking-[-0.03em] sm:text-4xl"
-              >
-                Hello, {step.username}
-              </h1>
-              <p className="mt-3 max-w-2xl text-base leading-7 text-muted-foreground">
-                {selectedPractice
-                  ? `You are using ${selectedPractice}. Your activity stays within this practice until you choose another one.`
-                  : "Choose a linked practice when you are ready. You decide which practice to use for each visit."}
-              </p>
-            </div>
-            <div className="rounded-xl bg-secondary p-4 text-sm text-secondary-foreground">
-              <p className="font-medium">Current practice</p>
-              <p className="mt-1 leading-6">
-                {selectedPractice ?? "No practice selected"}
-              </p>
-            </div>
-          </div>
-        </section>
-
-        <div className="mt-8 grid gap-8 lg:grid-cols-[minmax(0,1fr)_15rem]">
-          <section id="practice-access" aria-labelledby="practice-access-title">
-            <div className="flex items-start gap-3">
-              <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-secondary text-secondary-foreground">
-                <BuildingsIcon
-                  aria-hidden="true"
-                  className="size-5"
-                  weight="bold"
-                />
-              </span>
-              <div>
-                <h2 id="practice-access-title" className="text-xl font-semibold">
-                  Practice access
-                </h2>
-                <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
-                  Select the practice you want to use. This choice does not
-                  reveal information from another practice.
-                </p>
-              </div>
-            </div>
-
-            <div className="mt-5 grid gap-5">
-              <PatientInvitationStatusCard
-                status={invitationStatus}
-                onRetry={retryInvitation}
-              />
-
-              {step.availablePractices.length > 0 ? (
-                <PatientPracticeSwitcher
-                  key={
-                    step.context.kind === "practice"
-                      ? step.context.portalProfileId
-                      : "onboarding"
-                  }
-                  availablePractices={step.availablePractices}
-                  context={step.context}
-                  pending={contextChangePending}
-                  error={contextChangeError}
-                  onSelectPractice={selectPatientPractice}
-                />
-              ) : (
-                <section className="rounded-xl border bg-card p-5 sm:p-6">
-                  <h3 className="text-lg font-semibold">No linked practices yet</h3>
-                  <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-                    Your account is ready. When a practice gives you a secure
-                    invitation, open the link while signed in. You will choose
-                    that practice yourself before it becomes active in your
-                    portal.
-                  </p>
-                </section>
-              )}
-            </div>
-          </section>
-
-          <aside className="border-s ps-5 text-sm text-muted-foreground">
-            <LockKeyIcon
-              aria-hidden="true"
-              className="size-5 text-primary"
-              weight="bold"
-            />
-            <h2 className="mt-3 font-semibold text-foreground">Your privacy</h2>
-            <p className="mt-2 leading-6">
-              Patient and workforce accounts are separate. A practice is added
-              only after you accept its invitation.
-            </p>
-          </aside>
-        </div>
-      </main>
+      {route === "home" ? (
+        <PatientPortalHomePage
+          username={step.username}
+          context={step.context}
+          availablePractices={step.availablePractices}
+          appointmentOnboardingPractices={step.appointmentOnboardingPractices}
+          invitationStatus={invitationStatus}
+          contextChangePending={contextChangePending}
+          contextChangeError={contextChangeError}
+          onRetryInvitation={retryInvitation}
+          onSelectPractice={selectPatientPractice}
+          onSelectAppointmentOnboardingPractice={
+            selectPatientAppointmentOnboardingPractice
+          }
+          onFindPractice={() => navigate("practices")}
+          onViewAppointments={() => navigate("appointments")}
+        />
+      ) : route === "practices" ? (
+        <PatientPracticeDiscoveryPage
+          csrfToken={step.csrfToken}
+          onSessionExpired={handleUnauthorized}
+          onRelationshipReady={prepareAppointmentRelationship}
+        />
+      ) : !hasAppointmentContext || !selectedPractice ? (
+        <PatientAppointmentAccessRequired
+          onFindPractice={() => navigate("practices")}
+          onReturnHome={() => navigate("home")}
+        />
+      ) : route === "appointments" ? (
+        <PatientAppointmentsPage
+          csrfToken={step.csrfToken}
+          practiceName={selectedPractice}
+          onRequestAppointment={() => navigate("appointment-request")}
+          onSessionExpired={handleUnauthorized}
+        />
+      ) : (
+        <PatientAppointmentRequestPage
+          csrfToken={step.csrfToken}
+          practiceName={selectedPractice}
+          onBackToAppointments={() => navigate("appointments")}
+          onSessionExpired={handleUnauthorized}
+        />
+      )}
     </div>
+  );
+}
+
+function PatientAppointmentAccessRequired({
+  onFindPractice,
+  onReturnHome,
+}: {
+  onFindPractice: () => void;
+  onReturnHome: () => void;
+}) {
+  return (
+    <main className="mx-auto grid w-full max-w-3xl px-4 py-12 sm:px-6 sm:py-16 lg:px-8">
+      <section className="rounded-xl border bg-card p-6 sm:p-8">
+        <p className="text-sm font-semibold text-primary">Appointments</p>
+        <h1 className="mt-3 text-2xl font-semibold tracking-[-0.025em]">
+          Choose a practice first
+        </h1>
+        <p className="mt-3 max-w-xl text-sm leading-6 text-muted-foreground">
+          Find a bookable practice, then continue with that practice before you
+          review or request appointments.
+        </p>
+        <div className="mt-6 flex flex-wrap gap-3">
+          <Button onClick={onFindPractice}>
+            <MagnifyingGlassIcon aria-hidden="true" />
+            Find a practice
+          </Button>
+          <Button variant="outline" onClick={onReturnHome}>
+            Return home
+          </Button>
+        </div>
+      </section>
+    </main>
   );
 }
 
 function PatientPortalHeader({
   selectedPractice,
+  route = "home",
   pending = false,
+  onNavigate,
   onSignOut,
 }: {
   selectedPractice?: string | null;
+  route?: PatientPortalRoute;
   pending?: boolean;
+  onNavigate?: (route: PatientPortalRoute) => void;
   onSignOut?: () => void;
 }) {
-  const patientHomePath = isLocalHost(window.location.hostname)
-    ? "/patient-portal"
-    : "/";
-  const practiceAccessHref = onSignOut ? "#practice-access" : "#patient-account";
+  const patientHomePath = patientPortalPath("home");
+
+  const navigateHome = () => {
+    onNavigate?.("home");
+  };
 
   return (
     <header className="border-b bg-card/95">
-      <div className="mx-auto flex min-h-16 w-full max-w-5xl items-center gap-3 px-4 sm:px-6 lg:px-8">
-        <a href={patientHomePath} className="flex min-w-0 items-center gap-3">
-          <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground">
-            <HeartbeatIcon aria-hidden="true" className="size-5" weight="bold" />
-          </span>
-          <span className="min-w-0">
-            <span className="block text-sm font-semibold">UAE Health</span>
-            <span className="block max-w-40 truncate text-xs text-muted-foreground sm:max-w-56">
-              {selectedPractice ?? "Patient portal"}
-            </span>
-          </span>
-        </a>
-        <nav
-          className="ms-auto flex items-center gap-1 sm:gap-2"
-          aria-label="Patient portal"
-        >
-          <a
-            href={practiceAccessHref}
-            className="hidden rounded-md px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:inline-flex"
+      <div className="mx-auto flex min-h-16 w-full max-w-6xl items-center gap-2 px-4 sm:gap-3 sm:px-6 lg:px-8">
+        {onNavigate ? (
+          <button
+            className="flex min-w-0 items-center gap-3 rounded-lg text-start focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            type="button"
+            onClick={navigateHome}
           >
-            Practice access
+            <PatientPortalBrand selectedPractice={selectedPractice} />
+          </button>
+        ) : (
+          <a
+            href={patientHomePath}
+            className="flex min-w-0 items-center gap-3 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <PatientPortalBrand selectedPractice={selectedPractice} />
           </a>
+        )}
+
+        {onNavigate && (
+          <nav
+            className="ms-auto flex min-w-0 items-center gap-1"
+            aria-label="Patient portal"
+          >
+            <PatientHeaderNavigationButton
+              active={route === "home"}
+              icon={<HouseIcon aria-hidden="true" className="size-4" />}
+              label="Home"
+              onClick={() => onNavigate("home")}
+            />
+            <PatientHeaderNavigationButton
+              active={route === "practices"}
+              icon={
+                <MagnifyingGlassIcon aria-hidden="true" className="size-4" />
+              }
+              label="Find a practice"
+              onClick={() => onNavigate("practices")}
+            />
+            <PatientHeaderNavigationButton
+              active={
+                route === "appointments" || route === "appointment-request"
+              }
+              icon={<CalendarDotsIcon aria-hidden="true" className="size-4" />}
+              label="Appointments"
+              onClick={() => onNavigate("appointments")}
+            />
+          </nav>
+        )}
+
+        <div className="flex shrink-0 items-center gap-1 sm:gap-2">
           <ThemeToggle />
           {onSignOut && (
             <Button
+              aria-label="Sign out"
               size="sm"
               variant="outline"
               disabled={pending}
               onClick={onSignOut}
             >
-              <SignOutIcon />
-              <span className="hidden sm:inline">Sign out</span>
+              <SignOutIcon aria-hidden="true" />
+              <span className="hidden lg:inline">Sign out</span>
             </Button>
           )}
-        </nav>
+        </div>
       </div>
     </header>
+  );
+}
+
+function PatientPortalBrand({
+  selectedPractice,
+}: {
+  selectedPractice?: string | null;
+}) {
+  return (
+    <>
+      <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground">
+        <HeartbeatIcon aria-hidden="true" className="size-5" weight="bold" />
+      </span>
+      <span className="min-w-0">
+        <span className="block text-sm font-semibold">UAE Health</span>
+        <span className="block max-w-24 truncate text-xs text-muted-foreground sm:max-w-40">
+          {selectedPractice ?? "Patient portal"}
+        </span>
+      </span>
+    </>
+  );
+}
+
+function PatientHeaderNavigationButton({
+  active,
+  icon,
+  label,
+  onClick,
+}: {
+  active: boolean;
+  icon: ReactNode;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <Button
+      aria-current={active ? "page" : undefined}
+      aria-label={label}
+      className="gap-1.5 px-2 text-xs sm:px-2.5 sm:text-sm"
+      size="sm"
+      type="button"
+      variant={active ? "secondary" : "ghost"}
+      onClick={onClick}
+    >
+      {icon}
+      <span className="hidden xl:inline">{label}</span>
+    </Button>
   );
 }

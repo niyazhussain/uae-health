@@ -232,6 +232,26 @@ An authorized workforce user with exact current-practice `patients.portal.invite
 - **WHEN** an authenticated patient chooses a bookable practice for which no active relationship exists
 - **THEN** the appointment workflow creates an explicit pending relationship for that practice and does not expose or merge another practice's data
 
+#### Scenario: Patient selects pending appointment access
+- **WHEN** a patient explicitly chooses one of their own pending appointment relationships
+- **THEN** the API rotates the opaque patient session into an appointment-onboarding context containing only that relationship's trusted tenant and practice scope
+
+#### Scenario: Pending appointment access attempts general practice access
+- **WHEN** a patient session in appointment-onboarding context calls a general practice, portal-profile, clinical, billing, or workforce endpoint
+- **THEN** the API rejects the call without treating the pending relationship as an active portal-profile link
+
+#### Scenario: Patient requests, changes, or cancels an appointment
+- **WHEN** a patient in an active practice or appointment-onboarding context requests, reschedules, or cancels an appointment
+- **THEN** the API derives the practice from the server-stored context, applies the command only to that patient's own appointment, and does not accept a tenant, organization, profile, or relationship scope from the browser
+
+#### Scenario: Patient submits the same appointment command again
+- **WHEN** a patient retries an equivalent appointment request, cancellation, or reschedule with the same idempotency key
+- **THEN** the API returns the original safe result without creating another relationship, appointment, or reservation
+
+#### Scenario: Two patients request the same appointment window
+- **WHEN** concurrent patients request the same currently bookable synthetic appointment window
+- **THEN** at most one request becomes active and the other receives a safe availability conflict without learning the other patient's identity
+
 ### Requirement: Enforce authorization in the API
 The API SHALL deny protected operations by default and SHALL enforce permissions independently of frontend navigation or visibility.
 

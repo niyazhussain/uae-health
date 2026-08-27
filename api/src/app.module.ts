@@ -9,6 +9,7 @@ import { AuthModule } from './auth/auth.module.js';
 import { AuthorizationModule } from './authorization/authorization.module.js';
 import { WorkforceDirectoryModule } from './workforce-directory/workforce-directory.module.js';
 import { PatientPortalAuthModule } from './patient-portal-auth/patient-portal-auth.module.js';
+import { PatientAppointmentsModule } from './patient-appointments/patient-appointments.module.js';
 
 @Module({
   imports: [
@@ -34,6 +35,7 @@ import { PatientPortalAuthModule } from './patient-portal-auth/patient-portal-au
     AuthorizationModule,
     WorkforceDirectoryModule,
     PatientPortalAuthModule,
+    PatientAppointmentsModule,
     HealthModule,
   ],
   providers: [

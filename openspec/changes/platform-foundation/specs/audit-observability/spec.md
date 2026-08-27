@@ -31,6 +31,10 @@ The platform SHALL record policy-selected business audit events in one append-on
 - **WHEN** the system provisions a patient onboarding identity, issues a practice invitation, or accepts an invitation
 - **THEN** it records only safe actor, outcome, immutable opaque identifiers, scope, and correlation evidence without raw email, password, temporary password, bearer token, invitation token, provider diagnostic, or other-practice relationship
 
+#### Scenario: Patient appointment workflow changes state
+- **WHEN** a patient creates a pending appointment relationship or requests, cancels, or reschedules a synthetic appointment
+- **THEN** the relationship or appointment change and safe audit evidence commit in one transaction with only opaque identifiers, practice scope, state, version, and correlation data, never free-text clinical, payment, provider, or other-practice information
+
 #### Scenario: Workforce membership state changes
 - **WHEN** an authorized administrator suspends or restores a workforce membership
 - **THEN** the membership state, server-session revocation count where applicable, and safe access-authority audit evidence commit atomically without storing session identifiers, Cognito tokens, passwords, TOTP values, or MFA secrets

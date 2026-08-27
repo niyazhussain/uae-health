@@ -49,6 +49,7 @@ const activeSession: PatientPortalSessionContext = {
       practiceName: 'Synthetic Practice',
     },
   ],
+  appointmentOnboardingPractices: [],
   csrfToken: 'patient-csrf-token',
   idleExpiresAt: new Date('2026-08-26T16:00:00.000Z'),
   absoluteExpiresAt: new Date('2026-08-26T23:45:00.000Z'),

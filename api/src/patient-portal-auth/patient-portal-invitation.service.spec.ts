@@ -17,6 +17,7 @@ const onboardingSession: PatientPortalSessionContext = {
   displayName: 'Synthetic Patient',
   context: { kind: 'onboarding' },
   availablePractices: [],
+  appointmentOnboardingPractices: [],
   csrfToken: 'csrf-token',
   idleExpiresAt: new Date('2026-08-27T12:30:00.000Z'),
   absoluteExpiresAt: new Date('2026-08-27T20:00:00.000Z'),

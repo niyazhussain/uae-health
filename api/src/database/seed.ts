@@ -1,6 +1,7 @@
 import { createDatabaseClient } from './create-database-client.js';
 import type { DatabaseSchema } from './database.types.js';
 import { loadScriptEnvironment } from './load-script-environment.js';
+import { buildSyntheticAppointmentSlots } from './synthetic-appointment-slots.js';
 
 async function seed(): Promise<void> {
   loadScriptEnvironment();
@@ -68,6 +69,27 @@ async function seed(): Promise<void> {
       .onConflict((conflict) =>
         conflict.columns(['tenant_id', 'code']).doUpdateSet({
           name: 'Synthetic Care Practice',
+          is_synthetic: true,
+          updated_at: new Date(),
+        }),
+      )
+      .returning(['id', 'code'])
+      .executeTakeFirstOrThrow();
+
+    const appointmentPractice = await database
+      .insertInto('organizations')
+      .values({
+        id: '20000000-0000-4000-8000-000000000002',
+        tenant_id: tenant.id,
+        parent_organization_id: null,
+        kind: 'practice',
+        code: 'DEMO-APPOINTMENTS',
+        name: 'Synthetic Appointments Practice',
+        is_synthetic: true,
+      })
+      .onConflict((conflict) =>
+        conflict.columns(['tenant_id', 'code']).doUpdateSet({
+          name: 'Synthetic Appointments Practice',
           is_synthetic: true,
           updated_at: new Date(),
         }),
@@ -229,6 +251,76 @@ async function seed(): Promise<void> {
       .onConflict((conflict) => conflict.column('id').doNothing())
       .execute();
 
+    const appointmentSlotTemplates = [
+      {
+        bookablePracticeId: 'a0000000-0000-4000-8000-000000000001',
+        organizationId: organization.id,
+        offsetHours: 0,
+      },
+      {
+        bookablePracticeId: 'a0000000-0000-4000-8000-000000000001',
+        organizationId: organization.id,
+        offsetHours: 1,
+      },
+      {
+        bookablePracticeId: 'a0000000-0000-4000-8000-000000000002',
+        organizationId: appointmentPractice.id,
+        offsetHours: 2,
+      },
+      {
+        bookablePracticeId: 'a0000000-0000-4000-8000-000000000002',
+        organizationId: appointmentPractice.id,
+        offsetHours: 3,
+      },
+    ] as const;
+
+    await database
+      .insertInto('patient_portal_bookable_practices')
+      .values([
+        {
+          id: 'a0000000-0000-4000-8000-000000000001',
+          tenant_id: tenant.id,
+          organization_id: organization.id,
+          timezone: 'Asia/Dubai',
+          status: 'active',
+          is_synthetic: true,
+        },
+        {
+          id: 'a0000000-0000-4000-8000-000000000002',
+          tenant_id: tenant.id,
+          organization_id: appointmentPractice.id,
+          timezone: 'Asia/Dubai',
+          status: 'active',
+          is_synthetic: true,
+        },
+      ])
+      .onConflict((conflict) =>
+        conflict.column('id').doUpdateSet({
+          tenant_id: tenant.id,
+          timezone: 'Asia/Dubai',
+          status: 'active',
+          is_synthetic: true,
+          updated_at: new Date(),
+        }),
+      )
+      .execute();
+
+    const appointmentSlots = buildSyntheticAppointmentSlots({
+      now: new Date(),
+      tenantId: tenant.id,
+      templates: appointmentSlotTemplates,
+    });
+    await database
+      .insertInto('patient_portal_appointment_slots')
+      .values(appointmentSlots)
+      .onConflict((conflict) =>
+        conflict.columns(['bookable_practice_id', 'starts_at']).doUpdateSet({
+          is_synthetic: true,
+          updated_at: new Date(),
+        }),
+      )
+      .execute();
+
     await database
       .insertInto('audit_events')
       .values({
@@ -253,7 +345,7 @@ async function seed(): Promise<void> {
       .execute();
 
     console.info(
-      `Seeded ${tenant.code}/${organization.code}/${facility.code} and a synthetic practice administrator.`,
+      `Seeded ${tenant.code}/${organization.code}/${facility.code}, ${appointmentPractice.code}, and a synthetic practice administrator.`,
     );
   } finally {
     await database.destroy();

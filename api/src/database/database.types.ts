@@ -10,6 +10,15 @@ export type PatientPortalIdentityStatus =
   'pending_verification' | 'active' | 'suspended';
 export type PatientPortalProfileStatus = 'active' | 'suspended' | 'closed';
 export type PatientPortalProfileLinkStatus = 'active' | 'revoked';
+export type PatientPortalAppointmentRelationshipStatus = 'pending';
+export type PatientPortalBookablePracticeStatus = 'active' | 'unavailable';
+export type PatientPortalAppointmentSlotStatus = 'available' | 'withdrawn';
+export type PatientPortalAppointmentStatus = 'requested' | 'cancelled';
+export type PatientPortalAppointmentCommandOperation =
+  | 'relationship_create'
+  | 'appointment_create'
+  | 'appointment_cancellation'
+  | 'appointment_reschedule';
 export type PatientPortalRegistrationRequestStatus =
   'pending_provider' | 'pending_binding' | 'accepted' | 'rate_limited';
 export type PatientPortalInvitationStatus =
@@ -317,6 +326,7 @@ export interface PatientPortalSessionTable {
   csrf_token_hash: string;
   patient_portal_identity_id: string;
   patient_portal_profile_id: string | null;
+  patient_portal_appointment_relationship_id: string | null;
   identity_issuer: string;
   identity_subject: string;
   identity_client_id: string;
@@ -327,6 +337,78 @@ export interface PatientPortalSessionTable {
   revoked_at: Date | null;
   created_at: Generated<Date>;
   updated_at: Generated<Date>;
+}
+
+/**
+ * A patient-owned, practice-specific pending relationship created only by the
+ * appointment-onboarding workflow. It is intentionally separate from an
+ * approved patient_portal_profile_link and never grants normal portal access.
+ */
+export interface PatientPortalAppointmentRelationshipTable {
+  id: Generated<string>;
+  tenant_id: string;
+  organization_id: string;
+  patient_portal_identity_id: string;
+  status: Generated<PatientPortalAppointmentRelationshipStatus>;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+}
+
+/** A practice that has explicitly opted into synthetic patient booking. */
+export interface PatientPortalBookablePracticeTable {
+  id: Generated<string>;
+  tenant_id: string;
+  organization_id: string;
+  timezone: string;
+  status: Generated<PatientPortalBookablePracticeStatus>;
+  is_synthetic: Generated<boolean>;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+}
+
+/** A synthetic, one-patient-capacity appointment slot. */
+export interface PatientPortalAppointmentSlotTable {
+  id: Generated<string>;
+  bookable_practice_id: string;
+  tenant_id: string;
+  organization_id: string;
+  starts_at: Date;
+  ends_at: Date;
+  status: Generated<PatientPortalAppointmentSlotStatus>;
+  is_synthetic: Generated<boolean>;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+}
+
+export interface PatientPortalAppointmentTable {
+  id: Generated<string>;
+  tenant_id: string;
+  organization_id: string;
+  patient_portal_identity_id: string;
+  patient_portal_profile_id: string | null;
+  patient_portal_appointment_relationship_id: string | null;
+  appointment_slot_id: string;
+  status: Generated<PatientPortalAppointmentStatus>;
+  version: Generated<number>;
+  cancelled_at: Date | null;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+}
+
+/**
+ * Durable idempotency evidence for authenticated patient appointment commands.
+ * The command key and request data are hashed before persistence.
+ */
+export interface PatientPortalAppointmentCommandTable {
+  id: Generated<string>;
+  patient_portal_identity_id: string;
+  operation: PatientPortalAppointmentCommandOperation;
+  idempotency_key_hash: string;
+  request_hash: string;
+  response_data: Record<string, unknown>;
+  patient_portal_appointment_relationship_id: string | null;
+  patient_portal_appointment_id: string | null;
+  created_at: Generated<Date>;
 }
 
 export interface DatabaseSchema {
@@ -352,4 +434,9 @@ export interface DatabaseSchema {
   patient_portal_profile_links: PatientPortalProfileLinkTable;
   patient_portal_sessions: PatientPortalSessionTable;
   patient_portal_invitations: PatientPortalInvitationTable;
+  patient_portal_appointment_relationships: PatientPortalAppointmentRelationshipTable;
+  patient_portal_bookable_practices: PatientPortalBookablePracticeTable;
+  patient_portal_appointment_slots: PatientPortalAppointmentSlotTable;
+  patient_portal_appointments: PatientPortalAppointmentTable;
+  patient_portal_appointment_commands: PatientPortalAppointmentCommandTable;
 }

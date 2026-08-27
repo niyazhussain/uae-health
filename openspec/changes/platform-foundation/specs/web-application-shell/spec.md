@@ -60,6 +60,18 @@ The workforce application and patient portal SHALL use separate approved browser
 - **WHEN** an authenticated patient restores a restricted onboarding session with no active practice links
 - **THEN** the portal presents a safe onboarding state without claiming appointment or clinical-record access
 
+#### Scenario: Patient discovers a bookable practice
+- **WHEN** a restricted onboarding patient opens the patient appointment discovery route
+- **THEN** the portal displays only safe, human-readable synthetic bookable-practice choices and never asks the patient to enter an internal identifier
+
+#### Scenario: Patient works with one appointment context
+- **WHEN** a patient selects an active practice or pending appointment relationship for appointment access
+- **THEN** the portal displays only that practice's appointment list, available synthetic windows, and allowed request, cancel, or reschedule controls without aggregating another practice's appointment data
+
+#### Scenario: Patient has no appointment requests for the current context
+- **WHEN** the selected appointment context has no patient-owned appointments
+- **THEN** the portal provides a clear request-appointment action and does not imply clinical-record, payment, provider, or messaging access
+
 #### Scenario: Patient opens a portal access screen
 - **WHEN** a patient opens the patient host while signed out, completing initial account setup, or restoring onboarding access
 - **THEN** the portal renders a patient-owned access and onboarding composition with patient-specific account and practice language, compact patient navigation, and shared accessible controls without rendering the workforce access layout, role-management terms, or authorization decisions in the browser

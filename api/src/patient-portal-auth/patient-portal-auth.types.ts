@@ -26,6 +26,15 @@ export interface PatientPortalAvailablePractice {
   practiceName: string;
 }
 
+/**
+ * A pending appointment-onboarding relationship. It is deliberately distinct
+ * from an approved portal-profile link and cannot grant normal practice access.
+ */
+export interface PatientPortalAppointmentOnboardingPractice {
+  appointmentRelationshipId: string;
+  practiceName: string;
+}
+
 export interface PatientPortalOnboardingContext {
   kind: 'onboarding';
 }
@@ -38,8 +47,18 @@ export interface PatientPortalPracticeContext {
   organizationId: string;
 }
 
+export interface PatientPortalAppointmentOnboardingContext {
+  kind: 'appointment-onboarding';
+  appointmentRelationshipId: string;
+  practiceName: string;
+  tenantId: string;
+  organizationId: string;
+}
+
 export type PatientPortalAccessContext =
-  PatientPortalOnboardingContext | PatientPortalPracticeContext;
+  | PatientPortalOnboardingContext
+  | PatientPortalPracticeContext
+  | PatientPortalAppointmentOnboardingContext;
 
 export interface PatientPortalSessionContext {
   sessionId: string;
@@ -49,6 +68,7 @@ export interface PatientPortalSessionContext {
   displayName: string;
   context: PatientPortalAccessContext;
   availablePractices: PatientPortalAvailablePractice[];
+  appointmentOnboardingPractices: PatientPortalAppointmentOnboardingPractice[];
   csrfToken: string;
   idleExpiresAt: Date;
   absoluteExpiresAt: Date;

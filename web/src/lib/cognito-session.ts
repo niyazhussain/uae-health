@@ -33,8 +33,18 @@ export interface PatientPracticeChoice {
   practiceName: string;
 }
 
+export interface PatientAppointmentOnboardingPractice {
+  appointmentRelationshipId: string;
+  practiceName: string;
+}
+
 export type PatientSessionContext =
   | { kind: "onboarding" }
+  | {
+      kind: "appointment-onboarding";
+      appointmentRelationshipId: string;
+      practiceName: string;
+    }
   | {
       kind: "practice";
       portalProfileId: string;
@@ -60,6 +70,7 @@ export type SessionStep =
       audience: "patient";
       context: PatientSessionContext;
       availablePractices: PatientPracticeChoice[];
+      appointmentOnboardingPractices: PatientAppointmentOnboardingPractice[];
     })
   | { kind: "error"; message: string };
 
@@ -78,6 +89,7 @@ interface ServerSessionResponse {
   displayName?: string;
   context?: unknown;
   availablePractices?: unknown;
+  appointmentOnboardingPractices?: unknown;
   csrfToken: string;
   expiresAt: string;
   absoluteExpiresAt: string;
@@ -101,6 +113,7 @@ interface CognitoSessionOptions {
   sessionPath: string;
   logoutPath: string;
   contextPath?: string;
+  appointmentContextPath?: string;
   fallbackUsername: string;
   unavailableMessage: string;
   toSignedInStep: (
@@ -117,6 +130,23 @@ function patientSessionContext(value: unknown): PatientSessionContext {
     value.kind === "onboarding"
   ) {
     return { kind: "onboarding" };
+  }
+
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    "kind" in value &&
+    value.kind === "appointment-onboarding" &&
+    "appointmentRelationshipId" in value &&
+    typeof value.appointmentRelationshipId === "string" &&
+    "practiceName" in value &&
+    typeof value.practiceName === "string"
+  ) {
+    return {
+      kind: "appointment-onboarding",
+      appointmentRelationshipId: value.appointmentRelationshipId,
+      practiceName: value.practiceName,
+    };
   }
 
   if (
@@ -163,6 +193,38 @@ function patientPracticeChoices(value: unknown): PatientPracticeChoice[] {
   });
 }
 
+function patientAppointmentOnboardingPracticeChoices(
+  value: unknown,
+): PatientAppointmentOnboardingPractice[] {
+  if (value === undefined) return [];
+
+  if (!Array.isArray(value)) {
+    throw new Error(
+      "The patient session returned an invalid appointment practice list.",
+    );
+  }
+
+  return value.map((practice) => {
+    if (
+      typeof practice !== "object" ||
+      practice === null ||
+      !("appointmentRelationshipId" in practice) ||
+      typeof practice.appointmentRelationshipId !== "string" ||
+      !("practiceName" in practice) ||
+      typeof practice.practiceName !== "string"
+    ) {
+      throw new Error(
+        "The patient session returned an invalid appointment practice list.",
+      );
+    }
+
+    return {
+      appointmentRelationshipId: practice.appointmentRelationshipId,
+      practiceName: practice.practiceName,
+    };
+  });
+}
+
 function toWorkforceSignedInStep(
   session: ServerSessionResponse,
   fallbackUsername: string,
@@ -190,6 +252,9 @@ function toPatientSignedInStep(
     csrfToken: session.csrfToken,
     context: patientSessionContext(session.context),
     availablePractices: patientPracticeChoices(session.availablePractices),
+    appointmentOnboardingPractices: patientAppointmentOnboardingPracticeChoices(
+      session.appointmentOnboardingPractices,
+    ),
   };
 }
 
@@ -220,6 +285,7 @@ function useConfiguredCognitoSession({
   sessionPath,
   logoutPath,
   contextPath,
+  appointmentContextPath,
   fallbackUsername,
   unavailableMessage,
   toSignedInStep,
@@ -447,16 +513,18 @@ function useConfiguredCognitoSession({
     }).finally(clearLocalSession);
   }, [clearLocalSession, logoutPath]);
 
-  const selectPatientPractice = useCallback(
-    async (portalProfileId: string | null) => {
+  const selectPatientContext = useCallback(
+    async (
+      path: string | undefined,
+      body: Record<string, string | null>,
+      unavailableMessage: string,
+    ) => {
       if (contextChangeInFlight.current) return false;
 
       const currentCsrfToken = csrfToken.current;
 
-      if (!contextPath || !currentCsrfToken) {
-        setContextChangeError(
-          "The secure session cannot change practice right now. Sign in again.",
-        );
+      if (!path || !currentCsrfToken) {
+        setContextChangeError(unavailableMessage);
         return false;
       }
 
@@ -465,13 +533,13 @@ function useConfiguredCognitoSession({
       setContextChangeError(null);
 
       try {
-        const serverSession = await sessionRequest(contextPath, {
+        const serverSession = await sessionRequest(path, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
             "X-CSRF-Token": currentCsrfToken,
           },
-          body: JSON.stringify({ portalProfileId }),
+          body: JSON.stringify(body),
         });
         applyServerSession(serverSession);
         return true;
@@ -492,7 +560,7 @@ function useConfiguredCognitoSession({
           const restoredSession = await sessionRequest(sessionPath);
           applyServerSession(restoredSession);
           setContextChangeError(
-            "The practice request could not be confirmed. The current secure session was restored.",
+            "The selected practice could not be confirmed. The current secure session was restored.",
           );
         } catch {
           clearLocalSession();
@@ -503,7 +571,27 @@ function useConfiguredCognitoSession({
         setContextChangePending(false);
       }
     },
-    [applyServerSession, clearLocalSession, contextPath, sessionPath],
+    [applyServerSession, clearLocalSession, sessionPath],
+  );
+
+  const selectPatientPractice = useCallback(
+    (portalProfileId: string | null) =>
+      selectPatientContext(
+        contextPath,
+        { portalProfileId },
+        "The secure session cannot change practice right now. Sign in again.",
+      ),
+    [contextPath, selectPatientContext],
+  );
+
+  const selectPatientAppointmentOnboardingPractice = useCallback(
+    (appointmentRelationshipId: string) =>
+      selectPatientContext(
+        appointmentContextPath,
+        { appointmentRelationshipId },
+        "The secure session cannot prepare this appointment request right now. Sign in again.",
+      ),
+    [appointmentContextPath, selectPatientContext],
   );
 
   return {
@@ -516,6 +604,7 @@ function useConfiguredCognitoSession({
     signOut,
     refreshSession,
     selectPatientPractice,
+    selectPatientAppointmentOnboardingPractice,
     contextChangePending,
     contextChangeError,
     handleUnauthorized: clearLocalSession,
@@ -541,6 +630,7 @@ export function usePatientPortalCognitoSession() {
     sessionPath: "/v1/patient-auth/session",
     logoutPath: "/v1/patient-auth/logout",
     contextPath: "/v1/patient-auth/session/context",
+    appointmentContextPath: "/v1/patient-auth/session/appointment-context",
     fallbackUsername: "Patient",
     unavailableMessage: "Patient portal identity configuration is unavailable.",
     toSignedInStep: toPatientSignedInStep,
