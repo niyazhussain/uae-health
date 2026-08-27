@@ -70,9 +70,9 @@ export function PatientRegistrationForm({
           />
           <p className="mt-3 font-medium text-foreground">Check your email</p>
           <p className="mt-1 text-sm leading-6 text-muted-foreground">
-            Check your email for a temporary password, then return here to sign
-            in and choose a new password. For privacy, this confirmation does
-            not reveal whether an account already existed.
+            Check your email for next steps if an account can be set up. To
+            protect your privacy, this confirmation does not reveal account
+            status.
           </p>
         </div>
         <Button type="button" onClick={onReturnToSignIn}>
@@ -85,9 +85,8 @@ export function PatientRegistrationForm({
   return (
     <form className="mt-6 grid gap-5" onSubmit={submit}>
       <p className="text-sm leading-6 text-muted-foreground">
-        Enter your name and email. UAE Health will send a temporary password if
-        registration can proceed. You will choose your own password when you
-        first sign in.
+        Enter the name and email you want to use for your patient account. UAE
+        Health will email next steps if registration can proceed.
       </p>
       <div className="grid gap-2">
         <Label htmlFor="patient-registration-name">Full name</Label>

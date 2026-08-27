@@ -2,15 +2,12 @@ import { CheckCircleIcon, KeyIcon, LockKeyIcon } from "@phosphor-icons/react";
 import { type FormEvent, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 
-import { PatientRegistrationForm } from "@/components/patient-registration-form";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { SessionStep } from "@/lib/cognito-session";
-import type { PatientRegistrationInput } from "@/lib/patient-onboarding";
 
 interface SignInPanelProps {
-  audience?: "workforce" | "patient";
   configured: boolean;
   step: SessionStep;
   onSignIn: (email: string, password: string) => void;
@@ -18,16 +15,9 @@ interface SignInPanelProps {
   onVerifyTotpSetup: (code: string) => void;
   onSubmitTotp: (code: string) => void;
   onReset: () => void;
-  onRegisterPatient?: (
-    input: PatientRegistrationInput,
-    idempotencyKey: string,
-  ) => Promise<void>;
-  patientInvitationPending?: boolean;
-  patientInvitationUnavailable?: boolean;
 }
 
 export function SignInPanel({
-  audience = "workforce",
   configured,
   step,
   onSignIn,
@@ -35,14 +25,7 @@ export function SignInPanel({
   onVerifyTotpSetup,
   onSubmitTotp,
   onReset,
-  onRegisterPatient,
-  patientInvitationPending = false,
-  patientInvitationUnavailable = false,
 }: SignInPanelProps) {
-  const isPatientPortal = audience === "patient";
-  const [patientAuthView, setPatientAuthView] = useState<
-    "sign-in" | "registration"
-  >("sign-in");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -53,15 +36,6 @@ export function SignInPanel({
     step.kind === "totp-setup"
       ? `otpauth://totp/${encodeURIComponent("UAE Health")}:${encodeURIComponent(step.username)}?secret=${encodeURIComponent(step.secret)}&issuer=${encodeURIComponent("UAE Health")}&algorithm=SHA1&digits=6&period=30`
       : null;
-  const showingRegistration =
-    isPatientPortal &&
-    patientAuthView === "registration" &&
-    (step.kind === "signed-out" || step.kind === "error");
-
-  const returnToSignIn = () => {
-    setPatientAuthView("sign-in");
-    if (step.kind === "error") onReset();
-  };
 
   const submitSignIn = (event: FormEvent) => {
     event.preventDefault();
@@ -99,33 +73,25 @@ export function SignInPanel({
     <main className="mx-auto grid min-h-[calc(100dvh-4rem)] w-full max-w-6xl items-center gap-10 px-4 py-10 lg:grid-cols-[minmax(0,1fr)_26rem] lg:px-8">
       <section className="max-w-2xl">
         <p className="text-sm font-semibold uppercase tracking-[0.18em] text-primary">
-          {isPatientPortal ? "Patient portal" : "Workforce access"}
+          Workforce access
         </p>
         <h1 className="mt-4 text-4xl font-semibold tracking-[-0.04em] text-balance sm:text-5xl">
-          {isPatientPortal
-            ? "A secure place to manage your appointments."
-            : "Secure access for every practice you serve."}
+          Secure access for every practice you serve.
         </h1>
         <p className="mt-5 max-w-xl text-base leading-7 text-muted-foreground">
-          {isPatientPortal
-            ? "Sign in with your patient portal email. Choose one practice context after identity verification."
-            : "Sign in with your real work email. Practice access, roles, and approval limits are evaluated by UAE Health after identity verification."}
+          Sign in with your real work email. UAE Health evaluates practice
+          access, roles, and approval limits after identity verification.
         </p>
         <div className="mt-8 grid gap-3 text-sm text-muted-foreground sm:grid-cols-3">
           <span className="flex items-center gap-2">
-            <CheckCircleIcon className="size-5 text-success" /> {isPatientPortal
-              ? "Separate patient access"
-              : "No public sign-up"}
+            <CheckCircleIcon className="size-5 text-success" /> No public
+            sign-up
           </span>
           <span className="flex items-center gap-2">
-            <LockKeyIcon className="size-5 text-primary" /> {isPatientPortal
-              ? "One practice at a time"
-              : "TOTP required"}
+            <LockKeyIcon className="size-5 text-primary" /> TOTP required
           </span>
           <span className="flex items-center gap-2">
-            <KeyIcon className="size-5 text-info" /> {isPatientPortal
-              ? "No clinical records"
-              : "30-minute idle timeout"}
+            <KeyIcon className="size-5 text-info" /> 30-minute idle timeout
           </span>
         </div>
       </section>
@@ -135,9 +101,7 @@ export function SignInPanel({
         aria-labelledby="sign-in-title"
       >
         <h2 id="sign-in-title" className="text-xl font-semibold">
-          {showingRegistration
-            ? "Create patient account"
-            : step.kind === "new-password"
+          {step.kind === "new-password"
             ? "Choose a new password"
             : step.kind === "totp-setup"
               ? "Set up your authenticator"
@@ -146,15 +110,14 @@ export function SignInPanel({
                 : "Sign in"}
         </h2>
 
-        {!configured && !showingRegistration && (
+        {!configured && (
           <p className="mt-4 rounded-md bg-warning-soft p-3 text-sm text-warning">
-            {isPatientPortal
-              ? "Patient portal identity configuration is missing from the web environment."
-              : "Workforce identity configuration is missing from the web environment."}
+            Workforce identity configuration is missing from the web
+            environment.
           </p>
         )}
 
-        {step.kind === "error" && !showingRegistration && (
+        {step.kind === "error" && (
           <div
             className="mt-4 rounded-md bg-destructive/10 p-3 text-sm text-destructive"
             role="alert"
@@ -177,77 +140,35 @@ export function SignInPanel({
           </p>
         )}
 
-        {patientInvitationPending && isPatientPortal && (
-          <p className="mt-4 rounded-md bg-secondary p-3 text-sm leading-6 text-secondary-foreground">
-            Sign in to review this practice invitation. If you do not yet have
-            a patient account, create one here first.
-          </p>
+        {(step.kind === "signed-out" || step.kind === "error") && (
+          <form className="mt-6 grid gap-5" onSubmit={submitSignIn}>
+            <div className="grid gap-2">
+              <Label htmlFor="email">Work email</Label>
+              <Input
+                id="email"
+                type="email"
+                autoComplete="username"
+                required
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="password">Password</Label>
+              <Input
+                id="password"
+                type="password"
+                autoComplete="current-password"
+                required
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+              />
+            </div>
+            <Button disabled={!configured} type="submit">
+              Continue securely
+            </Button>
+          </form>
         )}
-
-        {patientInvitationUnavailable && isPatientPortal && (
-          <p
-            className="mt-4 rounded-md bg-muted p-3 text-sm leading-6 text-muted-foreground"
-            role="alert"
-          >
-            This invitation link is unavailable. Ask the practice for a new
-            link, or continue to sign in without it.
-          </p>
-        )}
-
-        {(step.kind === "signed-out" || step.kind === "error") &&
-          (showingRegistration && onRegisterPatient ? (
-            <PatientRegistrationForm
-              onRegister={onRegisterPatient}
-              onReturnToSignIn={returnToSignIn}
-            />
-          ) : (
-            <>
-              <form className="mt-6 grid gap-5" onSubmit={submitSignIn}>
-                <div className="grid gap-2">
-                  <Label htmlFor="email">
-                    {isPatientPortal ? "Email address" : "Work email"}
-                  </Label>
-                  <Input
-                    id="email"
-                    type="email"
-                    autoComplete="username"
-                    required
-                    value={email}
-                    onChange={(event) => setEmail(event.target.value)}
-                  />
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="password">Password</Label>
-                  <Input
-                    id="password"
-                    type="password"
-                    autoComplete="current-password"
-                    required
-                    value={password}
-                    onChange={(event) => setPassword(event.target.value)}
-                  />
-                </div>
-                <Button disabled={!configured} type="submit">
-                  Continue securely
-                </Button>
-              </form>
-              {isPatientPortal && onRegisterPatient && (
-                <div className="mt-5 border-t pt-5 text-center">
-                  <p className="text-sm text-muted-foreground">
-                    New to the patient portal?
-                  </p>
-                  <Button
-                    className="mt-1"
-                    type="button"
-                    variant="link"
-                    onClick={() => setPatientAuthView("registration")}
-                  >
-                    Create patient account
-                  </Button>
-                </div>
-              )}
-            </>
-          ))}
 
         {step.kind === "new-password" && (
           <form className="mt-6 grid gap-5" onSubmit={submitNewPassword}>

@@ -60,6 +60,10 @@ The workforce application and patient portal SHALL use separate approved browser
 - **WHEN** an authenticated patient restores a restricted onboarding session with no active practice links
 - **THEN** the portal presents a safe onboarding state without claiming appointment or clinical-record access
 
+#### Scenario: Patient opens a portal access screen
+- **WHEN** a patient opens the patient host while signed out, completing initial account setup, or restoring onboarding access
+- **THEN** the portal renders a patient-owned access and onboarding composition with patient-specific account and practice language, compact patient navigation, and shared accessible controls without rendering the workforce access layout, role-management terms, or authorization decisions in the browser
+
 ### Requirement: Enforce accessible and responsive interaction patterns
 The web application SHALL support keyboard operation, visible focus, semantic structure, accessible names, sufficient status communication, and responsive layouts for supported viewport sizes.
 

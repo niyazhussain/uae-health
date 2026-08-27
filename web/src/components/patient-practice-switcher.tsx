@@ -1,4 +1,8 @@
-import { BuildingsIcon, ShieldCheckIcon } from "@phosphor-icons/react";
+import {
+  BuildingsIcon,
+  CheckCircleIcon,
+  ShieldCheckIcon,
+} from "@phosphor-icons/react";
 import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -35,7 +39,7 @@ export function PatientPracticeSwitcher({
   const [selectedPortalProfileId, setSelectedPortalProfileId] = useState<
     string | undefined
   >(currentPortalProfileId);
-
+  const useNamedChoices = availablePractices.length <= 5;
   const selectionChanged =
     selectedPortalProfileId !== undefined &&
     selectedPortalProfileId !== currentPortalProfileId;
@@ -46,25 +50,66 @@ export function PatientPracticeSwitcher({
       aria-labelledby="practice-context-title"
     >
       <div className="flex items-start gap-3">
-        <span className="grid size-10 shrink-0 place-items-center rounded-md bg-secondary text-secondary-foreground">
+        <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-secondary text-secondary-foreground">
           <BuildingsIcon aria-hidden="true" className="size-5" weight="bold" />
         </span>
         <div>
-          <h2 id="practice-context-title" className="text-lg font-semibold">
+          <h3 id="practice-context-title" className="text-lg font-semibold">
             {context.kind === "practice"
-              ? "Change active practice"
+              ? "Choose a different practice"
               : "Choose a practice"}
-          </h2>
+          </h3>
           <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
-            Only the selected practice is active in this session. Information is
-            never combined across practices.
+            You will use only the practice you select. Your other practice
+            relationships stay separate.
           </p>
         </div>
       </div>
 
-      <div className="mt-5 grid gap-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
-        <div className="grid gap-2">
-          <Label htmlFor="patient-practice">Practice</Label>
+      {useNamedChoices ? (
+        <div className="mt-5 grid gap-3" aria-label="Linked practices">
+          {availablePractices.map((practice) => {
+            const selected = practice.portalProfileId === selectedPortalProfileId;
+            const current = practice.portalProfileId === currentPortalProfileId;
+
+            return (
+              <button
+                key={practice.portalProfileId}
+                className={`flex w-full items-center gap-3 rounded-xl border p-4 text-start transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                  selected
+                    ? "border-primary bg-secondary"
+                    : "border-border bg-background hover:bg-muted"
+                }`}
+                type="button"
+                aria-pressed={selected}
+                disabled={pending}
+                onClick={() => setSelectedPortalProfileId(practice.portalProfileId)}
+              >
+                <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-card text-primary shadow-sm">
+                  <BuildingsIcon aria-hidden="true" className="size-4" weight="bold" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block font-medium text-foreground">
+                    {practice.practiceName}
+                  </span>
+                  <span className="mt-0.5 block text-sm text-muted-foreground">
+                    {current ? "Current practice" : "Linked practice"}
+                  </span>
+                </span>
+                {selected && (
+                  <CheckCircleIcon
+                    aria-label="Selected"
+                    className="size-5 shrink-0 text-primary"
+                    weight="fill"
+                  />
+                )}
+              </button>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="mt-5 grid gap-2">
+          <Label htmlFor="patient-practice">Linked practice</Label>
           <Select
             value={selectedPortalProfileId}
             onValueChange={setSelectedPortalProfileId}
@@ -85,8 +130,20 @@ export function PatientPracticeSwitcher({
             </SelectContent>
           </Select>
         </div>
+      )}
+
+      <div className="mt-5 flex flex-col gap-3 border-t pt-5 sm:flex-row sm:items-center sm:justify-between">
+        <p className="flex items-start gap-2 text-sm leading-6 text-muted-foreground">
+          <ShieldCheckIcon
+            aria-hidden="true"
+            className="mt-0.5 size-4 shrink-0 text-primary"
+            weight="bold"
+          />
+          Your choice is confirmed by UAE Health before this practice becomes
+          active.
+        </p>
         <Button
-          className="min-h-11 whitespace-nowrap"
+          className="self-start whitespace-nowrap"
           disabled={!selectionChanged || pending}
           onClick={() => {
             if (selectedPortalProfileId) {
@@ -95,22 +152,17 @@ export function PatientPracticeSwitcher({
           }}
         >
           {pending
-            ? "Changing practice…"
+            ? "Updating access…"
             : context.kind === "practice"
-              ? "Change practice"
-              : "Continue"}
+              ? "Use selected practice"
+              : "Use this practice"}
         </Button>
       </div>
 
       {context.kind === "practice" && (
         <div className="mt-5 flex flex-col gap-3 border-t pt-4 sm:flex-row sm:items-center sm:justify-between">
-          <p className="flex items-start gap-2 text-sm leading-6 text-muted-foreground">
-            <ShieldCheckIcon
-              aria-hidden="true"
-              className="mt-0.5 size-4 shrink-0 text-primary"
-              weight="bold"
-            />
-            Exit this practice to return to restricted portal access.
+          <p className="text-sm leading-6 text-muted-foreground">
+            Return to your account without a practice selected.
           </p>
           <Button
             className="self-start whitespace-nowrap"
@@ -119,14 +171,14 @@ export function PatientPracticeSwitcher({
             disabled={pending}
             onClick={() => void onSelectPractice(null)}
           >
-            Exit practice
+            Return to account access
           </Button>
         </div>
       )}
 
       {error && (
         <p
-          className="mt-4 rounded-md bg-destructive/10 p-3 text-sm text-destructive"
+          className="mt-4 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive"
           role="alert"
         >
           {error}
