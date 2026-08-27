@@ -1,6 +1,7 @@
 import { Kysely, sql } from 'kysely';
 import { ConfigService } from '@nestjs/config';
 import { WorkforceSessionService } from '../auth/workforce-session.service.js';
+import type { WorkforceIdentityProviderPort } from '../identity-provider/identity-provider.types.js';
 import { WorkforceDirectoryRepository } from '../workforce-directory/workforce-directory.repository.js';
 import { createDatabaseClient } from './create-database-client.js';
 import type { DatabaseService } from './database.service.js';
@@ -13,6 +14,19 @@ import * as addIdentityProviderSyncStatus from './migrations/2026-08-26T010000_a
 
 const databaseUrl = process.env.DATABASE_URL;
 const describeWithDatabase = databaseUrl ? describe : describe.skip;
+
+function workforceIdentityProvider(
+  issuer: string,
+): WorkforceIdentityProviderPort {
+  return {
+    issuer,
+    protocol: 'cognito',
+    provisionAccount: () =>
+      Promise.reject(new Error('Not used by migration integration tests.')),
+    deleteAccount: () =>
+      Promise.reject(new Error('Not used by migration integration tests.')),
+  };
+}
 
 describeWithDatabase('identity, authorization, and audit migrations', () => {
   const schemaName = `identity_schema_test_${process.pid}_${Date.now()}`;
@@ -344,15 +358,9 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
       })
       .execute();
 
-    const configValues: Record<string, string> = {
-      COGNITO_REGION: 'ap-south-1',
-      COGNITO_USER_POOL_ID: 'ap-south-1_synthetic',
-    };
     const repository = new WorkforceDirectoryRepository(
       { client: database } as DatabaseService,
-      {
-        getOrThrow: (name: string) => configValues[name],
-      } as ConfigService,
+      workforceIdentityProvider(issuer),
     );
     const authorization = await repository.authorizeInvitation(
       'synthetic-invitation-admin-subject',
@@ -361,7 +369,7 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
 
     expect(authorization).not.toBeNull();
     const invitation = await repository.persistInvitation({
-      actorCognitoSubject: 'synthetic-invitation-admin-subject',
+      actorSubject: 'synthetic-invitation-admin-subject',
       authorization: authorization!,
       account: {
         subject: 'synthetic-new-invitation-subject',
@@ -501,13 +509,7 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
       .execute();
     const repository = new WorkforceDirectoryRepository(
       { client: database } as DatabaseService,
-      {
-        getOrThrow: (name: string) =>
-          ({
-            COGNITO_REGION: 'ap-south-1',
-            COGNITO_USER_POOL_ID: 'ap-south-1_synthetic',
-          })[name],
-      } as ConfigService,
+      workforceIdentityProvider(issuer),
     );
 
     await expect(
@@ -724,18 +726,12 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
       .execute();
     const repository = new WorkforceDirectoryRepository(
       { client: database } as DatabaseService,
-      {
-        getOrThrow: (name: string) =>
-          ({
-            COGNITO_REGION: 'ap-south-1',
-            COGNITO_USER_POOL_ID: 'ap-south-1_synthetic',
-          })[name],
-      } as ConfigService,
+      workforceIdentityProvider(issuer),
     );
 
     await expect(
       repository.changeMembershipStatus({
-        actorCognitoSubject: administratorSubject,
+        actorSubject: administratorSubject,
         membershipId: targetFirstMembership.id,
         organizationId: firstPractice.id,
         status: 'suspended',
@@ -794,7 +790,7 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
     });
     await expect(
       repository.changeMembershipStatus({
-        actorCognitoSubject: administratorSubject,
+        actorSubject: administratorSubject,
         membershipId: targetSecondMembership.id,
         organizationId: firstPractice.id,
         status: 'suspended',
@@ -813,7 +809,7 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
 
     await expect(
       repository.changeMembershipStatus({
-        actorCognitoSubject: administratorSubject,
+        actorSubject: administratorSubject,
         membershipId: targetFirstMembership.id,
         organizationId: firstPractice.id,
         status: 'active',
@@ -825,7 +821,7 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
     });
     await expect(
       repository.changeMembershipStatus({
-        actorCognitoSubject: administratorSubject,
+        actorSubject: administratorSubject,
         membershipId: administratorMembership.id,
         organizationId: firstPractice.id,
         status: 'suspended',
@@ -1012,13 +1008,7 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
       .execute();
     const repository = new WorkforceDirectoryRepository(
       { client: database } as DatabaseService,
-      {
-        getOrThrow: (name: string) =>
-          ({
-            COGNITO_REGION: 'ap-south-1',
-            COGNITO_USER_POOL_ID: 'ap-south-1_synthetic',
-          })[name],
-      } as ConfigService,
+      workforceIdentityProvider(issuer),
     );
 
     await expect(
@@ -1052,7 +1042,7 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
     );
 
     const assignment = await repository.assignGlobalRole({
-      actorCognitoSubject: administratorSubject,
+      actorSubject: administratorSubject,
       membershipId: targetMembership.id,
       organizationId: organization.id,
       roleId: receptionRole.id,
@@ -1087,7 +1077,7 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
     });
     await expect(
       repository.assignGlobalRole({
-        actorCognitoSubject: administratorSubject,
+        actorSubject: administratorSubject,
         membershipId: targetMembership.id,
         organizationId: organization.id,
         roleId: receptionRole.id,
@@ -1096,7 +1086,7 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
     ).rejects.toThrow('This role is already assigned to the membership.');
     await expect(
       repository.assignGlobalRole({
-        actorCognitoSubject: administratorSubject,
+        actorSubject: administratorSubject,
         membershipId: targetMembership.id,
         organizationId: organization.id,
         roleId: billingApproverRole.id,
@@ -1105,7 +1095,7 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
     ).rejects.toThrow('This global role is not available for assignment.');
     await expect(
       repository.assignGlobalRole({
-        actorCognitoSubject: administratorSubject,
+        actorSubject: administratorSubject,
         membershipId: administratorMembership.id,
         organizationId: organization.id,
         roleId: receptionRole.id,
@@ -1116,7 +1106,7 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
     );
     await expect(
       repository.assignGlobalRole({
-        actorCognitoSubject: accessAdministratorSubject,
+        actorSubject: accessAdministratorSubject,
         membershipId: targetMembership.id,
         organizationId: organization.id,
         roleId: receptionRole.id,
@@ -1128,7 +1118,7 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
 
     await expect(
       repository.revokeRoleAssignment({
-        actorCognitoSubject: administratorSubject,
+        actorSubject: administratorSubject,
         assignmentId: assignment.assignmentId,
         organizationId: organization.id,
         reason: 'Synthetic front-desk role revocation test.',
@@ -1179,7 +1169,7 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
       (permission) => permission.code === 'billing.approve',
     )!;
     const localRole = await repository.createTenantLocalRole({
-      actorCognitoSubject: administratorSubject,
+      actorSubject: administratorSubject,
       organizationId: organization.id,
       name: 'Synthetic local registration',
       description: 'Synthetic practice-specific registration access.',
@@ -1223,7 +1213,7 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
     );
     await expect(
       repository.createTenantLocalRole({
-        actorCognitoSubject: administratorSubject,
+        actorSubject: administratorSubject,
         organizationId: organization.id,
         name: '  SYNTHETIC LOCAL REGISTRATION  ',
         description: 'Synthetic duplicate local role definition.',
@@ -1233,7 +1223,7 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
     ).rejects.toThrow('An active tenant-local role already uses this name.');
     await expect(
       repository.createTenantLocalRole({
-        actorCognitoSubject: administratorSubject,
+        actorSubject: administratorSubject,
         organizationId: organization.id,
         name: 'Synthetic privileged local role',
         description: 'Synthetic restricted local role definition.',
@@ -1244,7 +1234,7 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
       'Tenant-local roles can contain only active delegable permissions.',
     );
     const localAssignment = await repository.assignTenantLocalRole({
-      actorCognitoSubject: administratorSubject,
+      actorSubject: administratorSubject,
       membershipId: targetMembership.id,
       organizationId: organization.id,
       roleId: localRole.roleId,
@@ -1257,7 +1247,7 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
     });
     await expect(
       repository.revokeRoleAssignment({
-        actorCognitoSubject: administratorSubject,
+        actorSubject: administratorSubject,
         assignmentId: localAssignment.assignmentId,
         organizationId: organization.id,
         reason: 'Synthetic tenant-local role revocation test.',
