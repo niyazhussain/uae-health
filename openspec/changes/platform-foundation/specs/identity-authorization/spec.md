@@ -218,6 +218,8 @@ The platform SHALL require an explicit permission and applicable scope before al
 ### Requirement: Enforce approval limits
 The authorization platform SHALL support user or role approval limits for configured financial operations and SHALL distinguish initiation from approval where policy requires separation of duties.
 
+The POC currently provides the authorization-decision and safe denied-audit foundation only. Endpoint-level enforcement of facility scope, confidential-record controls, and approval limits is deferred until clinical-record and revenue-approval resources define their ownership, classification, amount, escalation, and separation-of-duties policies. The platform SHALL NOT represent those controls as implemented for resources that do not yet exist.
+
 #### Scenario: User exceeds approval limit
 - **WHEN** a user attempts to approve an amount above their effective limit
 - **THEN** the platform prevents approval and returns the operation to the configured escalation path
