@@ -4,41 +4,194 @@ import {
   LockKeyIcon,
   SignOutIcon,
 } from "@phosphor-icons/react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
+import {
+  PatientInvitationStatusCard,
+  type PatientInvitationStatus,
+} from "@/components/patient-invitation-status";
 import { PatientPracticeSwitcher } from "@/components/patient-practice-switcher";
 import { SignInPanel } from "@/components/sign-in-panel";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { usePatientPortalCognitoSession } from "@/lib/cognito-session";
+import {
+  acceptPatientPortalInvitation,
+  PatientOnboardingApiError,
+  registerPatient,
+} from "@/lib/patient-onboarding";
+
+const invitationTokenPattern = /^[A-Za-z0-9_-]{32,256}$/;
+
+function isLocalHost(hostname: string): boolean {
+  return ["localhost", "127.0.0.1", "[::1]"].includes(hostname);
+}
+
+function captureInvitation(): {
+  inviteRoute: boolean;
+  token: string | null;
+} {
+  const pathname = window.location.pathname.replace(/\/+$/, "") || "/";
+  const inviteRoute = isLocalHost(window.location.hostname)
+    ? pathname === "/patient-portal/invite"
+    : pathname === "/invite";
+  const fragment = window.location.hash.startsWith("#")
+    ? window.location.hash.slice(1)
+    : "";
+
+  return {
+    inviteRoute,
+    token:
+      inviteRoute && invitationTokenPattern.test(fragment) ? fragment : null,
+  };
+}
+
+function removeInvitationFragment(): void {
+  if (!window.location.hash) return;
+
+  window.history.replaceState(
+    window.history.state,
+    "",
+    `${window.location.pathname}${window.location.search}`,
+  );
+}
+
+function finishInvitationRoute(): void {
+  const path = isLocalHost(window.location.hostname) ? "/patient-portal" : "/";
+  window.history.replaceState(window.history.state, "", path);
+}
 
 export function PatientPortalPage() {
-  const session = usePatientPortalCognitoSession();
+  const {
+    step,
+    configured,
+    signIn,
+    completeNewPassword,
+    verifyTotpSetup,
+    submitTotp,
+    signOut,
+    refreshSession,
+    selectPatientPractice,
+    contextChangePending,
+    contextChangeError,
+    handleUnauthorized,
+  } = usePatientPortalCognitoSession();
+  const [capturedInvitation, setCapturedInvitation] =
+    useState(captureInvitation);
+  const invitationToken = capturedInvitation.token;
+  const invitationRequestInFlight = useRef(false);
+  const [invitationStatus, setInvitationStatus] =
+    useState<PatientInvitationStatus>(() => {
+      if (capturedInvitation.token) return "waiting";
+      return capturedInvitation.inviteRoute ? "unavailable" : "none";
+    });
 
-  if (session.step.kind !== "signed-in") {
+  useEffect(() => {
+    if (capturedInvitation.inviteRoute) removeInvitationFragment();
+  }, [capturedInvitation.inviteRoute]);
+
+  const retryInvitation = useCallback(() => {
+    if (invitationToken) setInvitationStatus("waiting");
+    else setInvitationStatus("unavailable");
+  }, [invitationToken]);
+
+  useEffect(() => {
+    if (
+      invitationStatus !== "waiting" ||
+      !invitationToken ||
+      invitationRequestInFlight.current ||
+      step.kind !== "signed-in" ||
+      step.audience !== "patient" ||
+      contextChangePending
+    ) {
+      return;
+    }
+
+    if (step.context.kind === "practice") {
+      invitationRequestInFlight.current = true;
+      void selectPatientPractice(null)
+        .then((changed) => {
+          setInvitationStatus(changed ? "waiting" : "error");
+        })
+        .finally(() => {
+          invitationRequestInFlight.current = false;
+        });
+      return;
+    }
+
+    invitationRequestInFlight.current = true;
+
+    void acceptPatientPortalInvitation(step.csrfToken, invitationToken)
+      .then(async () => {
+        setCapturedInvitation((current) => ({ ...current, token: null }));
+        finishInvitationRoute();
+
+        try {
+          await refreshSession();
+        } catch {
+          window.location.reload();
+          return;
+        }
+        setInvitationStatus("accepted");
+      })
+      .catch((reason: unknown) => {
+        if (reason instanceof PatientOnboardingApiError) {
+          if (reason.status === 401) {
+            handleUnauthorized();
+            setInvitationStatus("waiting");
+            return;
+          }
+
+          if ([400, 404, 410].includes(reason.status)) {
+            setCapturedInvitation((current) => ({ ...current, token: null }));
+            setInvitationStatus("unavailable");
+            return;
+          }
+        }
+
+        setInvitationStatus("error");
+      })
+      .finally(() => {
+        invitationRequestInFlight.current = false;
+      });
+  }, [
+    contextChangePending,
+    handleUnauthorized,
+    invitationToken,
+    invitationStatus,
+    refreshSession,
+    selectPatientPractice,
+    step,
+  ]);
+
+  if (step.kind !== "signed-in") {
     return (
       <div className="min-h-[100dvh] bg-background">
         <PatientPortalHeader />
         <SignInPanel
           audience="patient"
-          configured={session.configured}
-          step={session.step}
-          onSignIn={session.signIn}
-          onCompleteNewPassword={session.completeNewPassword}
-          onVerifyTotpSetup={session.verifyTotpSetup}
-          onSubmitTotp={session.submitTotp}
-          onReset={session.signOut}
+          configured={configured}
+          step={step}
+          onSignIn={signIn}
+          onCompleteNewPassword={completeNewPassword}
+          onVerifyTotpSetup={verifyTotpSetup}
+          onSubmitTotp={submitTotp}
+          onReset={signOut}
+          onRegisterPatient={registerPatient}
+          patientInvitationPending={invitationToken !== null}
+          patientInvitationUnavailable={invitationStatus === "unavailable"}
         />
       </div>
     );
   }
 
-  if (session.step.audience !== "patient") {
+  if (step.audience !== "patient") {
     return null;
   }
 
   const selectedPractice =
-    session.step.context.kind === "practice"
-      ? session.step.context.practiceName
+    step.context.kind === "practice"
+      ? step.context.practiceName
       : null;
 
   return (
@@ -59,8 +212,8 @@ export function PatientPortalPage() {
             <Button
               size="sm"
               variant="outline"
-              disabled={session.contextChangePending}
-              onClick={session.signOut}
+              disabled={contextChangePending}
+              onClick={signOut}
             >
               <SignOutIcon />
               <span className="hidden sm:inline">Sign out</span>
@@ -73,7 +226,7 @@ export function PatientPortalPage() {
         <div className="max-w-3xl">
           <p className="text-sm font-semibold text-primary">Patient portal</p>
           <h1 className="mt-3 text-3xl font-semibold tracking-[-0.03em] sm:text-4xl">
-            Welcome, {session.step.username}
+            Welcome, {step.username}
           </h1>
           <p className="mt-4 max-w-2xl text-base leading-7 text-muted-foreground">
             {selectedPractice
@@ -83,18 +236,23 @@ export function PatientPortalPage() {
         </div>
 
         <div className="mt-8 grid gap-6">
-          {session.step.availablePractices.length > 0 ? (
+          <PatientInvitationStatusCard
+            status={invitationStatus}
+            onRetry={retryInvitation}
+          />
+
+          {step.availablePractices.length > 0 ? (
             <PatientPracticeSwitcher
               key={
-                session.step.context.kind === "practice"
-                  ? session.step.context.portalProfileId
+                step.context.kind === "practice"
+                  ? step.context.portalProfileId
                   : "onboarding"
               }
-              availablePractices={session.step.availablePractices}
-              context={session.step.context}
-              pending={session.contextChangePending}
-              error={session.contextChangeError}
-              onSelectPractice={session.selectPatientPractice}
+              availablePractices={step.availablePractices}
+              context={step.context}
+              pending={contextChangePending}
+              error={contextChangeError}
+              onSelectPractice={selectPatientPractice}
             />
           ) : (
             <section className="rounded-xl border bg-card p-5 sm:p-6">
@@ -112,9 +270,9 @@ export function PatientPortalPage() {
                   </h2>
                   <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
                     This restricted session cannot access private practice or
-                    appointment information. Practice discovery, invitations,
-                    and booking with a new practice are included in the next POC
-                    tasks.
+                    appointment information. Open a practice invitation link to
+                    add an approved practice. Practice discovery and booking
+                    with a new practice are included in the next POC task.
                   </p>
                 </div>
               </div>

@@ -102,6 +102,68 @@ describe('validateEnvironment authentication', () => {
     });
   });
 
+  it('keeps public patient registration disabled unless local synthetic safeguards are configured', () => {
+    expect(() =>
+      validateEnvironment({
+        PATIENT_PUBLIC_REGISTRATION_ENABLED: 'true',
+      }),
+    ).toThrow(
+      'PATIENT_PUBLIC_REGISTRATION_ENABLED requires PATIENT_AUTH_MODE=cognito.',
+    );
+
+    expect(() =>
+      validateEnvironment({
+        PATIENT_AUTH_MODE: 'cognito',
+        COGNITO_REGION: 'ap-south-1',
+        PATIENT_COGNITO_USER_POOL_ID: 'ap-south-1_patient',
+        PATIENT_COGNITO_USER_POOL_CLIENT_ID: 'patient-client',
+        PATIENT_PUBLIC_REGISTRATION_ENABLED: 'true',
+      }),
+    ).toThrow(
+      'PATIENT_REGISTRATION_EMAIL_HMAC_SECRET must be at least 32 characters',
+    );
+
+    expect(
+      validateEnvironment({
+        PATIENT_AUTH_MODE: 'cognito',
+        COGNITO_REGION: 'ap-south-1',
+        PATIENT_COGNITO_USER_POOL_ID: 'ap-south-1_patient',
+        PATIENT_COGNITO_USER_POOL_CLIENT_ID: 'patient-client',
+        PATIENT_PUBLIC_REGISTRATION_ENABLED: 'true',
+        PATIENT_REGISTRATION_EMAIL_HMAC_SECRET:
+          'synthetic-local-registration-hmac-secret',
+        PATIENT_PORTAL_PUBLIC_URL: 'http://localhost:5173/patient-portal',
+      }),
+    ).toMatchObject({
+      PATIENT_PUBLIC_REGISTRATION_ENABLED: 'true',
+      PATIENT_PUBLIC_REGISTRATION_WINDOW_SECONDS: 900,
+      PATIENT_PUBLIC_REGISTRATION_IP_LIMIT: 5,
+      PATIENT_PUBLIC_REGISTRATION_EMAIL_LIMIT: 3,
+    });
+  });
+
+  it('rejects public patient registration outside local synthetic QA', () => {
+    expect(() =>
+      validateEnvironment({
+        PATIENT_AUTH_MODE: 'cognito',
+        DEPLOYMENT_ENVIRONMENT: 'staging',
+        COGNITO_REGION: 'ap-south-1',
+        PATIENT_COGNITO_USER_POOL_ID: 'ap-south-1_patient',
+        PATIENT_COGNITO_USER_POOL_CLIENT_ID: 'patient-client',
+        CORS_ORIGIN:
+          'https://stage.uae-health.com,https://patient.stage.uae-health.com',
+        WORKFORCE_CORS_ORIGIN: 'https://stage.uae-health.com',
+        PATIENT_CORS_ORIGIN: 'https://patient.stage.uae-health.com',
+        PATIENT_PUBLIC_REGISTRATION_ENABLED: 'true',
+        PATIENT_REGISTRATION_EMAIL_HMAC_SECRET:
+          'synthetic-local-registration-hmac-secret',
+        PATIENT_PORTAL_PUBLIC_URL: 'https://patient.stage.uae-health.com',
+      }),
+    ).toThrow(
+      'PATIENT_PUBLIC_REGISTRATION_ENABLED is limited to local synthetic QA until public-edge abuse controls, trusted-proxy ingress, and the API workload IAM attachment are approved.',
+    );
+  });
+
   it('requires the UAE Cognito region for production', () => {
     expect(() =>
       validateEnvironment({

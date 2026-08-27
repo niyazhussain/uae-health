@@ -3,6 +3,7 @@ import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 
 import {
   ApplicationHeader,
+  type ApplicationPracticeContext,
   type ApplicationRoute,
   type MainModule,
   type NavigationPage,
@@ -10,7 +11,6 @@ import {
 import { SignInPanel } from "@/components/sign-in-panel";
 import { isPatientPortalLocation } from "@/lib/application-audience";
 import { useCognitoSession } from "@/lib/cognito-session";
-import type { WorkforceDirectoryContext } from "@/lib/workforce-directory";
 
 const WorkforceDirectory = lazy(async () => {
   const module = await import("@/pages/administration/workforce/page");
@@ -20,6 +20,11 @@ const WorkforceDirectory = lazy(async () => {
 const WorkforceRoleCatalogue = lazy(async () => {
   const module = await import("@/pages/administration/roles/page");
   return { default: module.WorkforceRoleCatalogue };
+});
+
+const PatientPortalInvitationPage = lazy(async () => {
+  const module = await import("@/pages/patients/registration/page");
+  return { default: module.PatientPortalInvitationPage };
 });
 
 const PatientPortalPage = lazy(async () => {
@@ -38,7 +43,12 @@ const modules: MainModule[] = [
     label: "Patients",
     pages: [
       { id: "directory", label: "Directory", path: "/patients" },
-      { id: "registration", label: "Registration", path: "/patients/register" },
+      {
+        id: "registration",
+        label: "Registration",
+        path: "/patients/register",
+        implemented: true,
+      },
     ],
   },
   {
@@ -122,7 +132,7 @@ function WorkforceApplication() {
   const [isNavigating, setIsNavigating] = useState(false);
   const [selectedOrganizationId, setSelectedOrganizationId] = useState<string>();
   const [currentContext, setCurrentContext] =
-    useState<WorkforceDirectoryContext>();
+    useState<ApplicationPracticeContext>();
 
   useEffect(() => {
     const updateRoute = () => setRoute(routeFromLocation());
@@ -150,7 +160,7 @@ function WorkforceApplication() {
     setSelectedOrganizationId(organizationId);
   }, []);
 
-  const updateContext = useCallback((context: WorkforceDirectoryContext) => {
+  const updateContext = useCallback((context: ApplicationPracticeContext) => {
     setCurrentContext(context);
   }, []);
 
@@ -215,6 +225,15 @@ function WorkforceApplication() {
           />
         ) : route.page.implemented && route.page.id === "workforce" ? (
           <WorkforceDirectory
+            csrfToken={session.step.csrfToken}
+            selectedOrganizationId={selectedOrganizationId}
+            onSelectedOrganizationChange={updateOrganization}
+            onContextChange={updateContext}
+            onPageReady={finishNavigation}
+            onSessionExpired={session.handleUnauthorized}
+          />
+        ) : route.page.implemented && route.page.id === "registration" ? (
+          <PatientPortalInvitationPage
             csrfToken={session.step.csrfToken}
             selectedOrganizationId={selectedOrganizationId}
             onSelectedOrganizationChange={updateOrganization}

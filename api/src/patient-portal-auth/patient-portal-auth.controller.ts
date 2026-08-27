@@ -1,7 +1,20 @@
-import { Body, Controller, Get, Post, Res, UseGuards } from '@nestjs/common';
-import type { Response } from 'express';
+import {
+  Body,
+  Controller,
+  Get,
+  Headers,
+  HttpCode,
+  HttpStatus,
+  Post,
+  Req,
+  Res,
+  UseGuards,
+} from '@nestjs/common';
+import type { Request, Response } from 'express';
 import {
   ApiBearerAuth,
+  ApiAcceptedResponse,
+  ApiBadRequestResponse,
   ApiCookieAuth,
   ApiCreatedResponse,
   ApiForbiddenResponse,
@@ -13,11 +26,16 @@ import {
 import { CurrentPatientPortalPrincipal } from './current-patient-portal-principal.decorator.js';
 import { CurrentPatientPortalSession } from './current-patient-portal-session.decorator.js';
 import { SelectPatientPortalContextDto } from './dto/select-patient-portal-context.dto.js';
+import { AcceptPatientPortalInvitationDto } from './dto/accept-patient-portal-invitation.dto.js';
+import { CreatePatientPortalRegistrationDto } from './dto/create-patient-portal-registration.dto.js';
 import { PATIENT_PORTAL_COOKIE_AUTH } from './patient-portal-auth.constants.js';
 import { PatientPortalSessionCookieService } from './patient-portal-session-cookie.service.js';
 import { PatientPortalSessionAuthenticationGuard } from './patient-portal-session-authentication.guard.js';
 import { PatientPortalSessionService } from './patient-portal-session.service.js';
 import { PatientPortalTokenAuthenticationGuard } from './patient-portal-token-authentication.guard.js';
+import { PatientPortalPublicRegistrationGuard } from './patient-portal-public-registration.guard.js';
+import { PatientPortalRegistrationService } from './patient-portal-registration.service.js';
+import { PatientPortalInvitationService } from './patient-portal-invitation.service.js';
 import type {
   PatientPortalPrincipal,
   PatientPortalSessionContext,
@@ -43,7 +61,38 @@ export class PatientPortalAuthController {
   constructor(
     private readonly sessions: PatientPortalSessionService,
     private readonly cookies: PatientPortalSessionCookieService,
+    private readonly registrations: PatientPortalRegistrationService,
+    private readonly invitations: PatientPortalInvitationService,
   ) {}
+
+  @Post('registrations')
+  @HttpCode(HttpStatus.ACCEPTED)
+  @UseGuards(PatientPortalPublicRegistrationGuard)
+  @ApiOperation({
+    summary:
+      'Start a patient portal email registration without public Cognito sign-up',
+  })
+  @ApiAcceptedResponse({
+    description: 'The registration request was safely accepted.',
+  })
+  @ApiBadRequestResponse({
+    description: 'The registration request is invalid.',
+  })
+  async register(
+    @Body() input: CreatePatientPortalRegistrationDto,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @Req() request: Request,
+  ): Promise<{ accepted: true }> {
+    return this.registrations.register({
+      displayName: input.displayName,
+      email: input.email,
+      idempotencyKey: idempotencyKey ?? '',
+      // Production public registration requires Express trusted-proxy
+      // configuration at the ingress so request.ip is the client address;
+      // locally it safely falls back to the direct socket address.
+      clientIp: request.ip ?? request.socket.remoteAddress ?? 'unavailable',
+    });
+  }
 
   @Post('session')
   @UseGuards(PatientPortalTokenAuthenticationGuard)
@@ -106,6 +155,27 @@ export class PatientPortalAuthController {
     );
     this.cookies.set(response, rotated.sessionToken, rotated.idleExpiresAt);
     return this.toResponse(rotated);
+  }
+
+  @Post('invitations/accept')
+  @UseGuards(PatientPortalSessionAuthenticationGuard)
+  @ApiCookieAuth(PATIENT_PORTAL_COOKIE_AUTH)
+  @ApiOperation({
+    summary: 'Accept one practice-issued patient portal invitation',
+  })
+  @ApiOkResponse({ description: 'The patient relationship was accepted.' })
+  @ApiUnauthorizedResponse({
+    description: 'An active patient portal session is required.',
+  })
+  async acceptInvitation(
+    @CurrentPatientPortalSession() session: PatientPortalSessionContext,
+    @Body() input: AcceptPatientPortalInvitationDto,
+  ): Promise<{
+    accepted: true;
+    portalProfileId: string;
+    practiceName: string;
+  }> {
+    return this.invitations.accept(session, input.token);
   }
 
   @Post('logout')

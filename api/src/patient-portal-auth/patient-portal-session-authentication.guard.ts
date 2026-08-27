@@ -63,8 +63,19 @@ export class PatientPortalSessionAuthenticationGuard implements CanActivate {
       );
     }
 
+    const origin = request.headers.origin;
+
+    // Cookies are scoped to the shared API host. Whenever a browser supplies
+    // Origin, bind this session guard to its audience even for a safe GET so a
+    // workforce origin cannot read patient data with a patient cookie.
+    if (
+      origin !== undefined &&
+      (typeof origin !== 'string' || !this.allowedOrigins.has(origin))
+    ) {
+      throw new ForbiddenException('Patient portal session origin required.');
+    }
+
     if (!safeMethods.has(request.method.toUpperCase())) {
-      const origin = request.headers.origin;
       const csrf = request.headers['x-csrf-token'];
 
       if (

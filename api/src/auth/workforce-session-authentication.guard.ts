@@ -59,8 +59,19 @@ export class WorkforceSessionAuthenticationGuard implements CanActivate {
       throw new UnauthorizedException('Active workforce session required.');
     }
 
+    const origin = request.headers.origin;
+
+    // Cookies are scoped to the shared API host. Whenever a browser supplies
+    // Origin, bind this session guard to its audience even for a safe GET so a
+    // patient origin cannot read workforce data with a workforce cookie.
+    if (
+      origin !== undefined &&
+      (typeof origin !== 'string' || !this.allowedOrigins.has(origin))
+    ) {
+      throw new ForbiddenException('Workforce session origin required.');
+    }
+
     if (!safeMethods.has(request.method.toUpperCase())) {
-      const origin = request.headers.origin;
       const csrf = request.headers['x-csrf-token'];
 
       if (

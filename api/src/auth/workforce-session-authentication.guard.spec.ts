@@ -113,6 +113,21 @@ describe('WorkforceSessionAuthenticationGuard', () => {
     ).rejects.toBeInstanceOf(ForbiddenException);
   });
 
+  it('rejects a cross-audience GET even though it is a safe HTTP method', async () => {
+    const { guard } = createGuard(activeSession);
+
+    await expect(
+      guard.canActivate(
+        contextFor({
+          method: 'GET',
+          headers: { origin: 'http://localhost:5174' },
+        }),
+      ),
+    ).rejects.toMatchObject({
+      message: 'Workforce session origin required.',
+    });
+  });
+
   it('accepts a mutation from the allowed origin with matching CSRF proof', async () => {
     const { guard } = createGuard({ ...activeSession, renewed: false });
 

@@ -27,6 +27,10 @@ The platform SHALL record policy-selected business audit events in one append-on
 - **WHEN** an authorized administrator creates practice access through a native workforce invitation
 - **THEN** the application-user, identity-binding, active membership, and safe `identity.workforce_invited` audit evidence commit atomically without storing a password, temporary password, token, or MFA secret
 
+#### Scenario: Patient registration or practice invitation is processed
+- **WHEN** the system provisions a patient onboarding identity, issues a practice invitation, or accepts an invitation
+- **THEN** it records only safe actor, outcome, immutable opaque identifiers, scope, and correlation evidence without raw email, password, temporary password, bearer token, invitation token, provider diagnostic, or other-practice relationship
+
 #### Scenario: Workforce membership state changes
 - **WHEN** an authorized administrator suspends or restores a workforce membership
 - **THEN** the membership state, server-session revocation count where applicable, and safe access-authority audit evidence commit atomically without storing session identifiers, Cognito tokens, passwords, TOTP values, or MFA secrets

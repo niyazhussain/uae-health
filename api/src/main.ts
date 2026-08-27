@@ -17,7 +17,12 @@ async function bootstrap() {
       .filter(Boolean),
     methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
     credentials: true,
-    allowedHeaders: ['Authorization', 'Content-Type', 'X-CSRF-Token'],
+    allowedHeaders: [
+      'Authorization',
+      'Content-Type',
+      'Idempotency-Key',
+      'X-CSRF-Token',
+    ],
   });
   app.useGlobalPipes(
     new ValidationPipe({

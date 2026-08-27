@@ -8,7 +8,11 @@ import {
 
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
-import type { WorkforceDirectoryContext } from "@/lib/workforce-directory";
+
+export interface ApplicationPracticeContext {
+  organizationName: string;
+  tenantName: string;
+}
 
 export type MainModuleId =
   | "dashboard"
@@ -40,7 +44,7 @@ export interface ApplicationRoute {
 interface ApplicationHeaderProps {
   modules: MainModule[];
   route: ApplicationRoute;
-  currentContext?: WorkforceDirectoryContext;
+  currentContext?: ApplicationPracticeContext;
   username: string;
   isNavigating: boolean;
   navigationOpen: boolean;

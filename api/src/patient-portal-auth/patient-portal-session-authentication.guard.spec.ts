@@ -124,6 +124,21 @@ describe('PatientPortalSessionAuthenticationGuard', () => {
     ).rejects.toBeInstanceOf(ForbiddenException);
   });
 
+  it('rejects a cross-audience GET even though it is a safe HTTP method', async () => {
+    const { guard } = createGuard(activeSession);
+
+    await expect(
+      guard.canActivate(
+        contextFor({
+          method: 'GET',
+          headers: { origin: 'http://localhost:5174' },
+        }),
+      ),
+    ).rejects.toMatchObject({
+      message: 'Patient portal session origin required.',
+    });
+  });
+
   it('accepts only the exact patient origin for cookie mutations', async () => {
     const { guard } = createGuard({ ...activeSession, renewed: false });
 

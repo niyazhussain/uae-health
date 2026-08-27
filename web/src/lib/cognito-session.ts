@@ -276,6 +276,18 @@ function useConfiguredCognitoSession({
     setStep({ kind: "signed-out" });
   }, [clearProviderCredentials]);
 
+  const refreshSession = useCallback(async () => {
+    try {
+      const session = await sessionRequest(sessionPath);
+      applyServerSession(session);
+    } catch (error: unknown) {
+      if (error instanceof SessionApiError && error.status === 401) {
+        clearLocalSession();
+      }
+      throw error;
+    }
+  }, [applyServerSession, clearLocalSession, sessionPath]);
+
   useEffect(() => {
     const controller = new AbortController();
 
@@ -437,7 +449,7 @@ function useConfiguredCognitoSession({
 
   const selectPatientPractice = useCallback(
     async (portalProfileId: string | null) => {
-      if (contextChangeInFlight.current) return;
+      if (contextChangeInFlight.current) return false;
 
       const currentCsrfToken = csrfToken.current;
 
@@ -445,7 +457,7 @@ function useConfiguredCognitoSession({
         setContextChangeError(
           "The secure session cannot change practice right now. Sign in again.",
         );
-        return;
+        return false;
       }
 
       contextChangeInFlight.current = true;
@@ -462,17 +474,18 @@ function useConfiguredCognitoSession({
           body: JSON.stringify({ portalProfileId }),
         });
         applyServerSession(serverSession);
+        return true;
       } catch (error: unknown) {
         if (error instanceof SessionApiError && error.status === 401) {
           clearLocalSession();
-          return;
+          return false;
         }
 
         if (error instanceof SessionApiError && error.status === 403) {
           setContextChangeError(
             "That practice is no longer available for this patient account.",
           );
-          return;
+          return false;
         }
 
         try {
@@ -484,6 +497,7 @@ function useConfiguredCognitoSession({
         } catch {
           clearLocalSession();
         }
+        return false;
       } finally {
         contextChangeInFlight.current = false;
         setContextChangePending(false);
@@ -500,6 +514,7 @@ function useConfiguredCognitoSession({
     verifyTotpSetup,
     submitTotp,
     signOut,
+    refreshSession,
     selectPatientPractice,
     contextChangePending,
     contextChangeError,

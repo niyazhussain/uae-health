@@ -4,10 +4,14 @@ import { CognitoJwtVerifier } from 'aws-jwt-verify';
 import type {
   PatientPortalAccessTokenClaims,
   PatientPortalAccessTokenVerifierPort,
-} from './patient-portal-auth.types.js';
+} from '../patient-portal-auth/patient-portal-auth.types.js';
 
+/**
+ * Cognito-specific patient token verification lives with the identity
+ * provider adapter. The patient-portal module consumes only the verifier port.
+ */
 @Injectable()
-export class CognitoPatientPortalAccessTokenVerifierAdapter implements PatientPortalAccessTokenVerifierPort {
+export class CognitoPatientAccessTokenVerifierAdapter implements PatientPortalAccessTokenVerifierPort {
   private readonly verifier?: ReturnType<typeof CognitoJwtVerifier.create>;
   private readonly issuer?: string;
 

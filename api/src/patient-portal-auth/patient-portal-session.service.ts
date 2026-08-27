@@ -123,9 +123,10 @@ export class PatientPortalSessionService
     const created = await this.database.client
       .transaction()
       .execute(async (trx) => {
-        const identity = await this.resolveActivePatientIdentity(
+        const identity = await this.resolvePatientIdentityForSession(
           trx,
           principal,
+          correlationId,
         );
 
         if (!identity) {
@@ -652,9 +653,10 @@ export class PatientPortalSessionService
     return session.id;
   }
 
-  private async resolveActivePatientIdentity(
-    database: QueryExecutor,
+  private async resolvePatientIdentityForSession(
+    database: Transaction<DatabaseSchema>,
     principal: PatientPortalPrincipal,
+    correlationId: string,
   ): Promise<ResolvedPatientPortalIdentity | null> {
     const identities = await database
       .selectFrom('patient_portal_identities as identity')
@@ -670,19 +672,56 @@ export class PatientPortalSessionService
         'identity.subject',
         'identity.client_id',
         'identity.username',
+        'identity.status',
         'application_user.display_name',
       ])
       .where('identity.issuer', '=', principal.issuer)
       .where('identity.subject', '=', principal.subject)
       .where('identity.client_id', '=', principal.clientId)
-      .where('identity.status', '=', 'active')
+      .where('identity.status', 'in', ['pending_verification', 'active'])
+      .where('identity.provider_sync_status', '=', 'synchronized')
       .where('application_user.status', '=', 'active')
       .limit(2)
+      .forUpdate()
       .execute();
 
     if (identities.length !== 1) return null;
 
     const identity = identities[0];
+
+    if (identity.status === 'pending_verification') {
+      const activated = await database
+        .updateTable('patient_portal_identities')
+        .set({ status: 'active', updated_at: new Date() })
+        .where('id', '=', identity.id)
+        .where('status', '=', 'pending_verification')
+        .executeTakeFirst();
+
+      if (activated.numUpdatedRows !== 1n) return null;
+
+      await database
+        .insertInto('audit_events')
+        .values({
+          actor_type: 'user',
+          actor_identifier: identity.subject,
+          actor_user_id: identity.application_user_id,
+          effective_user_id: identity.application_user_id,
+          tenant_id: null,
+          organization_id: null,
+          facility_id: null,
+          action: 'identity.patient_portal_registration_verified',
+          target_entity_type: 'patient_portal_identity',
+          target_entity_id: identity.id,
+          outcome: 'success',
+          correlation_id: correlationId,
+          reason:
+            'Activate a pending patient portal identity after verified provider access-token exchange.',
+          before_data: { status: 'pending_verification' },
+          after_data: { status: 'active' },
+        })
+        .execute();
+    }
+
     return {
       patientPortalIdentityId: identity.id,
       applicationUserId: identity.application_user_id,

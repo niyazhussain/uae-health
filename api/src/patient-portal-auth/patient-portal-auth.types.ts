@@ -64,6 +64,7 @@ export interface CreatePatientPortalProfileLink {
   patientPortalProfileId: string;
   patientPortalIdentityId: string;
   actorUserId: string | null;
+  actorIdentifier?: string;
   reason: string;
   correlationId: string;
 }

@@ -20,7 +20,7 @@ interface PatientPracticeSwitcherProps {
   context: PatientSessionContext;
   pending: boolean;
   error: string | null;
-  onSelectPractice: (portalProfileId: string | null) => Promise<void>;
+  onSelectPractice: (portalProfileId: string | null) => Promise<boolean>;
 }
 
 export function PatientPracticeSwitcher({

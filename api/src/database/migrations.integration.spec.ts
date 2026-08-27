@@ -1,7 +1,13 @@
-import { Kysely, sql } from 'kysely';
+import { ConflictException, ForbiddenException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { createHash } from 'node:crypto';
+import { Kysely, sql } from 'kysely';
 import { WorkforceSessionService } from '../auth/workforce-session.service.js';
 import type { WorkforceIdentityProviderPort } from '../identity-provider/identity-provider.types.js';
+import type { PatientIdentityProviderPort } from '../patient-identity-provider/patient-identity-provider.types.js';
+import type { PatientPortalSessionContext } from '../patient-portal-auth/patient-portal-auth.types.js';
+import { PatientPortalInvitationRepository } from '../patient-portal-auth/patient-portal-invitation.repository.js';
+import { PatientPortalInvitationService } from '../patient-portal-auth/patient-portal-invitation.service.js';
 import { WorkforceDirectoryRepository } from '../workforce-directory/workforce-directory.repository.js';
 import { createDatabaseClient } from './create-database-client.js';
 import type { DatabaseService } from './database.service.js';
@@ -12,7 +18,9 @@ import * as createWorkforceSessions from './migrations/2026-08-24T010000_create_
 import * as addTenantLocalRoleNameUniqueness from './migrations/2026-08-26T000000_add_tenant_local_role_name_uniqueness.js';
 import * as addIdentityProviderSyncStatus from './migrations/2026-08-26T010000_add_identity_provider_sync_status.js';
 import * as createPatientPortalIdentity from './migrations/2026-08-26T020000_create_patient_portal_identity.js';
+import * as createPatientRegistrationAndInvitations from './migrations/2026-08-27T000000_create_patient_registration_and_invitations.js';
 import { PatientPortalProfileLinkService } from '../patient-portal-auth/patient-portal-profile-link.service.js';
+import { PatientPortalRegistrationService } from '../patient-portal-auth/patient-portal-registration.service.js';
 import { PatientPortalSessionService } from '../patient-portal-auth/patient-portal-session.service.js';
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -58,10 +66,12 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
     await addTenantLocalRoleNameUniqueness.up(database);
     await addIdentityProviderSyncStatus.up(database);
     await createPatientPortalIdentity.up(database);
+    await createPatientRegistrationAndInvitations.up(database);
   });
 
   afterAll(async () => {
     if (database) {
+      await createPatientRegistrationAndInvitations.down(database);
       await createPatientPortalIdentity.down(database);
       await addIdentityProviderSyncStatus.down(database);
       await addTenantLocalRoleNameUniqueness.down(database);
@@ -506,6 +516,509 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
     expect(
       contextAudits.filter(({ outcome }) => outcome === 'denied'),
     ).toHaveLength(1);
+  });
+
+  it('keeps public registration idempotent, rate data short-lived, and activates only an exact verified patient binding', async () => {
+    const issuer =
+      'https://cognito-idp.ap-south-1.amazonaws.com/ap-south-1_public_registration';
+    const clientId = 'synthetic-public-registration-client';
+    let provisionCalls = 0;
+    const patientIdentityProvider: PatientIdentityProviderPort = {
+      issuer,
+      clientId,
+      protocol: 'cognito',
+      provisionAccount: () => {
+        provisionCalls += 1;
+        return Promise.resolve({
+          kind: 'created',
+          subject: `synthetic-public-registration-subject-${provisionCalls}`,
+          externalAccountId: `synthetic-public-registration-provider-${provisionCalls}`,
+        });
+      },
+      deleteAccount: () => Promise.resolve(),
+    };
+    const registrationConfig = {
+      getOrThrow: (name: string) => {
+        const values: Record<string, string | number> = {
+          PATIENT_PUBLIC_REGISTRATION_ENABLED: 'true',
+          PATIENT_REGISTRATION_EMAIL_HMAC_SECRET:
+            'synthetic-registration-hmac-secret-with-at-least-32-characters',
+          PATIENT_PUBLIC_REGISTRATION_WINDOW_SECONDS: 900,
+          PATIENT_PUBLIC_REGISTRATION_IP_LIMIT: 20,
+          PATIENT_PUBLIC_REGISTRATION_EMAIL_LIMIT: 1,
+          DEPLOYMENT_ENVIRONMENT: 'local',
+        };
+        return values[name];
+      },
+    } as ConfigService;
+    const registrations = new PatientPortalRegistrationService(
+      { client: database } as DatabaseService,
+      patientIdentityProvider,
+      registrationConfig,
+    );
+    const firstInput = {
+      displayName: 'Synthetic Public Registration Patient',
+      email: 'public.registration.patient@example.invalid',
+      idempotencyKey: 'synthetic-public-registration-key-0001',
+      clientIp: '203.0.113.41',
+    };
+
+    await expect(registrations.register(firstInput)).resolves.toEqual({
+      accepted: true,
+    });
+    await expect(registrations.register(firstInput)).resolves.toEqual({
+      accepted: true,
+    });
+    expect(provisionCalls).toBe(1);
+    await expect(
+      registrations.register({
+        ...firstInput,
+        displayName: 'Different payload for the same idempotency key',
+      }),
+    ).rejects.toBeInstanceOf(ConflictException);
+
+    const pendingIdentity = await database
+      .selectFrom('patient_portal_identities')
+      .select(['id', 'application_user_id', 'status', 'client_id'])
+      .where('issuer', '=', issuer)
+      .where('subject', '=', 'synthetic-public-registration-subject-1')
+      .executeTakeFirstOrThrow();
+    expect(pendingIdentity).toMatchObject({
+      status: 'pending_verification',
+      client_id: clientId,
+    });
+
+    const sessionConfig = {
+      getOrThrow: (name: string) => {
+        const values: Record<string, number> = {
+          SESSION_IDLE_MINUTES: 30,
+          SESSION_ABSOLUTE_MINUTES: 480,
+          SESSION_RENEWAL_MINUTES: 5,
+        };
+        return values[name];
+      },
+    } as ConfigService;
+    const patientSessions = new PatientPortalSessionService(
+      { client: database } as DatabaseService,
+      sessionConfig,
+    );
+    const exactPrincipal = {
+      issuer,
+      subject: 'synthetic-public-registration-subject-1',
+      clientId,
+      username: firstInput.email,
+      providerExpiresAt: new Date(Date.now() + 10 * 60_000),
+    };
+
+    await expect(
+      patientSessions.create({ ...exactPrincipal, clientId: 'wrong-client' }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(
+      patientSessions.create({
+        ...exactPrincipal,
+        issuer: 'https://identity.example.invalid/wrong-patient-issuer',
+      }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(
+      patientSessions.create({
+        ...exactPrincipal,
+        subject: 'unknown-verified-subject',
+      }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(patientSessions.create(exactPrincipal)).resolves.toMatchObject(
+      {
+        patientPortalIdentityId: pendingIdentity.id,
+        applicationUserId: pendingIdentity.application_user_id,
+        context: { kind: 'onboarding' },
+      },
+    );
+    await expect(
+      database
+        .selectFrom('patient_portal_identities')
+        .select('status')
+        .where('id', '=', pendingIdentity.id)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({ status: 'active' });
+
+    const rateLimitedInput = {
+      ...firstInput,
+      idempotencyKey: 'synthetic-public-registration-key-0002',
+    };
+    await expect(registrations.register(rateLimitedInput)).resolves.toEqual({
+      accepted: true,
+    });
+    expect(provisionCalls).toBe(1);
+
+    const requestsToExpire = await database
+      .selectFrom('patient_portal_registration_requests')
+      .select('id')
+      .where('provider_subject', '=', 'synthetic-public-registration-subject-1')
+      .unionAll(
+        database
+          .selectFrom('patient_portal_registration_requests')
+          .select('id')
+          .where('status', '=', 'rate_limited'),
+      )
+      .execute();
+    const createdAt = new Date(Date.now() - 10 * 60_000);
+    const expiresAt = new Date(Date.now() - 60_000);
+    await database
+      .updateTable('patient_portal_registration_requests')
+      .set({ created_at: createdAt, expires_at: expiresAt })
+      .where(
+        'id',
+        'in',
+        requestsToExpire.map((request) => request.id),
+      )
+      .execute();
+
+    await expect(
+      registrations.register({
+        ...firstInput,
+        displayName: 'Synthetic Public Registration Patient Retry',
+      }),
+    ).resolves.toEqual({ accepted: true });
+    expect(provisionCalls).toBe(2);
+
+    const registrationAudit = await database
+      .selectFrom('audit_events')
+      .select(['reason', 'after_data'])
+      .where('target_entity_id', '=', pendingIdentity.id)
+      .where('action', '=', 'identity.patient_portal_registration_started')
+      .executeTakeFirstOrThrow();
+    expect(JSON.stringify(registrationAudit)).not.toContain(firstInput.email);
+  });
+
+  it('rechecks exact-practice invitation authority in its transaction and keeps acceptance opaque and idempotent', async () => {
+    const workforceIssuer =
+      'https://cognito-idp.ap-south-1.amazonaws.com/ap-south-1_invitation_workforce';
+    const patientIssuer =
+      'https://cognito-idp.ap-south-1.amazonaws.com/ap-south-1_invitation_patient';
+    const patientClientId = 'synthetic-invitation-patient-client';
+    const tenant = await database
+      .insertInto('tenants')
+      .values({
+        code: 'PORTAL-INVITE-TXN',
+        name: 'Synthetic Portal Invitation Transaction Tenant',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const authorizedPractice = await database
+      .insertInto('organizations')
+      .values({
+        tenant_id: tenant.id,
+        parent_organization_id: null,
+        kind: 'practice',
+        code: 'PORTAL-INVITE-A',
+        name: 'Synthetic Authorized Portal Practice',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const otherPractice = await database
+      .insertInto('organizations')
+      .values({
+        tenant_id: tenant.id,
+        parent_organization_id: null,
+        kind: 'practice',
+        code: 'PORTAL-INVITE-B',
+        name: 'Synthetic Other Portal Practice',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const connection = await database
+      .insertInto('identity_connections')
+      .values({
+        tenant_id: tenant.id,
+        code: 'portal-invitation-workforce',
+        name: 'Synthetic Portal Invitation Workforce',
+        protocol: 'cognito',
+        issuer: workforceIssuer,
+        jit_provisioning_enabled: false,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const administrator = await database
+      .insertInto('application_users')
+      .values({
+        display_name: 'Synthetic Portal Invitation Administrator',
+        primary_email: 'portal.invitation.admin@example.invalid',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const acceptingPatient = await database
+      .insertInto('application_users')
+      .values({
+        display_name: 'Synthetic Invitation Accepting Patient',
+        primary_email: 'portal.invitation.patient.a@example.invalid',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const otherPatient = await database
+      .insertInto('application_users')
+      .values({
+        display_name: 'Synthetic Invitation Other Patient',
+        primary_email: 'portal.invitation.patient.b@example.invalid',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const administratorSubject = 'synthetic-portal-invitation-admin-subject';
+    await database
+      .insertInto('user_identities')
+      .values({
+        application_user_id: administrator.id,
+        identity_connection_id: connection.id,
+        subject: administratorSubject,
+        last_authenticated_at: null,
+      })
+      .execute();
+    const administratorMembership = await database
+      .insertInto('organization_memberships')
+      .values({
+        tenant_id: tenant.id,
+        organization_id: authorizedPractice.id,
+        application_user_id: administrator.id,
+        status: 'active',
+        provisioning_method: 'admin_invite',
+        external_id: null,
+        valid_until: null,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const practiceAdminRole = await database
+      .selectFrom('roles')
+      .select('id')
+      .where('tenant_id', 'is', null)
+      .where('code', '=', 'PRACTICE_ADMIN')
+      .executeTakeFirstOrThrow();
+    await database
+      .insertInto('role_assignments')
+      .values({
+        tenant_id: tenant.id,
+        membership_id: administratorMembership.id,
+        role_id: practiceAdminRole.id,
+        scope_organization_id: authorizedPractice.id,
+        facility_id: null,
+        include_descendants: false,
+        assignment_source: 'admin',
+        assigned_by_user_id: administrator.id,
+        source_role_request_id: null,
+        valid_until: null,
+        revoked_at: null,
+        revoked_by_user_id: null,
+        revocation_reason: null,
+      })
+      .execute();
+    const [acceptingIdentity, otherIdentity] = await database
+      .insertInto('patient_portal_identities')
+      .values([
+        {
+          application_user_id: acceptingPatient.id,
+          issuer: patientIssuer,
+          subject: 'synthetic-portal-invitation-patient-a',
+          client_id: patientClientId,
+          username: 'portal.invitation.patient.a@example.invalid',
+          status: 'active',
+          provider_sync_status: 'synchronized',
+          provider_sync_attempted_at: null,
+          provider_sync_completed_at: null,
+          provider_sync_error_code: null,
+          last_authenticated_at: null,
+        },
+        {
+          application_user_id: otherPatient.id,
+          issuer: patientIssuer,
+          subject: 'synthetic-portal-invitation-patient-b',
+          client_id: patientClientId,
+          username: 'portal.invitation.patient.b@example.invalid',
+          status: 'active',
+          provider_sync_status: 'synchronized',
+          provider_sync_attempted_at: null,
+          provider_sync_completed_at: null,
+          provider_sync_error_code: null,
+          last_authenticated_at: null,
+        },
+      ])
+      .returning(['id', 'application_user_id', 'subject'])
+      .execute();
+    const links = new PatientPortalProfileLinkService({
+      client: database,
+    } as DatabaseService);
+    const repository = new PatientPortalInvitationRepository(
+      { client: database } as DatabaseService,
+      links,
+      workforceIdentityProvider(workforceIssuer),
+    );
+    const invitationConfig = {
+      getOrThrow: (name: string) => {
+        const values: Record<string, string | number> = {
+          PATIENT_PORTAL_PUBLIC_URL:
+            'https://patient.uae-health.example/patient-portal',
+          PATIENT_PORTAL_INVITATION_TTL_MINUTES: 10_080,
+        };
+        return values[name];
+      },
+    } as ConfigService;
+    const invitations = new PatientPortalInvitationService(
+      repository,
+      invitationConfig,
+    );
+    const administratorPrincipal = {
+      subject: administratorSubject,
+      clientId: 'synthetic-workforce-client',
+    };
+
+    await expect(
+      invitations.listContexts(administratorPrincipal),
+    ).resolves.toEqual({
+      contexts: [
+        {
+          tenantId: tenant.id,
+          tenantName: 'Synthetic Portal Invitation Transaction Tenant',
+          organizationId: authorizedPractice.id,
+          organizationName: 'Synthetic Authorized Portal Practice',
+        },
+      ],
+    });
+    await expect(
+      invitations.issue(administratorPrincipal, {
+        organizationId: otherPractice.id,
+        reason: 'patient-portal-onboarding',
+      }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+
+    const issued = await invitations.issue(administratorPrincipal, {
+      organizationId: authorizedPractice.id,
+      reason: 'patient-portal-onboarding',
+    });
+    const rawToken = issued.invitationUrl.split('#')[1];
+    const tokenHash = createHash('sha256').update(rawToken).digest('hex');
+    const issuedInvitation = await database
+      .selectFrom('patient_portal_invitations')
+      .select(['id', 'reason', 'status'])
+      .where('token_hash', '=', tokenHash)
+      .executeTakeFirstOrThrow();
+    expect(issuedInvitation).toMatchObject({
+      reason: 'patient-portal-onboarding',
+      status: 'issued',
+    });
+
+    const patientSession = (
+      identity: typeof acceptingIdentity,
+    ): PatientPortalSessionContext => ({
+      sessionId: `synthetic-invitation-session-${identity.id}`,
+      principal: {
+        issuer: patientIssuer,
+        subject: identity.subject,
+        clientId: patientClientId,
+      },
+      patientPortalIdentityId: identity.id,
+      applicationUserId: identity.application_user_id,
+      displayName: 'Synthetic Invitation Patient',
+      context: { kind: 'onboarding' },
+      availablePractices: [],
+      csrfToken: 'synthetic-invitation-csrf-token',
+      idleExpiresAt: new Date(Date.now() + 30 * 60_000),
+      absoluteExpiresAt: new Date(Date.now() + 8 * 60 * 60_000),
+      renewed: false,
+    });
+    const acceptingSession = patientSession(acceptingIdentity);
+    const firstAcceptance = await invitations.accept(
+      acceptingSession,
+      rawToken,
+    );
+    const replayAcceptance = await invitations.accept(
+      acceptingSession,
+      rawToken,
+    );
+    expect(replayAcceptance).toEqual(firstAcceptance);
+    await expect(
+      invitations.accept(patientSession(otherIdentity), rawToken),
+    ).rejects.toMatchObject({ message: 'This invitation is unavailable.' });
+
+    const secondIssued = await invitations.issue(administratorPrincipal, {
+      organizationId: authorizedPractice.id,
+      reason: 'patient-requested-access',
+    });
+    const secondToken = secondIssued.invitationUrl.split('#')[1];
+    await expect(
+      invitations.accept(acceptingSession, secondToken),
+    ).resolves.toMatchObject({
+      portalProfileId: firstAcceptance.portalProfileId,
+    });
+    await expect(
+      database
+        .selectFrom('patient_portal_profiles')
+        .select('id')
+        .where('application_user_id', '=', acceptingPatient.id)
+        .where('organization_id', '=', authorizedPractice.id)
+        .execute(),
+    ).resolves.toHaveLength(1);
+
+    const expiredIssued = await invitations.issue(administratorPrincipal, {
+      organizationId: authorizedPractice.id,
+      reason: 'staff-assisted-enrolment',
+    });
+    const expiredToken = expiredIssued.invitationUrl.split('#')[1];
+    const expiredTokenHash = createHash('sha256')
+      .update(expiredToken)
+      .digest('hex');
+    const oldCreatedAt = new Date(Date.now() - 10 * 60_000);
+    const expiredAt = new Date(Date.now() - 60_000);
+    await database
+      .updateTable('patient_portal_invitations')
+      .set({ created_at: oldCreatedAt, expires_at: expiredAt })
+      .where('token_hash', '=', expiredTokenHash)
+      .execute();
+    await expect(
+      invitations.accept(acceptingSession, expiredToken),
+    ).rejects.toMatchObject({ message: 'This invitation is unavailable.' });
+    await expect(
+      database
+        .selectFrom('patient_portal_invitations')
+        .select('status')
+        .where('token_hash', '=', expiredTokenHash)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({ status: 'expired' });
+
+    const revokedIssued = await invitations.issue(administratorPrincipal, {
+      organizationId: authorizedPractice.id,
+      reason: 'patient-portal-onboarding',
+    });
+    const revokedToken = revokedIssued.invitationUrl.split('#')[1];
+    const revokedTokenHash = createHash('sha256')
+      .update(revokedToken)
+      .digest('hex');
+    await database
+      .updateTable('patient_portal_invitations')
+      .set({
+        status: 'revoked',
+        revoked_at: new Date(),
+        revoked_by_user_id: administrator.id,
+        revocation_reason: 'system-revocation',
+      })
+      .where('token_hash', '=', revokedTokenHash)
+      .execute();
+    await expect(
+      invitations.accept(acceptingSession, revokedToken),
+    ).rejects.toMatchObject({ message: 'This invitation is unavailable.' });
+
+    const invitationAudits = await database
+      .selectFrom('audit_events')
+      .select(['reason', 'after_data'])
+      .where('target_entity_id', '=', issuedInvitation.id)
+      .execute();
+    const serializedAudits = JSON.stringify(invitationAudits);
+    expect(serializedAudits).not.toContain(rawToken);
+    expect(serializedAudits).not.toContain(
+      'portal.invitation.patient.a@example.invalid',
+    );
+    expect(serializedAudits).not.toContain('clinical details');
   });
 
   it('persists an authorized invitation without merging by email or assigning a role', async () => {

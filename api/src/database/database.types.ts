@@ -6,9 +6,14 @@ export type UserStatus = 'active' | 'suspended' | 'closed';
 export type IdentityProtocol = 'cognito' | 'oidc' | 'saml';
 export type IdentityStatus = 'active' | 'suspended';
 export type ProviderSyncStatus = 'pending' | 'synchronized' | 'failed';
-export type PatientPortalIdentityStatus = 'active' | 'suspended';
+export type PatientPortalIdentityStatus =
+  'pending_verification' | 'active' | 'suspended';
 export type PatientPortalProfileStatus = 'active' | 'suspended' | 'closed';
 export type PatientPortalProfileLinkStatus = 'active' | 'revoked';
+export type PatientPortalRegistrationRequestStatus =
+  'pending_provider' | 'pending_binding' | 'accepted' | 'rate_limited';
+export type PatientPortalInvitationStatus =
+  'issued' | 'accepted' | 'revoked' | 'expired';
 export type MembershipStatus = 'pending' | 'active' | 'suspended' | 'revoked';
 export type ProvisioningMethod = 'admin_invite' | 'jit' | 'scim';
 export type RoleRequestPolicy = 'admin_only' | 'approval_required';
@@ -250,7 +255,44 @@ export interface PatientPortalIdentityTable {
   client_id: string;
   username: string | null;
   status: Generated<PatientPortalIdentityStatus>;
+  provider_sync_status: Generated<ProviderSyncStatus>;
+  provider_sync_attempted_at: Date | null;
+  provider_sync_completed_at: Date | null;
+  provider_sync_error_code: string | null;
   last_authenticated_at: Date | null;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+}
+
+export interface PatientPortalRegistrationRequestTable {
+  id: Generated<string>;
+  idempotency_key_hash: string;
+  request_hash: string;
+  email_hmac: string;
+  client_ip_hmac: string;
+  provider_issuer: string | null;
+  provider_subject: string | null;
+  status: PatientPortalRegistrationRequestStatus;
+  expires_at: Date;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+}
+
+export interface PatientPortalInvitationTable {
+  id: Generated<string>;
+  tenant_id: string;
+  organization_id: string;
+  issued_by_user_id: string;
+  token_hash: string;
+  status: Generated<PatientPortalInvitationStatus>;
+  reason: string;
+  expires_at: Date;
+  accepted_patient_portal_identity_id: string | null;
+  accepted_patient_portal_profile_id: string | null;
+  accepted_at: Date | null;
+  revoked_at: Date | null;
+  revoked_by_user_id: string | null;
+  revocation_reason: string | null;
   created_at: Generated<Date>;
   updated_at: Generated<Date>;
 }
@@ -305,7 +347,9 @@ export interface DatabaseSchema {
   audit_events: AuditEventTable;
   workforce_sessions: WorkforceSessionTable;
   patient_portal_identities: PatientPortalIdentityTable;
+  patient_portal_registration_requests: PatientPortalRegistrationRequestTable;
   patient_portal_profiles: PatientPortalProfileTable;
   patient_portal_profile_links: PatientPortalProfileLinkTable;
   patient_portal_sessions: PatientPortalSessionTable;
+  patient_portal_invitations: PatientPortalInvitationTable;
 }

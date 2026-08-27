@@ -108,6 +108,37 @@ function parseOrigins(value: string, name: string): string[] {
   return origins;
 }
 
+function readPatientPortalPublicUrl(value: unknown): string {
+  const configured = readString(
+    value,
+    'http://localhost:5173/patient-portal',
+    'PATIENT_PORTAL_PUBLIC_URL',
+  )
+    .trim()
+    .replace(/\/+$/, '');
+
+  let parsed: URL;
+
+  try {
+    parsed = new URL(configured);
+  } catch {
+    throw new Error('PATIENT_PORTAL_PUBLIC_URL must be an exact HTTP URL.');
+  }
+
+  if (
+    (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') ||
+    parsed.origin === 'null' ||
+    parsed.username ||
+    parsed.password ||
+    parsed.search ||
+    parsed.hash
+  ) {
+    throw new Error('PATIENT_PORTAL_PUBLIC_URL must be an exact HTTP URL.');
+  }
+
+  return configured;
+}
+
 export function validateEnvironment(
   environment: Record<string, unknown>,
 ): Record<string, unknown> {
@@ -340,6 +371,64 @@ export function validateEnvironment(
     );
   }
 
+  const patientPublicRegistrationEnabled = readBooleanString(
+    environment.PATIENT_PUBLIC_REGISTRATION_ENABLED,
+    'false',
+    'PATIENT_PUBLIC_REGISTRATION_ENABLED',
+  );
+  const patientRegistrationEmailHmacSecret = readString(
+    environment.PATIENT_REGISTRATION_EMAIL_HMAC_SECRET,
+    '',
+    'PATIENT_REGISTRATION_EMAIL_HMAC_SECRET',
+  );
+  const patientPortalPublicUrl = readPatientPortalPublicUrl(
+    environment.PATIENT_PORTAL_PUBLIC_URL,
+  );
+  const patientPublicRegistrationWindowSeconds = readPositiveInteger(
+    environment.PATIENT_PUBLIC_REGISTRATION_WINDOW_SECONDS ?? 900,
+    'PATIENT_PUBLIC_REGISTRATION_WINDOW_SECONDS',
+  );
+  const patientPublicRegistrationIpLimit = readPositiveInteger(
+    environment.PATIENT_PUBLIC_REGISTRATION_IP_LIMIT ?? 5,
+    'PATIENT_PUBLIC_REGISTRATION_IP_LIMIT',
+  );
+  const patientPublicRegistrationEmailLimit = readPositiveInteger(
+    environment.PATIENT_PUBLIC_REGISTRATION_EMAIL_LIMIT ?? 3,
+    'PATIENT_PUBLIC_REGISTRATION_EMAIL_LIMIT',
+  );
+  const patientPortalInvitationTtlMinutes = readPositiveInteger(
+    environment.PATIENT_PORTAL_INVITATION_TTL_MINUTES ?? 10080,
+    'PATIENT_PORTAL_INVITATION_TTL_MINUTES',
+  );
+
+  if (patientPublicRegistrationEnabled === 'true') {
+    if (patientAuthMode !== 'cognito') {
+      throw new Error(
+        'PATIENT_PUBLIC_REGISTRATION_ENABLED requires PATIENT_AUTH_MODE=cognito.',
+      );
+    }
+
+    if (patientRegistrationEmailHmacSecret.length < 32) {
+      throw new Error(
+        'PATIENT_REGISTRATION_EMAIL_HMAC_SECRET must be at least 32 characters when public patient registration is enabled.',
+      );
+    }
+
+    const patientPortalPublicOrigin = new URL(patientPortalPublicUrl).origin;
+
+    if (!patientOrigins.includes(patientPortalPublicOrigin)) {
+      throw new Error(
+        'PATIENT_PORTAL_PUBLIC_URL must use an allowed PATIENT_CORS_ORIGIN.',
+      );
+    }
+
+    if (deploymentEnvironment !== 'local') {
+      throw new Error(
+        'PATIENT_PUBLIC_REGISTRATION_ENABLED is limited to local synthetic QA until public-edge abuse controls, trusted-proxy ingress, and the API workload IAM attachment are approved.',
+      );
+    }
+  }
+
   return {
     ...environment,
     NODE_ENV: nodeEnv,
@@ -352,6 +441,15 @@ export function validateEnvironment(
     COGNITO_USER_POOL_CLIENT_ID: cognitoUserPoolClientId,
     PATIENT_COGNITO_USER_POOL_ID: patientCognitoUserPoolId,
     PATIENT_COGNITO_USER_POOL_CLIENT_ID: patientCognitoUserPoolClientId,
+    PATIENT_PUBLIC_REGISTRATION_ENABLED: patientPublicRegistrationEnabled,
+    PATIENT_REGISTRATION_EMAIL_HMAC_SECRET: patientRegistrationEmailHmacSecret,
+    PATIENT_PORTAL_PUBLIC_URL: patientPortalPublicUrl,
+    PATIENT_PUBLIC_REGISTRATION_WINDOW_SECONDS:
+      patientPublicRegistrationWindowSeconds,
+    PATIENT_PUBLIC_REGISTRATION_IP_LIMIT: patientPublicRegistrationIpLimit,
+    PATIENT_PUBLIC_REGISTRATION_EMAIL_LIMIT:
+      patientPublicRegistrationEmailLimit,
+    PATIENT_PORTAL_INVITATION_TTL_MINUTES: patientPortalInvitationTtlMinutes,
     SYNTHETIC_ADMIN_COGNITO_SUBJECT: syntheticAdminCognitoSubject,
     CORS_ORIGIN: corsOrigin,
     WORKFORCE_CORS_ORIGIN: workforceCorsOrigin,

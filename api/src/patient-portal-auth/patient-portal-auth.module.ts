@@ -1,28 +1,37 @@
 import { Module } from '@nestjs/common';
-import { CognitoPatientPortalAccessTokenVerifierAdapter } from './cognito-patient-portal-access-token.verifier.js';
-import { PATIENT_PORTAL_ACCESS_TOKEN_VERIFIER } from './patient-portal-auth.constants.js';
+import { AuthModule } from '../auth/auth.module.js';
+import { IdentityProviderModule } from '../identity-provider/identity-provider.module.js';
+import { PatientIdentityProviderModule } from '../patient-identity-provider/patient-identity-provider.module.js';
 import { PatientPortalAuthController } from './patient-portal-auth.controller.js';
+import { PatientPortalInvitationAdminController } from './patient-portal-invitation-admin.controller.js';
+import { PatientPortalInvitationRepository } from './patient-portal-invitation.repository.js';
+import { PatientPortalInvitationService } from './patient-portal-invitation.service.js';
 import { PatientPortalProfileLinkService } from './patient-portal-profile-link.service.js';
 import { PatientPortalPracticeContextGuard } from './patient-portal-practice-context.guard.js';
 import { PatientPortalSessionCookieService } from './patient-portal-session-cookie.service.js';
 import { PatientPortalSessionAuthenticationGuard } from './patient-portal-session-authentication.guard.js';
 import { PatientPortalSessionService } from './patient-portal-session.service.js';
 import { PatientPortalTokenAuthenticationGuard } from './patient-portal-token-authentication.guard.js';
+import { PatientPortalPublicRegistrationGuard } from './patient-portal-public-registration.guard.js';
+import { PatientPortalRegistrationService } from './patient-portal-registration.service.js';
 
 @Module({
-  controllers: [PatientPortalAuthController],
+  imports: [AuthModule, IdentityProviderModule, PatientIdentityProviderModule],
+  controllers: [
+    PatientPortalAuthController,
+    PatientPortalInvitationAdminController,
+  ],
   providers: [
-    CognitoPatientPortalAccessTokenVerifierAdapter,
     PatientPortalTokenAuthenticationGuard,
     PatientPortalSessionAuthenticationGuard,
     PatientPortalPracticeContextGuard,
+    PatientPortalPublicRegistrationGuard,
     PatientPortalSessionCookieService,
     PatientPortalSessionService,
     PatientPortalProfileLinkService,
-    {
-      provide: PATIENT_PORTAL_ACCESS_TOKEN_VERIFIER,
-      useExisting: CognitoPatientPortalAccessTokenVerifierAdapter,
-    },
+    PatientPortalRegistrationService,
+    PatientPortalInvitationRepository,
+    PatientPortalInvitationService,
   ],
   exports: [
     PatientPortalSessionAuthenticationGuard,

@@ -180,6 +180,10 @@ The POC SHALL use a Cognito User Pool, app client, trusted token issuer, provide
 
 The POC SHALL support patient email self-registration and practice-issued invitations. Registration SHALL establish only the authentication identity and a restricted onboarding account; it SHALL NOT discover, merge, or grant access to a clinical record by matching email or phone. An approved portal-profile link SHALL be an explicit HIS mutation with safe audit evidence and SHALL not be inferred at session creation. Synthetic environments SHALL continue to prohibit real patient and clinical data.
 
+Patient self-registration SHALL enter through a patient-origin UAE Health API command with an idempotency key and bounded IP plus keyed-email abuse controls. It SHALL not enable public direct Cognito `SignUp`; Cognito SHALL remain administrator-created and a provider-neutral server adapter SHALL issue the native temporary-password invitation. An exact existing pending issuer, subject, and client binding may become active after a verified first sign-in, but a valid unknown patient token SHALL fail closed. Registration responses for created, existing, and rate-limited accounts SHALL not reveal which state occurred.
+
+An authorized workforce user with exact current-practice `patients.portal.invite` permission may issue one POC one-time invitation. The database SHALL retain only a hash of an opaque 256-bit token and safe scope/lifecycle evidence; the unpersisted token may be returned once to that issuer in a fragment-only patient-portal URL. Acceptance requires an authenticated patient onboarding session, exact patient origin and CSRF proof, and a serializable transaction that creates an explicit patient-owned portal profile and link only for the inviting practice. It SHALL not infer recipient identity from email, auto-select the practice, or disclose other practice relationships.
+
 #### Scenario: Provider is also a patient
 - **WHEN** a workforce user creates or receives access to a patient portal account using the same real email address
 - **THEN** Cognito issues distinct subjects from distinct pools and neither identity inherits the other's sessions, roles, memberships, or record access
@@ -208,9 +212,21 @@ The POC SHALL support patient email self-registration and practice-issued invita
 - **WHEN** a patient completes the approved email-registration and verification flow
 - **THEN** the system creates one patient authentication identity and a restricted onboarding account without creating or discovering a practice clinical record
 
+#### Scenario: Public registration is retried or probed
+- **WHEN** an unauthenticated caller repeats an equivalent patient registration with the same idempotency key, tries an existing address, or exceeds a configured patient-public limit
+- **THEN** the system applies at most one account-provisioning effect, returns only the configured generic registration outcome for account existence and limiting, and does not expose email, provider diagnostics, temporary passwords, or account state
+
+#### Scenario: Unknown patient token is exchanged
+- **WHEN** a valid patient-pool access token has no exact active or pending HIS patient identity binding
+- **THEN** the API denies the exchange and does not create a patient account, profile, relationship, or practice context
+
 #### Scenario: Practice invites an existing patient identity
-- **WHEN** a practice sends an invitation to an address already used by a patient account and that authenticated patient accepts it
+- **WHEN** an exact-practice authorized user issues a one-time invitation and that authenticated patient accepts it
 - **THEN** the system creates an explicit audited relationship for the inviting practice without revealing or merging the patient's relationships with other practices
+
+#### Scenario: Invitation is replayed or accepted by another identity
+- **WHEN** an expired, revoked, malformed, or already accepted invitation is submitted, or a different patient identity submits an invitation accepted by another identity
+- **THEN** the API returns the same safe unavailable result, changes no relationship, and does not disclose the invitation's practice or patient information
 
 #### Scenario: Patient books with a different practice
 - **WHEN** an authenticated patient chooses a bookable practice for which no active relationship exists

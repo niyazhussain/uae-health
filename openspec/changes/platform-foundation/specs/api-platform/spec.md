@@ -26,7 +26,7 @@ The API SHALL publish a machine-readable OpenAPI contract for supported endpoint
 - **THEN** a versioned OpenAPI document can be generated and used to create the frontend client types
 
 ### Requirement: Support idempotent commands
-Endpoints whose retry could duplicate a patient, booking, order, payment, message, or external submission SHALL support an idempotency key scoped to the authenticated caller and operation.
+Endpoints whose retry could duplicate a patient, booking, order, payment, message, or external submission SHALL support an idempotency key scoped to the authenticated caller and operation. A public anti-enumeration registration command SHALL instead bind the key to its operation and a server-held keyed request fingerprint without retaining the raw email as an idempotency key.
 
 #### Scenario: Identical command is retried
 - **WHEN** the same caller repeats a completed command with the same idempotency key and equivalent payload
@@ -35,6 +35,10 @@ Endpoints whose retry could duplicate a patient, booking, order, payment, messag
 #### Scenario: Key is reused with a different payload
 - **WHEN** a caller reuses an idempotency key for a materially different payload
 - **THEN** the API rejects the request as a conflict without applying the new payload
+
+#### Scenario: Public patient registration is retried
+- **WHEN** a browser retries an equivalent patient registration command with the same idempotency key
+- **THEN** the API returns the prior safe outcome without creating another identity-provider account or sending another invitation
 
 ### Requirement: Provide safe health endpoints
 The API SHALL provide liveness and readiness endpoints suitable for deployment automation without exposing secrets, patient data, connection strings, or unnecessary infrastructure details.
