@@ -1,6 +1,6 @@
 ## ADDED Requirements
 
-### Requirement: Maintain practice-owned practitioner profiles
+### Requirement: Maintain tenant-owned practitioner profiles
 The system SHALL represent a bookable practitioner as a tenant-owned scheduling
 record with explicit practice and facility assignments, independently of
 workforce authentication. An optional application-user link SHALL use an

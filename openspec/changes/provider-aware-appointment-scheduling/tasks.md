@@ -1,11 +1,11 @@
 ## 1. Dependency and contract baseline
 
-- [ ] 1.1 Deliver platform-foundation task 3.5a and verify its patient session, practice isolation, idempotency, audit, and appointment migration contracts on `main`.
-- [ ] 1.2 Review and approve the provider, service, facility, availability, appointment-state, and synthetic-data boundaries documented by this change before implementation begins.
+- [x] 1.1 Deliver platform-foundation task 3.5a and verify its patient session, practice isolation, idempotency, audit, and appointment migration contracts on `main`.
+- [x] 1.2 Review and approve the provider, service, facility, availability, appointment-state, and synthetic-data boundaries documented by this change before implementation begins.
 
 ## 2. Provider scheduling data model
 
-- [ ] 2.1 Add reversible migrations and Kysely types for practice-owned practitioner profiles and optional explicit immutable application-user links that grant no access.
+- [x] 2.1 Add reversible migrations and Kysely types for tenant-owned practitioner profiles and optional explicit immutable application-user links that grant no access; practice and facility assignments remain task 2.2.
 - [ ] 2.2 Add specialties, appointment services, facilities, and explicit practitioner-service-facility assignments with tenant and practice ownership constraints.
 - [ ] 2.3 Add weekly availability templates, dated exceptions, provider-aware materialized slots, non-overlap protection, and composite scope constraints.
 - [ ] 2.4 Backfill the generic synthetic appointment fixtures with deterministic synthetic practitioners and services while preserving referenced slot times and restart-safe seed behavior.

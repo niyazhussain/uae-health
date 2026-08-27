@@ -20,6 +20,7 @@ import * as addIdentityProviderSyncStatus from './migrations/2026-08-26T010000_a
 import * as createPatientPortalIdentity from './migrations/2026-08-26T020000_create_patient_portal_identity.js';
 import * as createPatientRegistrationAndInvitations from './migrations/2026-08-27T000000_create_patient_registration_and_invitations.js';
 import * as createPatientPortalAppointments from './migrations/2026-08-27T010000_create_patient_portal_appointments.js';
+import * as createPractitionerProfiles from './migrations/2026-08-27T020000_create_practitioner_profiles.js';
 import { PatientPortalProfileLinkService } from '../patient-portal-auth/patient-portal-profile-link.service.js';
 import { PatientPortalRegistrationService } from '../patient-portal-auth/patient-portal-registration.service.js';
 import { PatientPortalSessionService } from '../patient-portal-auth/patient-portal-session.service.js';
@@ -70,10 +71,12 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
     await createPatientPortalIdentity.up(database);
     await createPatientRegistrationAndInvitations.up(database);
     await createPatientPortalAppointments.up(database);
+    await createPractitionerProfiles.up(database);
   });
 
   afterAll(async () => {
     if (database) {
+      await createPractitionerProfiles.down(database);
       await createPatientPortalAppointments.down(database);
       await createPatientRegistrationAndInvitations.down(database);
       await createPatientPortalIdentity.down(database);
@@ -172,6 +175,181 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
 
     expect(memberships).toHaveLength(2);
     expect(new Set(memberships.map(({ tenant_id }) => tenant_id)).size).toBe(2);
+  });
+
+  it('stores tenant practitioners without requiring workforce access', async () => {
+    const firstTenant = await database
+      .insertInto('tenants')
+      .values({
+        code: 'PRACTITIONER-A',
+        name: 'Synthetic Practitioner Tenant A',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const secondTenant = await database
+      .insertInto('tenants')
+      .values({
+        code: 'PRACTITIONER-B',
+        name: 'Synthetic Practitioner Tenant B',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const applicationUser = await database
+      .insertInto('application_users')
+      .values({
+        display_name: 'Synthetic Linked Practitioner',
+        primary_email: 'linked-practitioner@example.invalid',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+
+    const unlinkedPractitioner = await database
+      .insertInto('practitioners')
+      .values({
+        tenant_id: firstTenant.id,
+        application_user_id: null,
+        display_name: 'Synthetic Doctor Without Login',
+        professional_title: 'General practitioner',
+        is_synthetic: true,
+      })
+      .returning(['id', 'application_user_id', 'status'])
+      .executeTakeFirstOrThrow();
+
+    expect(unlinkedPractitioner).toMatchObject({
+      application_user_id: null,
+      status: 'active',
+    });
+
+    const secondUnlinkedPractitioner = await database
+      .insertInto('practitioners')
+      .values({
+        tenant_id: firstTenant.id,
+        application_user_id: null,
+        display_name: 'Synthetic Second Doctor Without Login',
+        professional_title: 'Consultant physician',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+
+    await database
+      .updateTable('practitioners')
+      .set({ application_user_id: applicationUser.id })
+      .where('id', '=', unlinkedPractitioner.id)
+      .executeTakeFirstOrThrow();
+
+    await expect(
+      database
+        .updateTable('practitioners')
+        .set({ application_user_id: null })
+        .where('id', '=', unlinkedPractitioner.id)
+        .execute(),
+    ).rejects.toThrow('Practitioner application-user link is immutable.');
+
+    const anotherApplicationUser = await database
+      .insertInto('application_users')
+      .values({
+        display_name: 'Synthetic Different Practitioner User',
+        primary_email: 'different-practitioner@example.invalid',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+
+    await expect(
+      database
+        .updateTable('practitioners')
+        .set({ application_user_id: anotherApplicationUser.id })
+        .where('id', '=', unlinkedPractitioner.id)
+        .execute(),
+    ).rejects.toThrow('Practitioner application-user link is immutable.');
+
+    await expect(
+      database
+        .updateTable('practitioners')
+        .set({ tenant_id: secondTenant.id })
+        .where('id', '=', unlinkedPractitioner.id)
+        .execute(),
+    ).rejects.toThrow('Practitioner ownership is immutable.');
+
+    await expect(
+      database
+        .updateTable('practitioners')
+        .set({ application_user_id: applicationUser.id })
+        .where('id', '=', secondUnlinkedPractitioner.id)
+        .execute(),
+    ).rejects.toThrow();
+
+    const secondTenantPractitioner = await database
+      .insertInto('practitioners')
+      .values({
+        tenant_id: secondTenant.id,
+        application_user_id: applicationUser.id,
+        display_name: 'Synthetic Cross-Tenant Doctor',
+        professional_title: 'General practitioner',
+        is_synthetic: true,
+      })
+      .returning(['tenant_id', 'application_user_id'])
+      .executeTakeFirstOrThrow();
+
+    expect(secondTenantPractitioner).toEqual({
+      tenant_id: secondTenant.id,
+      application_user_id: applicationUser.id,
+    });
+
+    await expect(
+      database
+        .insertInto('practitioners')
+        .values({
+          tenant_id: firstTenant.id,
+          application_user_id: null,
+          display_name: '   ',
+          professional_title: 'General practitioner',
+          is_synthetic: true,
+        })
+        .execute(),
+    ).rejects.toThrow();
+
+    const [identities, patientIdentities, memberships, assignments] =
+      await Promise.all([
+        database
+          .selectFrom('user_identities')
+          .select('id')
+          .where('application_user_id', '=', applicationUser.id)
+          .execute(),
+        database
+          .selectFrom('patient_portal_identities')
+          .select('id')
+          .where('application_user_id', '=', applicationUser.id)
+          .execute(),
+        database
+          .selectFrom('organization_memberships')
+          .select('id')
+          .where('application_user_id', '=', applicationUser.id)
+          .execute(),
+        database
+          .selectFrom('role_assignments')
+          .innerJoin(
+            'organization_memberships',
+            'organization_memberships.id',
+            'role_assignments.membership_id',
+          )
+          .select('role_assignments.id')
+          .where(
+            'organization_memberships.application_user_id',
+            '=',
+            applicationUser.id,
+          )
+          .execute(),
+      ]);
+
+    expect(identities).toHaveLength(0);
+    expect(patientIdentities).toHaveLength(0);
+    expect(memberships).toHaveLength(0);
+    expect(assignments).toHaveLength(0);
   });
 
   it('stores only hashed browser session values with bounded expiry', async () => {

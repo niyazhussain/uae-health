@@ -9,9 +9,9 @@ doctor—without weakening the existing one-practice patient boundary.
 
 ## What Changes
 
-- Add practice-owned practitioner profiles for doctors and other bookable care
+- Add tenant-owned practitioner profiles for doctors and other bookable care
   professionals, independently of whether the practitioner has a workforce
-  login.
+  login; explicit practice and facility assignments are managed separately.
 - Add a controlled specialty and appointment-service catalogue, plus explicit
   practitioner, practice, facility, and service assignments.
 - Add practice scheduling administration for recurring availability, bounded

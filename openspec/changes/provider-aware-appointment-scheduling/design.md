@@ -46,7 +46,7 @@ appointment system of record and the modular NestJS API remains the authority.
 
 ## Decisions
 
-### 1. Practice-owned practitioner profiles are separate from authentication
+### 1. Tenant-owned practitioner profiles are separate from authentication
 
 `practitioners` SHALL be tenant-owned professional display records. A record MAY
 have an optional immutable link to one global `application_user`, but it SHALL
@@ -56,6 +56,14 @@ practices and facilities inside the tenant. Patient responses expose only the
 approved display name, professional title, specialty, and opaque identifiers;
 login identity, contact details, membership, licence identifiers, and other
 practice relationships remain private.
+
+The application-user link is nullable when the practitioner is created and may
+be set once through an explicit authorized workflow. Once set, neither the link
+nor the practitioner tenant may be cleared or retargeted. The same global user
+may link to at most one practitioner profile inside a tenant and may have a
+separate practitioner profile in another tenant. The link is scheduling
+metadata only and creates no identity, membership, role, permission, or
+provider account.
 
 This is preferred over treating the PHYSICIAN workforce role as the doctor
 directory because authorization roles describe what a signed-in person may do,

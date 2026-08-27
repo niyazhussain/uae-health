@@ -14,6 +14,7 @@ export type PatientPortalAppointmentRelationshipStatus = 'pending';
 export type PatientPortalBookablePracticeStatus = 'active' | 'unavailable';
 export type PatientPortalAppointmentSlotStatus = 'available' | 'withdrawn';
 export type PatientPortalAppointmentStatus = 'requested' | 'cancelled';
+export type PractitionerStatus = 'active' | 'inactive';
 export type PatientPortalAppointmentCommandOperation =
   | 'relationship_create'
   | 'appointment_create'
@@ -74,6 +75,22 @@ export interface ApplicationUserTable {
   display_name: string;
   primary_email: string | null;
   status: Generated<UserStatus>;
+  is_synthetic: Generated<boolean>;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+}
+
+/**
+ * A tenant-owned scheduling profile. Its optional application-user binding is
+ * explicit and grants no authentication or authorization by itself.
+ */
+export interface PractitionerTable {
+  id: Generated<string>;
+  tenant_id: string;
+  application_user_id: string | null;
+  display_name: string;
+  professional_title: string;
+  status: Generated<PractitionerStatus>;
   is_synthetic: Generated<boolean>;
   created_at: Generated<Date>;
   updated_at: Generated<Date>;
@@ -416,6 +433,7 @@ export interface DatabaseSchema {
   organizations: OrganizationTable;
   facilities: FacilityTable;
   application_users: ApplicationUserTable;
+  practitioners: PractitionerTable;
   identity_connections: IdentityConnectionTable;
   user_identities: UserIdentityTable;
   organization_memberships: OrganizationMembershipTable;
