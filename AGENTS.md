@@ -16,11 +16,12 @@ When discussion introduces work that is not already tracked, add a new task with
 A task is ready for review only when its implementation and relevant documentation are finished and the applicable checks pass. Then:
 
 1. Review the diff for secrets, credentials, real patient data, generated dependencies, build output, and unrelated user changes.
-2. Show the user a concise summary of the changes, checks, and current diff, then explicitly ask for approval to commit and push.
-3. Stop and wait. Do not commit or push until the user gives explicit approval after that review. Approval from an earlier task does not carry forward.
-4. If the user approves only the commit, commit using `task <task-id>: <imperative summary>` and ask separately before pushing. If the user approves both, commit and push to the current non-production branch.
-5. Mark the task checkbox complete only as part of the user-approved task commit.
+2. Show the user a concise summary of the changes, checks, and current diff, then ask the user to review the code. Stop and wait for that review.
+3. After the user approves the code review, set up the local UI and API with the safe synthetic-data configuration needed for the user to test the task. Give concise testing steps and wait for the user's testing result.
+4. Do not commit or push until the user confirms testing has passed and explicitly approves the commit and push. Approval from an earlier task does not carry forward.
+5. If the user approves only the commit, commit using `task <task-id>: <imperative summary>` on `main` and ask separately before pushing. If the user approves both, commit and push to `main`.
+6. Mark the task checkbox complete only as part of the user-approved task commit.
 
 Do not combine unrelated completed tasks in a commit after the initial repository baseline. Do not mark, commit, or push an incomplete or failing task. Never commit or push merely because checks passed or the implementation appears complete; explicit user approval is always required. Never force-push. Never commit `.env` files, credentials, real patient data, `node_modules`, build output, coverage output, or local database volumes.
 
-`develop` is the integration branch and deploys synthetic data to staging. `main` is the protected production-release branch and deploys to AWS UAE. Work on `develop` or a feature branch; do not push ordinary development directly to `main`. A production release requires its documented review and environment approval.
+`main` is the only working and delivery branch. Do not create or use `develop` or feature branches. After the required code review, local testing, and explicit approval, commit and push work directly to `main`. A production release or infrastructure apply still requires its documented review and environment approval; being on `main` does not by itself authorize deployment.
