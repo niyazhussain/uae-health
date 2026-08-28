@@ -21,6 +21,7 @@ import * as createPatientPortalIdentity from './migrations/2026-08-26T020000_cre
 import * as createPatientRegistrationAndInvitations from './migrations/2026-08-27T000000_create_patient_registration_and_invitations.js';
 import * as createPatientPortalAppointments from './migrations/2026-08-27T010000_create_patient_portal_appointments.js';
 import * as createPractitionerProfiles from './migrations/2026-08-27T020000_create_practitioner_profiles.js';
+import * as createProviderSchedulingCatalogue from './migrations/2026-08-27T030000_create_provider_scheduling_catalogue.js';
 import { PatientPortalProfileLinkService } from '../patient-portal-auth/patient-portal-profile-link.service.js';
 import { PatientPortalRegistrationService } from '../patient-portal-auth/patient-portal-registration.service.js';
 import { PatientPortalSessionService } from '../patient-portal-auth/patient-portal-session.service.js';
@@ -72,10 +73,88 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
     await createPatientRegistrationAndInvitations.up(database);
     await createPatientPortalAppointments.up(database);
     await createPractitionerProfiles.up(database);
+    await createProviderSchedulingCatalogue.up(database);
   });
 
   afterAll(async () => {
     if (database) {
+      await createProviderSchedulingCatalogue.down(database);
+
+      const rolledBackCatalogue = await sql<{
+        appointment_services: string | null;
+        practitioner_facility_assignments: string | null;
+        practitioner_service_assignments: string | null;
+        specialties: string | null;
+      }>`
+        select
+          to_regclass('specialties')::text as specialties,
+          to_regclass('practitioner_facility_assignments')::text
+            as practitioner_facility_assignments,
+          to_regclass('appointment_services')::text as appointment_services,
+          to_regclass('practitioner_service_assignments')::text
+            as practitioner_service_assignments
+      `.execute(database);
+      expect(rolledBackCatalogue.rows[0]).toEqual({
+        specialties: null,
+        practitioner_facility_assignments: null,
+        appointment_services: null,
+        practitioner_service_assignments: null,
+      });
+
+      const rolledBackFunctions = await sql<{
+        appointment_service: string | null;
+        facility_assignment: string | null;
+        service_assignment: string | null;
+        specialty: string | null;
+      }>`
+        select
+          to_regprocedure('prevent_specialty_retargeting()')::text
+            as specialty,
+          to_regprocedure(
+            'prevent_practitioner_facility_assignment_retargeting()'
+          )::text as facility_assignment,
+          to_regprocedure('prevent_appointment_service_retargeting()')::text
+            as appointment_service,
+          to_regprocedure(
+            'prevent_practitioner_service_assignment_retargeting()'
+          )::text as service_assignment
+      `.execute(database);
+      expect(rolledBackFunctions.rows[0]).toEqual({
+        specialty: null,
+        facility_assignment: null,
+        appointment_service: null,
+        service_assignment: null,
+      });
+
+      const rolledBackConstraints = await sql<{ count: number }>`
+        select count(*)::integer as count
+        from pg_constraint
+        where connamespace = current_schema()::regnamespace
+          and conname in (
+            'organizations_tenant_id_id_kind_unique',
+            'facilities_tenant_organization_id_unique',
+            'facilities_name_nonblank_check',
+            'facilities_timezone_nonblank_check'
+          )
+      `.execute(database);
+      expect(rolledBackConstraints.rows[0]?.count).toBe(0);
+
+      const preservedPrerequisites = await sql<{
+        facilities: string | null;
+        practitioners: string | null;
+        roles: string | null;
+      }>`
+        select
+          to_regclass('facilities')::text as facilities,
+          to_regclass('practitioners')::text as practitioners,
+          to_regclass('roles')::text as roles
+      `.execute(database);
+      expect(preservedPrerequisites.rows[0]).toEqual({
+        facilities: 'facilities',
+        practitioners: 'practitioners',
+        roles: 'roles',
+      });
+
       await createPractitionerProfiles.down(database);
       await createPatientPortalAppointments.down(database);
       await createPatientRegistrationAndInvitations.down(database);
@@ -350,6 +429,771 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
     expect(patientIdentities).toHaveLength(0);
     expect(memberships).toHaveLength(0);
     expect(assignments).toHaveLength(0);
+  });
+
+  it('keeps practitioner affiliation and service eligibility in one exact practice and facility scope', async () => {
+    const firstTenant = await database
+      .insertInto('tenants')
+      .values({
+        code: 'SCHEDULING-A',
+        name: 'Synthetic Scheduling Tenant A',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const secondTenant = await database
+      .insertInto('tenants')
+      .values({
+        code: 'SCHEDULING-B',
+        name: 'Synthetic Scheduling Tenant B',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+
+    const firstPractice = await database
+      .insertInto('organizations')
+      .values({
+        tenant_id: firstTenant.id,
+        parent_organization_id: null,
+        kind: 'practice',
+        code: 'SCHED-PRACTICE-A',
+        name: 'Synthetic Scheduling Practice A',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const secondPractice = await database
+      .insertInto('organizations')
+      .values({
+        tenant_id: firstTenant.id,
+        parent_organization_id: null,
+        kind: 'practice',
+        code: 'SCHED-PRACTICE-B',
+        name: 'Synthetic Scheduling Practice B',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const firstTenantGroup = await database
+      .insertInto('organizations')
+      .values({
+        tenant_id: firstTenant.id,
+        parent_organization_id: null,
+        kind: 'group',
+        code: 'SCHED-GROUP-A',
+        name: 'Synthetic Scheduling Group A',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const foreignPractice = await database
+      .insertInto('organizations')
+      .values({
+        tenant_id: secondTenant.id,
+        parent_organization_id: null,
+        kind: 'practice',
+        code: 'SCHED-PRACTICE-C',
+        name: 'Synthetic Scheduling Practice C',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+
+    const firstFacility = await database
+      .insertInto('facilities')
+      .values({
+        tenant_id: firstTenant.id,
+        organization_id: firstPractice.id,
+        code: 'SCHED-FACILITY-A',
+        name: 'Synthetic Scheduling Facility A',
+        timezone: 'Asia/Dubai',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const alternateFirstPracticeFacility = await database
+      .insertInto('facilities')
+      .values({
+        tenant_id: firstTenant.id,
+        organization_id: firstPractice.id,
+        code: 'SCHED-FACILITY-A2',
+        name: 'Synthetic Scheduling Facility A2',
+        timezone: 'Asia/Dubai',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const secondFacility = await database
+      .insertInto('facilities')
+      .values({
+        tenant_id: firstTenant.id,
+        organization_id: secondPractice.id,
+        code: 'SCHED-FACILITY-B',
+        name: 'Synthetic Scheduling Facility B',
+        timezone: 'Asia/Dubai',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const groupFacility = await database
+      .insertInto('facilities')
+      .values({
+        tenant_id: firstTenant.id,
+        organization_id: firstTenantGroup.id,
+        code: 'SCHED-FACILITY-GROUP',
+        name: 'Synthetic Scheduling Group Facility',
+        timezone: 'Asia/Dubai',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const foreignFacility = await database
+      .insertInto('facilities')
+      .values({
+        tenant_id: secondTenant.id,
+        organization_id: foreignPractice.id,
+        code: 'SCHED-FACILITY-C',
+        name: 'Synthetic Scheduling Facility C',
+        timezone: 'Asia/Dubai',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+
+    const practitionerUser = await database
+      .insertInto('application_users')
+      .values({
+        display_name: 'Synthetic Scheduling Physician',
+        primary_email: 'scheduling-physician@example.invalid',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const practitioner = await database
+      .insertInto('practitioners')
+      .values({
+        tenant_id: firstTenant.id,
+        application_user_id: practitionerUser.id,
+        display_name: 'Dr Synthetic Scheduling',
+        professional_title: 'Consultant physician',
+        status: 'active',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const foreignPractitioner = await database
+      .insertInto('practitioners')
+      .values({
+        tenant_id: secondTenant.id,
+        application_user_id: null,
+        display_name: 'Dr Synthetic Foreign Scope',
+        professional_title: 'Consultant physician',
+        status: 'active',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+
+    const physicianMembership = await database
+      .insertInto('organization_memberships')
+      .values({
+        tenant_id: firstTenant.id,
+        organization_id: firstPractice.id,
+        application_user_id: practitionerUser.id,
+        status: 'active',
+        provisioning_method: 'admin_invite',
+        external_id: null,
+        valid_until: null,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const physicianRole = await database
+      .selectFrom('roles')
+      .select('id')
+      .where('tenant_id', 'is', null)
+      .where('code', '=', 'PHYSICIAN')
+      .executeTakeFirstOrThrow();
+    await database
+      .insertInto('role_assignments')
+      .values({
+        tenant_id: firstTenant.id,
+        membership_id: physicianMembership.id,
+        role_id: physicianRole.id,
+        scope_organization_id: firstPractice.id,
+        facility_id: null,
+        include_descendants: false,
+        assignment_source: 'system_bootstrap',
+        assigned_by_user_id: null,
+        source_role_request_id: null,
+        valid_until: null,
+        revoked_at: null,
+        revoked_by_user_id: null,
+        revocation_reason: null,
+      })
+      .execute();
+
+    const facilityAssignmentsFromRole = await database
+      .selectFrom('practitioner_facility_assignments')
+      .select('id')
+      .where('practitioner_id', '=', practitioner.id)
+      .execute();
+    const serviceEligibilityFromRole = await database
+      .selectFrom('practitioner_service_assignments')
+      .select('id')
+      .where('practitioner_id', '=', practitioner.id)
+      .execute();
+    expect(facilityAssignmentsFromRole).toHaveLength(0);
+    expect(serviceEligibilityFromRole).toHaveLength(0);
+
+    const firstFacilityAssignment = await database
+      .insertInto('practitioner_facility_assignments')
+      .values({
+        tenant_id: firstTenant.id,
+        organization_id: firstPractice.id,
+        facility_id: firstFacility.id,
+        practitioner_id: practitioner.id,
+        status: 'active',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const alternateFirstPracticeFacilityAssignment = await database
+      .insertInto('practitioner_facility_assignments')
+      .values({
+        tenant_id: firstTenant.id,
+        organization_id: firstPractice.id,
+        facility_id: alternateFirstPracticeFacility.id,
+        practitioner_id: practitioner.id,
+        status: 'active',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const secondFacilityAssignment = await database
+      .insertInto('practitioner_facility_assignments')
+      .values({
+        tenant_id: firstTenant.id,
+        organization_id: secondPractice.id,
+        facility_id: secondFacility.id,
+        practitioner_id: practitioner.id,
+        status: 'active',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+
+    await expect(
+      database
+        .insertInto('practitioner_facility_assignments')
+        .values({
+          tenant_id: firstTenant.id,
+          organization_id: firstPractice.id,
+          facility_id: firstFacility.id,
+          practitioner_id: practitioner.id,
+          status: 'inactive',
+          is_synthetic: true,
+        })
+        .execute(),
+    ).rejects.toMatchObject({
+      code: '23505',
+      constraint: 'practitioner_facility_assignments_practitioner_unique',
+    });
+
+    await expect(
+      database
+        .insertInto('practitioner_facility_assignments')
+        .values({
+          tenant_id: firstTenant.id,
+          organization_id: firstTenantGroup.id,
+          facility_id: groupFacility.id,
+          practitioner_id: practitioner.id,
+          status: 'active',
+          is_synthetic: true,
+        })
+        .execute(),
+    ).rejects.toMatchObject({
+      code: '23503',
+      constraint: 'practitioner_facility_assignments_practice_fk',
+    });
+
+    await expect(
+      database
+        .insertInto('practitioner_facility_assignments')
+        .values({
+          tenant_id: firstTenant.id,
+          organization_id: firstPractice.id,
+          facility_id: firstFacility.id,
+          practitioner_id: foreignPractitioner.id,
+          status: 'active',
+          is_synthetic: true,
+        })
+        .execute(),
+    ).rejects.toMatchObject({
+      code: '23503',
+      constraint: 'practitioner_facility_assignments_practitioner_scope_fk',
+    });
+
+    await expect(
+      database
+        .insertInto('practitioner_facility_assignments')
+        .values({
+          tenant_id: firstTenant.id,
+          organization_id: firstPractice.id,
+          facility_id: secondFacility.id,
+          practitioner_id: practitioner.id,
+          status: 'active',
+          is_synthetic: true,
+        })
+        .execute(),
+    ).rejects.toMatchObject({
+      code: '23503',
+      constraint: 'practitioner_facility_assignments_facility_scope_fk',
+    });
+
+    await expect(
+      database
+        .updateTable('practitioner_facility_assignments')
+        .set({ facility_id: alternateFirstPracticeFacility.id })
+        .where('id', '=', firstFacilityAssignment.id)
+        .execute(),
+    ).rejects.toThrow(
+      'Practitioner facility assignment identity and scope are immutable.',
+    );
+
+    const firstSpecialty = await database
+      .insertInto('specialties')
+      .values({
+        tenant_id: firstTenant.id,
+        organization_id: firstPractice.id,
+        code: 'GENERAL-MEDICINE',
+        name: 'General medicine',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const secondSpecialty = await database
+      .insertInto('specialties')
+      .values({
+        tenant_id: firstTenant.id,
+        organization_id: secondPractice.id,
+        code: 'GENERAL-MEDICINE',
+        name: 'General medicine',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const foreignSpecialty = await database
+      .insertInto('specialties')
+      .values({
+        tenant_id: secondTenant.id,
+        organization_id: foreignPractice.id,
+        code: 'GENERAL-MEDICINE',
+        name: 'General medicine',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+
+    await expect(
+      database
+        .insertInto('specialties')
+        .values({
+          tenant_id: firstTenant.id,
+          organization_id: firstTenantGroup.id,
+          code: 'GROUP-SPECIALTY',
+          name: 'Invalid group specialty',
+          is_synthetic: true,
+        })
+        .execute(),
+    ).rejects.toMatchObject({
+      code: '23503',
+      constraint: 'specialties_practice_fk',
+    });
+
+    const firstService = await database
+      .insertInto('appointment_services')
+      .values({
+        tenant_id: firstTenant.id,
+        organization_id: firstPractice.id,
+        facility_id: firstFacility.id,
+        specialty_id: firstSpecialty.id,
+        code: 'GENERAL-CONSULT',
+        patient_facing_name: 'General consultation',
+        duration_minutes: 30,
+        allows_any_practitioner: true,
+        status: 'inactive',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const secondService = await database
+      .insertInto('appointment_services')
+      .values({
+        tenant_id: firstTenant.id,
+        organization_id: secondPractice.id,
+        facility_id: secondFacility.id,
+        specialty_id: secondSpecialty.id,
+        code: 'GENERAL-CONSULT',
+        patient_facing_name: 'General consultation',
+        duration_minutes: 30,
+        allows_any_practitioner: false,
+        status: 'inactive',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+
+    await expect(
+      database
+        .insertInto('appointment_services')
+        .values({
+          tenant_id: firstTenant.id,
+          organization_id: firstTenantGroup.id,
+          facility_id: groupFacility.id,
+          specialty_id: secondSpecialty.id,
+          code: 'GROUP-CONSULT',
+          patient_facing_name: 'Invalid group consultation',
+          duration_minutes: 30,
+          status: 'active',
+          is_synthetic: true,
+        })
+        .execute(),
+    ).rejects.toMatchObject({
+      code: '23503',
+      constraint: 'appointment_services_practice_fk',
+    });
+
+    await expect(
+      database
+        .insertInto('appointment_services')
+        .values({
+          tenant_id: firstTenant.id,
+          organization_id: firstPractice.id,
+          facility_id: secondFacility.id,
+          specialty_id: firstSpecialty.id,
+          code: 'WRONG-FACILITY',
+          patient_facing_name: 'Invalid facility consultation',
+          duration_minutes: 30,
+          status: 'active',
+          is_synthetic: true,
+        })
+        .execute(),
+    ).rejects.toMatchObject({
+      code: '23503',
+      constraint: 'appointment_services_facility_scope_fk',
+    });
+
+    await expect(
+      database
+        .insertInto('appointment_services')
+        .values({
+          tenant_id: firstTenant.id,
+          organization_id: firstPractice.id,
+          facility_id: foreignFacility.id,
+          specialty_id: firstSpecialty.id,
+          code: 'FOREIGN-FACILITY',
+          patient_facing_name: 'Invalid cross-tenant consultation',
+          duration_minutes: 30,
+          status: 'active',
+          is_synthetic: true,
+        })
+        .execute(),
+    ).rejects.toMatchObject({
+      code: '23503',
+      constraint: 'appointment_services_facility_scope_fk',
+    });
+
+    await expect(
+      database
+        .insertInto('appointment_services')
+        .values({
+          tenant_id: firstTenant.id,
+          organization_id: firstPractice.id,
+          facility_id: firstFacility.id,
+          specialty_id: foreignSpecialty.id,
+          code: 'WRONG-SPECIALTY',
+          patient_facing_name: 'Invalid specialty consultation',
+          duration_minutes: 30,
+          status: 'active',
+          is_synthetic: true,
+        })
+        .execute(),
+    ).rejects.toMatchObject({
+      code: '23503',
+      constraint: 'appointment_services_specialty_scope_fk',
+    });
+
+    await expect(
+      database
+        .insertInto('appointment_services')
+        .values({
+          tenant_id: firstTenant.id,
+          organization_id: firstPractice.id,
+          facility_id: firstFacility.id,
+          specialty_id: secondSpecialty.id,
+          code: 'SIBLING-SPECIALTY',
+          patient_facing_name: 'Invalid sibling specialty consultation',
+          duration_minutes: 30,
+          status: 'inactive',
+          is_synthetic: true,
+        })
+        .execute(),
+    ).rejects.toMatchObject({
+      code: '23503',
+      constraint: 'appointment_services_specialty_scope_fk',
+    });
+
+    const eligibilityAfterRoleAndFacilityAssignment = await database
+      .selectFrom('appointment_services as service')
+      .innerJoin(
+        'practitioner_facility_assignments as facilityAssignment',
+        (join) =>
+          join
+            .onRef('facilityAssignment.tenant_id', '=', 'service.tenant_id')
+            .onRef(
+              'facilityAssignment.organization_id',
+              '=',
+              'service.organization_id',
+            )
+            .onRef(
+              'facilityAssignment.facility_id',
+              '=',
+              'service.facility_id',
+            ),
+      )
+      .innerJoin('practitioners as practitioner', (join) =>
+        join
+          .onRef('practitioner.id', '=', 'facilityAssignment.practitioner_id')
+          .onRef('practitioner.tenant_id', '=', 'service.tenant_id'),
+      )
+      .leftJoin('practitioner_service_assignments as eligibility', (join) =>
+        join
+          .onRef('eligibility.appointment_service_id', '=', 'service.id')
+          .onRef(
+            'eligibility.practitioner_facility_assignment_id',
+            '=',
+            'facilityAssignment.id',
+          ),
+      )
+      .select('eligibility.id')
+      .where('service.id', '=', firstService.id)
+      .where('practitioner.id', '=', practitioner.id)
+      .where('eligibility.id', 'is not', null)
+      .execute();
+    expect(eligibilityAfterRoleAndFacilityAssignment).toHaveLength(0);
+
+    const firstAssignment = await database
+      .insertInto('practitioner_service_assignments')
+      .values({
+        tenant_id: firstTenant.id,
+        organization_id: firstPractice.id,
+        facility_id: firstFacility.id,
+        practitioner_facility_assignment_id: firstFacilityAssignment.id,
+        practitioner_id: practitioner.id,
+        appointment_service_id: firstService.id,
+        status: 'active',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    await database
+      .insertInto('practitioner_service_assignments')
+      .values({
+        tenant_id: firstTenant.id,
+        organization_id: secondPractice.id,
+        facility_id: secondFacility.id,
+        practitioner_facility_assignment_id: secondFacilityAssignment.id,
+        practitioner_id: practitioner.id,
+        appointment_service_id: secondService.id,
+        status: 'active',
+        is_synthetic: true,
+      })
+      .execute();
+
+    await expect(
+      database
+        .insertInto('practitioner_service_assignments')
+        .values({
+          tenant_id: firstTenant.id,
+          organization_id: firstPractice.id,
+          facility_id: firstFacility.id,
+          practitioner_facility_assignment_id:
+            alternateFirstPracticeFacilityAssignment.id,
+          practitioner_id: practitioner.id,
+          appointment_service_id: firstService.id,
+          status: 'active',
+          is_synthetic: true,
+        })
+        .execute(),
+    ).rejects.toMatchObject({
+      code: '23503',
+      constraint:
+        'practitioner_service_assignments_facility_assignment_scope_fk',
+    });
+
+    await expect(
+      database
+        .insertInto('practitioner_service_assignments')
+        .values({
+          tenant_id: firstTenant.id,
+          organization_id: secondPractice.id,
+          facility_id: secondFacility.id,
+          practitioner_facility_assignment_id: secondFacilityAssignment.id,
+          practitioner_id: practitioner.id,
+          appointment_service_id: firstService.id,
+          status: 'active',
+          is_synthetic: true,
+        })
+        .execute(),
+    ).rejects.toMatchObject({
+      code: '23503',
+      constraint: 'practitioner_service_assignments_service_scope_fk',
+    });
+
+    await expect(
+      database
+        .insertInto('practitioner_service_assignments')
+        .values({
+          tenant_id: firstTenant.id,
+          organization_id: firstPractice.id,
+          facility_id: alternateFirstPracticeFacility.id,
+          practitioner_facility_assignment_id:
+            alternateFirstPracticeFacilityAssignment.id,
+          practitioner_id: practitioner.id,
+          appointment_service_id: firstService.id,
+          status: 'active',
+          is_synthetic: true,
+        })
+        .execute(),
+    ).rejects.toMatchObject({
+      code: '23503',
+      constraint: 'practitioner_service_assignments_service_scope_fk',
+    });
+
+    await expect(
+      database
+        .insertInto('practitioner_service_assignments')
+        .values({
+          tenant_id: firstTenant.id,
+          organization_id: firstPractice.id,
+          facility_id: firstFacility.id,
+          practitioner_facility_assignment_id: firstFacilityAssignment.id,
+          practitioner_id: practitioner.id,
+          appointment_service_id: firstService.id,
+          status: 'inactive',
+          is_synthetic: true,
+        })
+        .execute(),
+    ).rejects.toMatchObject({
+      code: '23505',
+      constraint: 'practitioner_service_assignments_eligibility_unique',
+    });
+
+    await database
+      .updateTable('appointment_services')
+      .set({ status: 'active' })
+      .where('id', 'in', [firstService.id, secondService.id])
+      .execute();
+
+    await expect(
+      database
+        .updateTable('specialties')
+        .set({ organization_id: secondPractice.id })
+        .where('id', '=', firstSpecialty.id)
+        .execute(),
+    ).rejects.toThrow('Specialty identity is immutable.');
+    await expect(
+      database
+        .updateTable('appointment_services')
+        .set({ facility_id: secondFacility.id })
+        .where('id', '=', firstService.id)
+        .execute(),
+    ).rejects.toThrow('Appointment service identity and scope are immutable.');
+    await expect(
+      database
+        .updateTable('practitioner_service_assignments')
+        .set({ appointment_service_id: secondService.id })
+        .where('id', '=', firstAssignment.id)
+        .execute(),
+    ).rejects.toThrow(
+      'Practitioner service assignment identity and scope are immutable.',
+    );
+
+    const patientSafeProjection = await database
+      .selectFrom('practitioner_service_assignments as assignment')
+      .innerJoin(
+        'practitioner_facility_assignments as facilityAssignment',
+        'facilityAssignment.id',
+        'assignment.practitioner_facility_assignment_id',
+      )
+      .innerJoin(
+        'practitioners as practitioner',
+        'practitioner.id',
+        'assignment.practitioner_id',
+      )
+      .innerJoin(
+        'appointment_services as service',
+        'service.id',
+        'assignment.appointment_service_id',
+      )
+      .innerJoin(
+        'specialties as specialty',
+        'specialty.id',
+        'service.specialty_id',
+      )
+      .innerJoin(
+        'facilities as facility',
+        'facility.id',
+        'assignment.facility_id',
+      )
+      .select([
+        'assignment.id as practitionerAssignmentId',
+        'practitioner.id as practitionerId',
+        'practitioner.display_name as practitionerName',
+        'practitioner.professional_title as professionalTitle',
+        'specialty.id as specialtyId',
+        'specialty.name as specialtyName',
+        'service.id as serviceId',
+        'service.patient_facing_name as serviceName',
+        'service.duration_minutes as durationMinutes',
+        'service.allows_any_practitioner as allowsAnyPractitioner',
+        'facility.id as facilityId',
+        'facility.name as facilityName',
+        'facility.timezone as facilityTimezone',
+      ])
+      .where('assignment.id', '=', firstAssignment.id)
+      .where('assignment.status', '=', 'active')
+      .where('assignment.is_synthetic', '=', true)
+      .where('facilityAssignment.status', '=', 'active')
+      .where('facilityAssignment.is_synthetic', '=', true)
+      .where('service.status', '=', 'active')
+      .where('service.is_synthetic', '=', true)
+      .where('practitioner.status', '=', 'active')
+      .where('practitioner.is_synthetic', '=', true)
+      .where('specialty.status', '=', 'active')
+      .where('specialty.is_synthetic', '=', true)
+      .where('facility.is_synthetic', '=', true)
+      .executeTakeFirstOrThrow();
+
+    expect(patientSafeProjection).toEqual({
+      practitionerAssignmentId: firstAssignment.id,
+      practitionerId: practitioner.id,
+      practitionerName: 'Dr Synthetic Scheduling',
+      professionalTitle: 'Consultant physician',
+      specialtyId: firstSpecialty.id,
+      specialtyName: 'General medicine',
+      serviceId: firstService.id,
+      serviceName: 'General consultation',
+      durationMinutes: 30,
+      allowsAnyPractitioner: true,
+      facilityId: firstFacility.id,
+      facilityName: 'Synthetic Scheduling Facility A',
+      facilityTimezone: 'Asia/Dubai',
+    });
+    expect(JSON.stringify(patientSafeProjection)).not.toContain(
+      'scheduling-physician@example.invalid',
+    );
   });
 
   it('stores only hashed browser session values with bounded expiry', async () => {

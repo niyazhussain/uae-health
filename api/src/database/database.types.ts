@@ -15,6 +15,10 @@ export type PatientPortalBookablePracticeStatus = 'active' | 'unavailable';
 export type PatientPortalAppointmentSlotStatus = 'available' | 'withdrawn';
 export type PatientPortalAppointmentStatus = 'requested' | 'cancelled';
 export type PractitionerStatus = 'active' | 'inactive';
+export type SpecialtyStatus = 'active' | 'retired';
+export type AppointmentServiceStatus = 'active' | 'inactive';
+export type PractitionerFacilityAssignmentStatus = 'active' | 'inactive';
+export type PractitionerServiceAssignmentStatus = 'active' | 'inactive';
 export type PatientPortalAppointmentCommandOperation =
   | 'relationship_create'
   | 'appointment_create'
@@ -91,6 +95,65 @@ export interface PractitionerTable {
   display_name: string;
   professional_title: string;
   status: Generated<PractitionerStatus>;
+  is_synthetic: Generated<boolean>;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+}
+
+export interface SpecialtyTable {
+  id: Generated<string>;
+  tenant_id: string;
+  organization_id: string;
+  organization_kind: Generated<'practice'>;
+  code: string;
+  name: string;
+  status: Generated<SpecialtyStatus>;
+  is_synthetic: Generated<boolean>;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+}
+
+export interface AppointmentServiceTable {
+  id: Generated<string>;
+  tenant_id: string;
+  organization_id: string;
+  organization_kind: Generated<'practice'>;
+  facility_id: string;
+  specialty_id: string;
+  code: string;
+  patient_facing_name: string;
+  duration_minutes: number;
+  allows_any_practitioner: Generated<boolean>;
+  status: Generated<AppointmentServiceStatus>;
+  is_synthetic: Generated<boolean>;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+}
+
+/** An explicit doctor eligibility for one service at one practice facility. */
+export interface PractitionerServiceAssignmentTable {
+  id: Generated<string>;
+  tenant_id: string;
+  organization_id: string;
+  facility_id: string;
+  practitioner_facility_assignment_id: string;
+  practitioner_id: string;
+  appointment_service_id: string;
+  status: Generated<PractitionerServiceAssignmentStatus>;
+  is_synthetic: Generated<boolean>;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+}
+
+/** A doctor's explicit affiliation with one practice facility. */
+export interface PractitionerFacilityAssignmentTable {
+  id: Generated<string>;
+  tenant_id: string;
+  organization_id: string;
+  organization_kind: Generated<'practice'>;
+  facility_id: string;
+  practitioner_id: string;
+  status: Generated<PractitionerFacilityAssignmentStatus>;
   is_synthetic: Generated<boolean>;
   created_at: Generated<Date>;
   updated_at: Generated<Date>;
@@ -434,6 +497,10 @@ export interface DatabaseSchema {
   facilities: FacilityTable;
   application_users: ApplicationUserTable;
   practitioners: PractitionerTable;
+  specialties: SpecialtyTable;
+  practitioner_facility_assignments: PractitionerFacilityAssignmentTable;
+  appointment_services: AppointmentServiceTable;
+  practitioner_service_assignments: PractitionerServiceAssignmentTable;
   identity_connections: IdentityConnectionTable;
   user_identities: UserIdentityTable;
   organization_memberships: OrganizationMembershipTable;

@@ -72,20 +72,35 @@ whose schedules are administered before they receive a portal login.
 
 ### 2. Services and specialties are explicit scheduling data
 
-A controlled specialty catalogue provides stable classification. A
-tenant/practice-owned appointment service defines the patient-facing name,
-duration, facility, status, and whether patients may select “any available
-doctor.” An explicit practitioner assignment determines which active
-practitioners may deliver that service at that practice/facility.
+A practice-owned controlled specialty catalogue provides stable classification
+without letting one practice change a sibling practice's scheduling
+terminology. A practitioner-facility assignment first records that a
+tenant-owned practitioner works at one exact practice facility, independently
+of services or workforce roles. A separate service-eligibility assignment then
+records which appointment services that practitioner may deliver there.
+
+A practice-owned appointment service defines the patient-facing name, duration,
+one facility, status, and whether patients may select “any available doctor.”
+The POC represents an equivalent offering at another facility as a separate
+service record.
 
 The POC stores synthetic display metadata only. It does not claim verified
 specialist credentials or encode clinical eligibility rules.
 
+Task 2.2 enforces immutable ownership and reference integrity in PostgreSQL but
+does not make status columns authorize publication by themselves. Task 3.1's
+serializable catalogue mutations SHALL activate or publish a service only when
+the specialty, practitioner, facility assignment, and service eligibility are
+all active, and SHALL revalidate that chain for every mutation and discovery
+query. Deactivation preserves durable assignment rows and stops new
+publication rather than deleting scheduling evidence.
+
 ### 3. Weekly templates and exceptions materialize bounded UTC slots
 
-Authorized schedulers manage weekly availability templates in the practice's
-IANA timezone plus dated exceptions for leave or closures. A deterministic,
-idempotent materializer creates UTC slots for a bounded eight-week horizon.
+Authorized schedulers manage weekly availability templates in the assigned
+facility's IANA timezone plus dated exceptions for leave or closures. A
+deterministic, idempotent materializer creates UTC slots for a bounded
+eight-week horizon.
 Templates are not queried dynamically during booking. Each slot pins its
 practitioner assignment, service, facility, start, end, status, and generation
 source.
