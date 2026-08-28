@@ -100,10 +100,56 @@ publication rather than deleting scheduling evidence.
 Authorized schedulers manage weekly availability templates in the assigned
 facility's IANA timezone plus dated exceptions for leave or closures. A
 deterministic, idempotent materializer creates UTC slots for a bounded
-eight-week horizon.
-Templates are not queried dynamically during booking. Each slot pins its
-practitioner assignment, service, facility, start, end, status, and generation
-source.
+eight-week horizon. Templates use ISO weekdays and minute-resolution,
+same-local-day windows; an overnight schedule is represented as two templates.
+The facility timezone is copied onto each immutable template as source
+evidence. An edit deactivates and replaces a template rather than retargeting
+the generation source.
+
+The materializer divides a window into contiguous slots using the appointment
+service's current `duration_minutes` and discards a trailing remainder shorter
+than one service duration. It rejects ambiguous or nonexistent local-time
+boundaries at an offset transition instead of silently choosing or shifting an
+instant. A later service-duration change withdraws obsolete unbooked slots and
+creates a new deterministic generation, while referenced slots retain their
+original times.
+
+Dated exceptions use immutable `[start, end)` boundaries and retain both the
+validated local timestamp evidence and resolved UTC instants with the source
+timezone. `facility_closed` applies only to the exact practice facility and all
+its practitioners; `practitioner_unavailable` applies only to one exact
+practitioner-facility affiliation and all services delivered there. Full-day
+exceptions use local midnight to the following local midnight. Overlapping
+active exceptions may coexist because their effective unavailability is the
+union of those intervals; cancellation changes lifecycle state without deleting
+evidence. No free-text or clinical reason is stored.
+
+Templates are not queried dynamically during booking. Each materialized slot
+pins its practitioner facility assignment, service eligibility, service,
+facility, source template, source local date and timezone, UTC start/end,
+status, and deterministic SHA-256 generation key. Exact retries reuse the same
+key. PostgreSQL exclusion constraints reject overlapping available slots for
+the same tenant-owned practitioner across services, facilities, and practices,
+while allowing different practitioners to work simultaneously. Adjacent
+`[start, end)` intervals do not overlap.
+
+Provider fields are added to existing generic appointment slots as one nullable
+all-or-none bundle so task 2.3 remains additive. Task 2.4 backfills the existing
+synthetic slots and appointments, validates the ownership chain, and only then
+makes provider ownership mandatory. Appointments receive a matching nullable
+provider-scope bundle and a composite reference to their chosen slot during the
+same expand phase, so an appointment can never claim a provider different from
+its slot. Task 2.4 backfills each referenced slot and appointment atomically and
+updates the interim booking writer to copy the server-resolved slot scope before
+provider-aware slots become bookable; task 4.2 then exposes the full
+provider-aware booking contract. The legacy practice/start uniqueness is replaced with a partial
+generic-slot index so multiple provider-aware slots can start at the same
+practice and time without breaking the interim generic seed.
+
+An `active` template is not publication authority by itself. Task 3.2 SHALL
+validate IANA timezone inputs, the complete active catalogue chain, exceptions,
+the eight-week bound, and materialized slots in one serializable transaction.
+If overlap or materialization fails, template activation rolls back.
 
 Materialized slots make availability queries bounded and allow PostgreSQL
 constraints and row locks to prevent double-booking. Storing only UTC timestamps
@@ -200,8 +246,8 @@ such writes, recovery is forward-only to avoid discarding scheduling evidence.
   regenerate with deterministic uniqueness keys.
 - **Timezone conversion can produce ambiguous local times** → Persist IANA
   timezone plus local template values, materialize UTC instants server-side,
-  and test offset transitions even though UAE practices normally do not observe
-  daylight saving.
+  reject ambiguous or nonexistent boundaries, and test offset transitions even
+  though UAE practices normally do not observe daylight saving.
 - **“Any available” may surprise a patient** → Show the concrete practitioner
   on every returned slot and require confirmation before the booking command.
 - **Scheduler access can expose patient identity** → Return only the minimum

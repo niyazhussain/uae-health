@@ -19,6 +19,10 @@ export type SpecialtyStatus = 'active' | 'retired';
 export type AppointmentServiceStatus = 'active' | 'inactive';
 export type PractitionerFacilityAssignmentStatus = 'active' | 'inactive';
 export type PractitionerServiceAssignmentStatus = 'active' | 'inactive';
+export type PractitionerAvailabilityTemplateStatus = 'active' | 'inactive';
+export type ProviderAvailabilityExceptionKind =
+  'facility_closed' | 'practitioner_unavailable';
+export type ProviderAvailabilityExceptionStatus = 'active' | 'cancelled';
 export type PatientPortalAppointmentCommandOperation =
   | 'relationship_create'
   | 'appointment_create'
@@ -154,6 +158,50 @@ export interface PractitionerFacilityAssignmentTable {
   facility_id: string;
   practitioner_id: string;
   status: Generated<PractitionerFacilityAssignmentStatus>;
+  is_synthetic: Generated<boolean>;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+}
+
+/** A recurring same-local-day availability window for one eligible service. */
+export interface PractitionerAvailabilityTemplateTable {
+  id: Generated<string>;
+  tenant_id: string;
+  organization_id: string;
+  facility_id: string;
+  practitioner_facility_assignment_id: string;
+  practitioner_service_assignment_id: string;
+  practitioner_id: string;
+  appointment_service_id: string;
+  iso_weekday: number;
+  local_start_minute: number;
+  local_end_minute: number;
+  effective_from: string;
+  effective_until: string | null;
+  source_timezone: string;
+  status: Generated<PractitionerAvailabilityTemplateStatus>;
+  is_synthetic: Generated<boolean>;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+}
+
+/** A dated facility closure or practitioner absence with resolved UTC bounds. */
+export interface ProviderAvailabilityExceptionTable {
+  id: Generated<string>;
+  tenant_id: string;
+  organization_id: string;
+  organization_kind: Generated<'practice'>;
+  facility_id: string;
+  practitioner_facility_assignment_id: string | null;
+  practitioner_id: string | null;
+  kind: ProviderAvailabilityExceptionKind;
+  local_starts_at: Date;
+  local_ends_at: Date;
+  starts_at: Date;
+  ends_at: Date;
+  source_timezone: string;
+  is_all_day: Generated<boolean>;
+  status: Generated<ProviderAvailabilityExceptionStatus>;
   is_synthetic: Generated<boolean>;
   created_at: Generated<Date>;
   updated_at: Generated<Date>;
@@ -454,6 +502,15 @@ export interface PatientPortalAppointmentSlotTable {
   organization_id: string;
   starts_at: Date;
   ends_at: Date;
+  facility_id: Generated<string | null>;
+  practitioner_facility_assignment_id: Generated<string | null>;
+  practitioner_service_assignment_id: Generated<string | null>;
+  practitioner_id: Generated<string | null>;
+  appointment_service_id: Generated<string | null>;
+  availability_template_id: Generated<string | null>;
+  generation_key_hash: Generated<string | null>;
+  source_local_date: Generated<string | null>;
+  source_timezone: Generated<string | null>;
   status: Generated<PatientPortalAppointmentSlotStatus>;
   is_synthetic: Generated<boolean>;
   created_at: Generated<Date>;
@@ -468,6 +525,11 @@ export interface PatientPortalAppointmentTable {
   patient_portal_profile_id: string | null;
   patient_portal_appointment_relationship_id: string | null;
   appointment_slot_id: string;
+  facility_id: Generated<string | null>;
+  practitioner_facility_assignment_id: Generated<string | null>;
+  practitioner_service_assignment_id: Generated<string | null>;
+  practitioner_id: Generated<string | null>;
+  appointment_service_id: Generated<string | null>;
   status: Generated<PatientPortalAppointmentStatus>;
   version: Generated<number>;
   cancelled_at: Date | null;
@@ -501,6 +563,8 @@ export interface DatabaseSchema {
   practitioner_facility_assignments: PractitionerFacilityAssignmentTable;
   appointment_services: AppointmentServiceTable;
   practitioner_service_assignments: PractitionerServiceAssignmentTable;
+  practitioner_availability_templates: PractitionerAvailabilityTemplateTable;
+  provider_availability_exceptions: ProviderAvailabilityExceptionTable;
   identity_connections: IdentityConnectionTable;
   user_identities: UserIdentityTable;
   organization_memberships: OrganizationMembershipTable;

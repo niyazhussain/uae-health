@@ -22,6 +22,7 @@ import * as createPatientRegistrationAndInvitations from './migrations/2026-08-2
 import * as createPatientPortalAppointments from './migrations/2026-08-27T010000_create_patient_portal_appointments.js';
 import * as createPractitionerProfiles from './migrations/2026-08-27T020000_create_practitioner_profiles.js';
 import * as createProviderSchedulingCatalogue from './migrations/2026-08-27T030000_create_provider_scheduling_catalogue.js';
+import * as createProviderAvailability from './migrations/2026-08-27T040000_create_provider_availability.js';
 import { PatientPortalProfileLinkService } from '../patient-portal-auth/patient-portal-profile-link.service.js';
 import { PatientPortalRegistrationService } from '../patient-portal-auth/patient-portal-registration.service.js';
 import { PatientPortalSessionService } from '../patient-portal-auth/patient-portal-session.service.js';
@@ -45,6 +46,16 @@ function workforceIdentityProvider(
 
 describeWithDatabase('identity, authorization, and audit migrations', () => {
   const schemaName = `identity_schema_test_${process.pid}_${Date.now()}`;
+  const legacyAvailabilityFixture = {
+    tenantId: 'f1000000-0000-4000-8000-000000000001',
+    organizationId: 'f2000000-0000-4000-8000-000000000001',
+    applicationUserId: 'f3000000-0000-4000-8000-000000000001',
+    patientIdentityId: 'f4000000-0000-4000-8000-000000000001',
+    relationshipId: 'f5000000-0000-4000-8000-000000000001',
+    bookablePracticeId: 'f6000000-0000-4000-8000-000000000001',
+    slotId: 'f7000000-0000-4000-8000-000000000001',
+    appointmentId: 'f8000000-0000-4000-8000-000000000001',
+  } as const;
   let adminDatabase: Kysely<unknown>;
   let database: Kysely<DatabaseSchema>;
 
@@ -74,57 +85,250 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
     await createPatientPortalAppointments.up(database);
     await createPractitionerProfiles.up(database);
     await createProviderSchedulingCatalogue.up(database);
+
+    await database
+      .insertInto('tenants')
+      .values({
+        id: legacyAvailabilityFixture.tenantId,
+        code: 'AVAIL-LEGACY',
+        name: 'Synthetic Legacy Availability Tenant',
+        is_synthetic: true,
+      })
+      .execute();
+    await database
+      .insertInto('organizations')
+      .values({
+        id: legacyAvailabilityFixture.organizationId,
+        tenant_id: legacyAvailabilityFixture.tenantId,
+        parent_organization_id: null,
+        kind: 'practice',
+        code: 'AVAIL-LEGACY-PRACTICE',
+        name: 'Synthetic Legacy Availability Practice',
+        is_synthetic: true,
+      })
+      .execute();
+    await database
+      .insertInto('application_users')
+      .values({
+        id: legacyAvailabilityFixture.applicationUserId,
+        display_name: 'Synthetic Legacy Availability Patient',
+        primary_email: 'legacy-availability-patient@example.invalid',
+        is_synthetic: true,
+      })
+      .execute();
+    await database
+      .insertInto('patient_portal_identities')
+      .values({
+        id: legacyAvailabilityFixture.patientIdentityId,
+        application_user_id: legacyAvailabilityFixture.applicationUserId,
+        issuer: 'https://patient-idp.example.invalid/legacy-availability',
+        subject: 'synthetic-legacy-availability-patient',
+        client_id: 'synthetic-legacy-availability-client',
+        username: 'legacy-availability-patient@example.invalid',
+        status: 'active',
+        last_authenticated_at: null,
+      })
+      .execute();
+    await database
+      .insertInto('patient_portal_appointment_relationships')
+      .values({
+        id: legacyAvailabilityFixture.relationshipId,
+        tenant_id: legacyAvailabilityFixture.tenantId,
+        organization_id: legacyAvailabilityFixture.organizationId,
+        patient_portal_identity_id: legacyAvailabilityFixture.patientIdentityId,
+        status: 'pending',
+      })
+      .execute();
+    await database
+      .insertInto('patient_portal_bookable_practices')
+      .values({
+        id: legacyAvailabilityFixture.bookablePracticeId,
+        tenant_id: legacyAvailabilityFixture.tenantId,
+        organization_id: legacyAvailabilityFixture.organizationId,
+        timezone: 'Asia/Dubai',
+        status: 'active',
+        is_synthetic: true,
+      })
+      .execute();
+    await database
+      .insertInto('patient_portal_appointment_slots')
+      .values({
+        id: legacyAvailabilityFixture.slotId,
+        bookable_practice_id: legacyAvailabilityFixture.bookablePracticeId,
+        tenant_id: legacyAvailabilityFixture.tenantId,
+        organization_id: legacyAvailabilityFixture.organizationId,
+        starts_at: new Date('2035-01-08T09:00:00.000Z'),
+        ends_at: new Date('2035-01-08T09:30:00.000Z'),
+        status: 'available',
+        is_synthetic: true,
+      })
+      .execute();
+    await database
+      .insertInto('patient_portal_appointments')
+      .values({
+        id: legacyAvailabilityFixture.appointmentId,
+        tenant_id: legacyAvailabilityFixture.tenantId,
+        organization_id: legacyAvailabilityFixture.organizationId,
+        patient_portal_identity_id: legacyAvailabilityFixture.patientIdentityId,
+        patient_portal_profile_id: null,
+        patient_portal_appointment_relationship_id:
+          legacyAvailabilityFixture.relationshipId,
+        appointment_slot_id: legacyAvailabilityFixture.slotId,
+        status: 'requested',
+        version: 1,
+        cancelled_at: null,
+      })
+      .execute();
+
+    await createProviderAvailability.up(database);
   });
 
   afterAll(async () => {
     if (database) {
+      await database
+        .deleteFrom('patient_portal_appointments')
+        .where('practitioner_id', 'is not', null)
+        .execute();
+      await database
+        .deleteFrom('patient_portal_appointment_slots')
+        .where('availability_template_id', 'is not', null)
+        .execute();
+      await database.deleteFrom('provider_availability_exceptions').execute();
+      await database
+        .deleteFrom('practitioner_availability_templates')
+        .execute();
+
+      await createProviderAvailability.down(database);
+
+      const rolledBackAvailabilityTables = await sql<{ count: number }>`
+        select count(*)::integer as count
+        from pg_class
+        where relnamespace = current_schema()::regnamespace
+          and relname in (
+            'practitioner_availability_templates',
+            'provider_availability_exceptions'
+          )
+      `.execute(database);
+      expect(rolledBackAvailabilityTables.rows[0]?.count).toBe(0);
+
+      const rolledBackAvailabilityFunctions = await sql<{ count: number }>`
+        select count(*)::integer as count
+        from pg_proc
+        where pronamespace = current_schema()::regnamespace
+          and proname in (
+            'prevent_practitioner_availability_template_retargeting',
+            'prevent_provider_availability_exception_retargeting',
+            'prevent_provider_appointment_slot_retargeting',
+            'prevent_live_appointment_slot_withdrawal',
+            'enforce_appointment_provider_slot_parity'
+          )
+      `.execute(database);
+      expect(rolledBackAvailabilityFunctions.rows[0]?.count).toBe(0);
+
+      const rolledBackAvailabilityTriggers = await sql<{ count: number }>`
+        select count(*)::integer as count
+        from pg_trigger trigger
+        inner join pg_class relation on relation.oid = trigger.tgrelid
+        where relation.relnamespace = current_schema()::regnamespace
+          and not trigger.tgisinternal
+          and trigger.tgname in (
+            'practitioner_availability_templates_identity_no_retarget',
+            'provider_availability_exceptions_identity_no_retarget',
+            'pp_appointment_slots_identity_no_retarget',
+            'pp_appointment_slots_live_no_withdrawal',
+            'pp_appointments_provider_slot_parity'
+          )
+      `.execute(database);
+      expect(rolledBackAvailabilityTriggers.rows[0]?.count).toBe(0);
+
+      const rolledBackAvailabilityColumns = await sql<{
+        count: number;
+      }>`
+        select count(*)::integer as count
+        from information_schema.columns
+        where table_schema = current_schema()
+          and (
+            (table_name = 'patient_portal_appointment_slots'
+              and column_name in (
+                'facility_id',
+                'practitioner_facility_assignment_id',
+                'practitioner_service_assignment_id',
+                'practitioner_id',
+                'appointment_service_id',
+                'availability_template_id',
+                'generation_key_hash',
+                'source_local_date',
+                'source_timezone'
+              ))
+            or
+            (table_name = 'patient_portal_appointments'
+              and column_name in (
+                'facility_id',
+                'practitioner_facility_assignment_id',
+                'practitioner_service_assignment_id',
+                'practitioner_id',
+                'appointment_service_id'
+              ))
+          )
+      `.execute(database);
+      expect(rolledBackAvailabilityColumns.rows[0]?.count).toBe(0);
+
+      const restoredLegacySlotConstraint = await sql<{ count: number }>`
+        select count(*)::integer as count
+        from pg_constraint
+        where connamespace = current_schema()::regnamespace
+          and conrelid = 'patient_portal_appointment_slots'::regclass
+          and conname = 'pp_appointment_slots_practice_start_unique'
+      `.execute(database);
+      expect(restoredLegacySlotConstraint.rows[0]?.count).toBe(1);
+
+      const preservedLegacyAvailability = await database
+        .selectFrom('patient_portal_appointments as appointment')
+        .innerJoin(
+          'patient_portal_appointment_slots as slot',
+          'slot.id',
+          'appointment.appointment_slot_id',
+        )
+        .select([
+          'appointment.id as appointment_id',
+          'slot.id as slot_id',
+          'appointment.status',
+        ])
+        .where('appointment.id', '=', legacyAvailabilityFixture.appointmentId)
+        .executeTakeFirstOrThrow();
+      expect(preservedLegacyAvailability).toEqual({
+        appointment_id: legacyAvailabilityFixture.appointmentId,
+        slot_id: legacyAvailabilityFixture.slotId,
+        status: 'requested',
+      });
+
       await createProviderSchedulingCatalogue.down(database);
 
-      const rolledBackCatalogue = await sql<{
-        appointment_services: string | null;
-        practitioner_facility_assignments: string | null;
-        practitioner_service_assignments: string | null;
-        specialties: string | null;
-      }>`
-        select
-          to_regclass('specialties')::text as specialties,
-          to_regclass('practitioner_facility_assignments')::text
-            as practitioner_facility_assignments,
-          to_regclass('appointment_services')::text as appointment_services,
-          to_regclass('practitioner_service_assignments')::text
-            as practitioner_service_assignments
+      const rolledBackCatalogue = await sql<{ count: number }>`
+        select count(*)::integer as count
+        from pg_class
+        where relnamespace = current_schema()::regnamespace
+          and relname in (
+            'specialties',
+            'practitioner_facility_assignments',
+            'appointment_services',
+            'practitioner_service_assignments'
+          )
       `.execute(database);
-      expect(rolledBackCatalogue.rows[0]).toEqual({
-        specialties: null,
-        practitioner_facility_assignments: null,
-        appointment_services: null,
-        practitioner_service_assignments: null,
-      });
+      expect(rolledBackCatalogue.rows[0]?.count).toBe(0);
 
-      const rolledBackFunctions = await sql<{
-        appointment_service: string | null;
-        facility_assignment: string | null;
-        service_assignment: string | null;
-        specialty: string | null;
-      }>`
-        select
-          to_regprocedure('prevent_specialty_retargeting()')::text
-            as specialty,
-          to_regprocedure(
-            'prevent_practitioner_facility_assignment_retargeting()'
-          )::text as facility_assignment,
-          to_regprocedure('prevent_appointment_service_retargeting()')::text
-            as appointment_service,
-          to_regprocedure(
-            'prevent_practitioner_service_assignment_retargeting()'
-          )::text as service_assignment
+      const rolledBackFunctions = await sql<{ count: number }>`
+        select count(*)::integer as count
+        from pg_proc
+        where pronamespace = current_schema()::regnamespace
+          and proname in (
+            'prevent_specialty_retargeting',
+            'prevent_practitioner_facility_assignment_retargeting',
+            'prevent_appointment_service_retargeting',
+            'prevent_practitioner_service_assignment_retargeting'
+          )
       `.execute(database);
-      expect(rolledBackFunctions.rows[0]).toEqual({
-        specialty: null,
-        facility_assignment: null,
-        appointment_service: null,
-        service_assignment: null,
-      });
+      expect(rolledBackFunctions.rows[0]?.count).toBe(0);
 
       const rolledBackConstraints = await sql<{ count: number }>`
         select count(*)::integer as count
@@ -1194,6 +1398,1019 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
     expect(JSON.stringify(patientSafeProjection)).not.toContain(
       'scheduling-physician@example.invalid',
     );
+  });
+
+  it('preserves legacy appointment rows with no inferred provider scope', async () => {
+    const legacySlot = await database
+      .selectFrom('patient_portal_appointment_slots')
+      .select([
+        'id',
+        'facility_id',
+        'practitioner_facility_assignment_id',
+        'practitioner_service_assignment_id',
+        'practitioner_id',
+        'appointment_service_id',
+        'availability_template_id',
+        'generation_key_hash',
+        'source_local_date',
+        'source_timezone',
+      ])
+      .where('id', '=', legacyAvailabilityFixture.slotId)
+      .executeTakeFirstOrThrow();
+    const legacyAppointment = await database
+      .selectFrom('patient_portal_appointments')
+      .select([
+        'id',
+        'facility_id',
+        'practitioner_facility_assignment_id',
+        'practitioner_service_assignment_id',
+        'practitioner_id',
+        'appointment_service_id',
+      ])
+      .where('id', '=', legacyAvailabilityFixture.appointmentId)
+      .executeTakeFirstOrThrow();
+
+    expect(legacySlot).toEqual({
+      id: legacyAvailabilityFixture.slotId,
+      facility_id: null,
+      practitioner_facility_assignment_id: null,
+      practitioner_service_assignment_id: null,
+      practitioner_id: null,
+      appointment_service_id: null,
+      availability_template_id: null,
+      generation_key_hash: null,
+      source_local_date: null,
+      source_timezone: null,
+    });
+    expect(legacyAppointment).toEqual({
+      id: legacyAvailabilityFixture.appointmentId,
+      facility_id: null,
+      practitioner_facility_assignment_id: null,
+      practitioner_service_assignment_id: null,
+      practitioner_id: null,
+      appointment_service_id: null,
+    });
+  });
+
+  it('enforces provider availability scope, overlap, lifecycle, and booking invariants', async () => {
+    const fixture = {
+      tenant: 'a1000000-0000-4000-8000-000000000001',
+      practiceA: 'a2000000-0000-4000-8000-000000000001',
+      practiceB: 'a2000000-0000-4000-8000-000000000002',
+      facilityA: 'a3000000-0000-4000-8000-000000000001',
+      facilityB: 'a3000000-0000-4000-8000-000000000002',
+      practitionerA: 'a4000000-0000-4000-8000-000000000001',
+      practitionerB: 'a4000000-0000-4000-8000-000000000002',
+      specialtyA: 'a5000000-0000-4000-8000-000000000001',
+      specialtyB: 'a5000000-0000-4000-8000-000000000002',
+      serviceA: 'a6000000-0000-4000-8000-000000000001',
+      serviceA2: 'a6000000-0000-4000-8000-000000000002',
+      serviceB: 'a6000000-0000-4000-8000-000000000003',
+      facilityAssignmentA: 'a7000000-0000-4000-8000-000000000001',
+      facilityAssignmentB: 'a7000000-0000-4000-8000-000000000002',
+      facilityAssignmentA2: 'a7000000-0000-4000-8000-000000000003',
+      serviceAssignmentA: 'a8000000-0000-4000-8000-000000000001',
+      serviceAssignmentA2: 'a8000000-0000-4000-8000-000000000002',
+      serviceAssignmentB: 'a8000000-0000-4000-8000-000000000003',
+      serviceAssignmentAOtherPractitioner:
+        'a8000000-0000-4000-8000-000000000004',
+      bookableA: 'a9000000-0000-4000-8000-000000000001',
+      bookableB: 'a9000000-0000-4000-8000-000000000002',
+      patientUser: 'aa000000-0000-4000-8000-000000000001',
+      patientIdentity: 'ab000000-0000-4000-8000-000000000001',
+      relationship: 'ac000000-0000-4000-8000-000000000001',
+      templateA: 'ad000000-0000-4000-8000-000000000001',
+      templateA2: 'ad000000-0000-4000-8000-000000000002',
+      templateB: 'ad000000-0000-4000-8000-000000000003',
+      templateAOtherPractitioner: 'ad000000-0000-4000-8000-000000000004',
+      slotBooked: 'ae000000-0000-4000-8000-000000000001',
+      slotAdjacent: 'ae000000-0000-4000-8000-000000000002',
+      slotOtherPractitioner: 'ae000000-0000-4000-8000-000000000003',
+      appointment: 'af000000-0000-4000-8000-000000000001',
+    } as const;
+
+    await database
+      .insertInto('tenants')
+      .values({
+        id: fixture.tenant,
+        code: 'AVAILABILITY-A',
+        name: 'Synthetic Provider Availability Tenant',
+        is_synthetic: true,
+      })
+      .execute();
+    await database
+      .insertInto('organizations')
+      .values([
+        {
+          id: fixture.practiceA,
+          tenant_id: fixture.tenant,
+          parent_organization_id: null,
+          kind: 'practice',
+          code: 'AVAIL-PRACTICE-A',
+          name: 'Synthetic Availability Practice A',
+          is_synthetic: true,
+        },
+        {
+          id: fixture.practiceB,
+          tenant_id: fixture.tenant,
+          parent_organization_id: null,
+          kind: 'practice',
+          code: 'AVAIL-PRACTICE-B',
+          name: 'Synthetic Availability Practice B',
+          is_synthetic: true,
+        },
+      ])
+      .execute();
+    await database
+      .insertInto('facilities')
+      .values([
+        {
+          id: fixture.facilityA,
+          tenant_id: fixture.tenant,
+          organization_id: fixture.practiceA,
+          code: 'AVAIL-FACILITY-A',
+          name: 'Synthetic Availability Facility A',
+          timezone: 'Asia/Dubai',
+          is_synthetic: true,
+        },
+        {
+          id: fixture.facilityB,
+          tenant_id: fixture.tenant,
+          organization_id: fixture.practiceB,
+          code: 'AVAIL-FACILITY-B',
+          name: 'Synthetic Availability Facility B',
+          timezone: 'Asia/Dubai',
+          is_synthetic: true,
+        },
+      ])
+      .execute();
+    await database
+      .insertInto('practitioners')
+      .values([
+        {
+          id: fixture.practitionerA,
+          tenant_id: fixture.tenant,
+          application_user_id: null,
+          display_name: 'Dr Synthetic Availability A',
+          professional_title: 'Consultant physician',
+          status: 'active',
+          is_synthetic: true,
+        },
+        {
+          id: fixture.practitionerB,
+          tenant_id: fixture.tenant,
+          application_user_id: null,
+          display_name: 'Dr Synthetic Availability B',
+          professional_title: 'Consultant physician',
+          status: 'active',
+          is_synthetic: true,
+        },
+      ])
+      .execute();
+    await database
+      .insertInto('specialties')
+      .values([
+        {
+          id: fixture.specialtyA,
+          tenant_id: fixture.tenant,
+          organization_id: fixture.practiceA,
+          code: 'AVAIL-GENERAL-A',
+          name: 'Synthetic General Medicine A',
+          status: 'active',
+          is_synthetic: true,
+        },
+        {
+          id: fixture.specialtyB,
+          tenant_id: fixture.tenant,
+          organization_id: fixture.practiceB,
+          code: 'AVAIL-GENERAL-B',
+          name: 'Synthetic General Medicine B',
+          status: 'active',
+          is_synthetic: true,
+        },
+      ])
+      .execute();
+    await database
+      .insertInto('appointment_services')
+      .values([
+        {
+          id: fixture.serviceA,
+          tenant_id: fixture.tenant,
+          organization_id: fixture.practiceA,
+          facility_id: fixture.facilityA,
+          specialty_id: fixture.specialtyA,
+          code: 'AVAIL-CONSULT-A',
+          patient_facing_name: 'Synthetic Consultation A',
+          duration_minutes: 30,
+          status: 'active',
+          is_synthetic: true,
+        },
+        {
+          id: fixture.serviceA2,
+          tenant_id: fixture.tenant,
+          organization_id: fixture.practiceA,
+          facility_id: fixture.facilityA,
+          specialty_id: fixture.specialtyA,
+          code: 'AVAIL-FOLLOWUP-A',
+          patient_facing_name: 'Synthetic Follow-up A',
+          duration_minutes: 30,
+          status: 'active',
+          is_synthetic: true,
+        },
+        {
+          id: fixture.serviceB,
+          tenant_id: fixture.tenant,
+          organization_id: fixture.practiceB,
+          facility_id: fixture.facilityB,
+          specialty_id: fixture.specialtyB,
+          code: 'AVAIL-CONSULT-B',
+          patient_facing_name: 'Synthetic Consultation B',
+          duration_minutes: 30,
+          status: 'active',
+          is_synthetic: true,
+        },
+      ])
+      .execute();
+    await database
+      .insertInto('practitioner_facility_assignments')
+      .values([
+        {
+          id: fixture.facilityAssignmentA,
+          tenant_id: fixture.tenant,
+          organization_id: fixture.practiceA,
+          facility_id: fixture.facilityA,
+          practitioner_id: fixture.practitionerA,
+          status: 'active',
+          is_synthetic: true,
+        },
+        {
+          id: fixture.facilityAssignmentB,
+          tenant_id: fixture.tenant,
+          organization_id: fixture.practiceB,
+          facility_id: fixture.facilityB,
+          practitioner_id: fixture.practitionerA,
+          status: 'active',
+          is_synthetic: true,
+        },
+        {
+          id: fixture.facilityAssignmentA2,
+          tenant_id: fixture.tenant,
+          organization_id: fixture.practiceA,
+          facility_id: fixture.facilityA,
+          practitioner_id: fixture.practitionerB,
+          status: 'active',
+          is_synthetic: true,
+        },
+      ])
+      .execute();
+    await database
+      .insertInto('practitioner_service_assignments')
+      .values([
+        {
+          id: fixture.serviceAssignmentA,
+          tenant_id: fixture.tenant,
+          organization_id: fixture.practiceA,
+          facility_id: fixture.facilityA,
+          practitioner_facility_assignment_id: fixture.facilityAssignmentA,
+          practitioner_id: fixture.practitionerA,
+          appointment_service_id: fixture.serviceA,
+          status: 'active',
+          is_synthetic: true,
+        },
+        {
+          id: fixture.serviceAssignmentA2,
+          tenant_id: fixture.tenant,
+          organization_id: fixture.practiceA,
+          facility_id: fixture.facilityA,
+          practitioner_facility_assignment_id: fixture.facilityAssignmentA,
+          practitioner_id: fixture.practitionerA,
+          appointment_service_id: fixture.serviceA2,
+          status: 'active',
+          is_synthetic: true,
+        },
+        {
+          id: fixture.serviceAssignmentB,
+          tenant_id: fixture.tenant,
+          organization_id: fixture.practiceB,
+          facility_id: fixture.facilityB,
+          practitioner_facility_assignment_id: fixture.facilityAssignmentB,
+          practitioner_id: fixture.practitionerA,
+          appointment_service_id: fixture.serviceB,
+          status: 'active',
+          is_synthetic: true,
+        },
+        {
+          id: fixture.serviceAssignmentAOtherPractitioner,
+          tenant_id: fixture.tenant,
+          organization_id: fixture.practiceA,
+          facility_id: fixture.facilityA,
+          practitioner_facility_assignment_id: fixture.facilityAssignmentA2,
+          practitioner_id: fixture.practitionerB,
+          appointment_service_id: fixture.serviceA,
+          status: 'active',
+          is_synthetic: true,
+        },
+      ])
+      .execute();
+    await database
+      .insertInto('patient_portal_bookable_practices')
+      .values([
+        {
+          id: fixture.bookableA,
+          tenant_id: fixture.tenant,
+          organization_id: fixture.practiceA,
+          timezone: 'Asia/Dubai',
+          status: 'active',
+          is_synthetic: true,
+        },
+        {
+          id: fixture.bookableB,
+          tenant_id: fixture.tenant,
+          organization_id: fixture.practiceB,
+          timezone: 'Asia/Dubai',
+          status: 'active',
+          is_synthetic: true,
+        },
+      ])
+      .execute();
+    await database
+      .insertInto('application_users')
+      .values({
+        id: fixture.patientUser,
+        display_name: 'Synthetic Availability Patient',
+        primary_email: 'availability-patient@example.invalid',
+        is_synthetic: true,
+      })
+      .execute();
+    await database
+      .insertInto('patient_portal_identities')
+      .values({
+        id: fixture.patientIdentity,
+        application_user_id: fixture.patientUser,
+        issuer: 'https://patient-idp.example.invalid/provider-availability',
+        subject: 'synthetic-provider-availability-patient',
+        client_id: 'synthetic-provider-availability-client',
+        username: 'availability-patient@example.invalid',
+        status: 'active',
+        last_authenticated_at: null,
+      })
+      .execute();
+    await database
+      .insertInto('patient_portal_appointment_relationships')
+      .values({
+        id: fixture.relationship,
+        tenant_id: fixture.tenant,
+        organization_id: fixture.practiceA,
+        patient_portal_identity_id: fixture.patientIdentity,
+        status: 'pending',
+      })
+      .execute();
+
+    const templateScopeA = {
+      tenant_id: fixture.tenant,
+      organization_id: fixture.practiceA,
+      facility_id: fixture.facilityA,
+      practitioner_facility_assignment_id: fixture.facilityAssignmentA,
+      practitioner_service_assignment_id: fixture.serviceAssignmentA,
+      practitioner_id: fixture.practitionerA,
+      appointment_service_id: fixture.serviceA,
+      source_timezone: 'Asia/Dubai',
+    } as const;
+    await database
+      .insertInto('practitioner_availability_templates')
+      .values([
+        {
+          id: fixture.templateA,
+          ...templateScopeA,
+          iso_weekday: 1,
+          local_start_minute: 540,
+          local_end_minute: 600,
+          effective_from: '2035-01-01',
+          effective_until: null,
+          status: 'active',
+          is_synthetic: true,
+        },
+        {
+          id: fixture.templateA2,
+          tenant_id: fixture.tenant,
+          organization_id: fixture.practiceA,
+          facility_id: fixture.facilityA,
+          practitioner_facility_assignment_id: fixture.facilityAssignmentA,
+          practitioner_service_assignment_id: fixture.serviceAssignmentA2,
+          practitioner_id: fixture.practitionerA,
+          appointment_service_id: fixture.serviceA2,
+          iso_weekday: 1,
+          local_start_minute: 600,
+          local_end_minute: 660,
+          effective_from: '2035-01-01',
+          effective_until: null,
+          source_timezone: 'Asia/Dubai',
+          status: 'active',
+          is_synthetic: true,
+        },
+        {
+          id: fixture.templateB,
+          tenant_id: fixture.tenant,
+          organization_id: fixture.practiceB,
+          facility_id: fixture.facilityB,
+          practitioner_facility_assignment_id: fixture.facilityAssignmentB,
+          practitioner_service_assignment_id: fixture.serviceAssignmentB,
+          practitioner_id: fixture.practitionerA,
+          appointment_service_id: fixture.serviceB,
+          iso_weekday: 1,
+          local_start_minute: 660,
+          local_end_minute: 720,
+          effective_from: '2035-01-01',
+          effective_until: null,
+          source_timezone: 'Asia/Dubai',
+          status: 'inactive',
+          is_synthetic: true,
+        },
+        {
+          id: fixture.templateAOtherPractitioner,
+          tenant_id: fixture.tenant,
+          organization_id: fixture.practiceA,
+          facility_id: fixture.facilityA,
+          practitioner_facility_assignment_id: fixture.facilityAssignmentA2,
+          practitioner_service_assignment_id:
+            fixture.serviceAssignmentAOtherPractitioner,
+          practitioner_id: fixture.practitionerB,
+          appointment_service_id: fixture.serviceA,
+          iso_weekday: 1,
+          local_start_minute: 540,
+          local_end_minute: 600,
+          effective_from: '2035-01-01',
+          effective_until: null,
+          source_timezone: 'Asia/Dubai',
+          status: 'active',
+          is_synthetic: true,
+        },
+      ])
+      .execute();
+
+    await expect(
+      database
+        .insertInto('practitioner_availability_templates')
+        .values({
+          ...templateScopeA,
+          practitioner_service_assignment_id: fixture.serviceAssignmentB,
+          iso_weekday: 2,
+          local_start_minute: 540,
+          local_end_minute: 600,
+          effective_from: '2035-01-01',
+          effective_until: null,
+          status: 'inactive',
+          is_synthetic: true,
+        })
+        .execute(),
+    ).rejects.toMatchObject({
+      code: '23503',
+      constraint: 'practitioner_availability_templates_assignment_scope_fk',
+    });
+    await expect(
+      database
+        .insertInto('practitioner_availability_templates')
+        .values({
+          tenant_id: fixture.tenant,
+          organization_id: fixture.practiceA,
+          facility_id: fixture.facilityA,
+          practitioner_facility_assignment_id: fixture.facilityAssignmentA,
+          practitioner_service_assignment_id: fixture.serviceAssignmentA2,
+          practitioner_id: fixture.practitionerA,
+          appointment_service_id: fixture.serviceA2,
+          iso_weekday: 1,
+          local_start_minute: 570,
+          local_end_minute: 630,
+          effective_from: '2035-01-01',
+          effective_until: null,
+          source_timezone: 'Asia/Dubai',
+          status: 'active',
+          is_synthetic: true,
+        })
+        .execute(),
+    ).rejects.toMatchObject({
+      code: '23P01',
+      constraint: 'practitioner_availability_templates_active_overlap',
+    });
+    const allowedActiveTemplates = await database
+      .selectFrom('practitioner_availability_templates')
+      .select('id')
+      .where('id', 'in', [
+        fixture.templateA,
+        fixture.templateA2,
+        fixture.templateAOtherPractitioner,
+      ])
+      .where('status', '=', 'active')
+      .execute();
+    expect(allowedActiveTemplates).toHaveLength(3);
+    await expect(
+      database
+        .updateTable('practitioner_availability_templates')
+        .set({ local_end_minute: 630 })
+        .where('id', '=', fixture.templateA)
+        .execute(),
+    ).rejects.toThrow(
+      'Practitioner availability template definition and scope are immutable.',
+    );
+
+    const facilityClosure = await database
+      .insertInto('provider_availability_exceptions')
+      .values({
+        tenant_id: fixture.tenant,
+        organization_id: fixture.practiceA,
+        facility_id: fixture.facilityA,
+        practitioner_facility_assignment_id: null,
+        practitioner_id: null,
+        kind: 'facility_closed',
+        is_all_day: true,
+        local_starts_at: sql<Date>`timestamp '2035-01-08 00:00:00'`,
+        local_ends_at: sql<Date>`timestamp '2035-01-09 00:00:00'`,
+        starts_at: new Date('2035-01-07T20:00:00.000Z'),
+        ends_at: new Date('2035-01-08T20:00:00.000Z'),
+        source_timezone: 'Asia/Dubai',
+        status: 'active',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const practitionerException = await database
+      .insertInto('provider_availability_exceptions')
+      .values({
+        tenant_id: fixture.tenant,
+        organization_id: fixture.practiceA,
+        facility_id: fixture.facilityA,
+        practitioner_facility_assignment_id: fixture.facilityAssignmentA,
+        practitioner_id: fixture.practitionerA,
+        kind: 'practitioner_unavailable',
+        is_all_day: false,
+        local_starts_at: sql<Date>`timestamp '2035-01-10 13:00:00'`,
+        local_ends_at: sql<Date>`timestamp '2035-01-10 14:00:00'`,
+        starts_at: new Date('2035-01-10T09:00:00.000Z'),
+        ends_at: new Date('2035-01-10T10:00:00.000Z'),
+        source_timezone: 'Asia/Dubai',
+        status: 'active',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+
+    await expect(
+      database
+        .insertInto('provider_availability_exceptions')
+        .values({
+          tenant_id: fixture.tenant,
+          organization_id: fixture.practiceA,
+          facility_id: fixture.facilityA,
+          practitioner_facility_assignment_id: null,
+          practitioner_id: null,
+          kind: 'facility_closed',
+          is_all_day: true,
+          local_starts_at: sql<Date>`timestamp '2035-01-11 01:00:00'`,
+          local_ends_at: sql<Date>`timestamp '2035-01-12 00:00:00'`,
+          starts_at: new Date('2035-01-10T21:00:00.000Z'),
+          ends_at: new Date('2035-01-11T20:00:00.000Z'),
+          source_timezone: 'Asia/Dubai',
+          status: 'active',
+          is_synthetic: true,
+        })
+        .execute(),
+    ).rejects.toMatchObject({
+      code: '23514',
+      constraint: 'provider_availability_exceptions_all_day_check',
+    });
+    await expect(
+      database
+        .insertInto('provider_availability_exceptions')
+        .values({
+          tenant_id: fixture.tenant,
+          organization_id: fixture.practiceA,
+          facility_id: fixture.facilityA,
+          practitioner_facility_assignment_id: null,
+          practitioner_id: null,
+          kind: 'facility_closed',
+          is_all_day: true,
+          local_starts_at: sql<Date>`timestamp '2035-01-14 00:00:00'`,
+          local_ends_at: sql<Date>`timestamp '2035-01-16 00:00:00'`,
+          starts_at: new Date('2035-01-13T20:00:00.000Z'),
+          ends_at: new Date('2035-01-15T20:00:00.000Z'),
+          source_timezone: 'Asia/Dubai',
+          status: 'active',
+          is_synthetic: true,
+        })
+        .execute(),
+    ).rejects.toMatchObject({
+      code: '23514',
+      constraint: 'provider_availability_exceptions_all_day_check',
+    });
+    await expect(
+      database
+        .insertInto('provider_availability_exceptions')
+        .values({
+          tenant_id: fixture.tenant,
+          organization_id: fixture.practiceA,
+          facility_id: fixture.facilityA,
+          practitioner_facility_assignment_id: null,
+          practitioner_id: fixture.practitionerA,
+          kind: 'practitioner_unavailable',
+          is_all_day: false,
+          local_starts_at: sql<Date>`timestamp '2035-01-12 13:00:00'`,
+          local_ends_at: sql<Date>`timestamp '2035-01-12 14:00:00'`,
+          starts_at: new Date('2035-01-12T09:00:00.000Z'),
+          ends_at: new Date('2035-01-12T10:00:00.000Z'),
+          source_timezone: 'Asia/Dubai',
+          status: 'active',
+          is_synthetic: true,
+        })
+        .execute(),
+    ).rejects.toMatchObject({
+      code: '23514',
+      constraint: 'provider_availability_exceptions_scope_shape_check',
+    });
+    await expect(
+      database
+        .insertInto('provider_availability_exceptions')
+        .values({
+          tenant_id: fixture.tenant,
+          organization_id: fixture.practiceA,
+          facility_id: fixture.facilityA,
+          practitioner_facility_assignment_id: fixture.facilityAssignmentB,
+          practitioner_id: fixture.practitionerA,
+          kind: 'practitioner_unavailable',
+          is_all_day: false,
+          local_starts_at: sql<Date>`timestamp '2035-01-13 13:00:00'`,
+          local_ends_at: sql<Date>`timestamp '2035-01-13 14:00:00'`,
+          starts_at: new Date('2035-01-13T09:00:00.000Z'),
+          ends_at: new Date('2035-01-13T10:00:00.000Z'),
+          source_timezone: 'Asia/Dubai',
+          status: 'active',
+          is_synthetic: true,
+        })
+        .execute(),
+    ).rejects.toMatchObject({
+      code: '23503',
+      constraint: 'provider_availability_exceptions_assignment_scope_fk',
+    });
+    await expect(
+      database
+        .updateTable('provider_availability_exceptions')
+        .set({ starts_at: new Date('2035-01-07T21:00:00.000Z') })
+        .where('id', '=', facilityClosure.id)
+        .execute(),
+    ).rejects.toThrow(
+      'Provider availability exception definition and scope are immutable.',
+    );
+    await database
+      .updateTable('provider_availability_exceptions')
+      .set({ status: 'cancelled' })
+      .where('id', '=', practitionerException.id)
+      .execute();
+
+    const providerScopeA = {
+      bookable_practice_id: fixture.bookableA,
+      tenant_id: fixture.tenant,
+      organization_id: fixture.practiceA,
+      facility_id: fixture.facilityA,
+      practitioner_facility_assignment_id: fixture.facilityAssignmentA,
+      practitioner_service_assignment_id: fixture.serviceAssignmentA,
+      practitioner_id: fixture.practitionerA,
+      appointment_service_id: fixture.serviceA,
+      availability_template_id: fixture.templateA,
+      source_local_date: '2035-01-08',
+      source_timezone: 'Asia/Dubai',
+      status: 'available',
+      is_synthetic: true,
+    } as const;
+    const providerScopeA2 = {
+      ...providerScopeA,
+      practitioner_service_assignment_id: fixture.serviceAssignmentA2,
+      appointment_service_id: fixture.serviceA2,
+      availability_template_id: fixture.templateA2,
+    } as const;
+    const providerScopeB = {
+      ...providerScopeA,
+      bookable_practice_id: fixture.bookableB,
+      organization_id: fixture.practiceB,
+      facility_id: fixture.facilityB,
+      practitioner_facility_assignment_id: fixture.facilityAssignmentB,
+      practitioner_service_assignment_id: fixture.serviceAssignmentB,
+      appointment_service_id: fixture.serviceB,
+      availability_template_id: fixture.templateB,
+    } as const;
+    const otherPractitionerScope = {
+      ...providerScopeA,
+      practitioner_facility_assignment_id: fixture.facilityAssignmentA2,
+      practitioner_service_assignment_id:
+        fixture.serviceAssignmentAOtherPractitioner,
+      practitioner_id: fixture.practitionerB,
+      availability_template_id: fixture.templateAOtherPractitioner,
+    } as const;
+
+    await database
+      .insertInto('patient_portal_appointment_slots')
+      .values({
+        id: fixture.slotBooked,
+        ...providerScopeA,
+        generation_key_hash: createHash('sha256')
+          .update('provider-slot-booked')
+          .digest('hex'),
+        starts_at: new Date('2035-01-08T09:00:00.000Z'),
+        ends_at: new Date('2035-01-08T09:30:00.000Z'),
+      })
+      .execute();
+
+    for (const overlappingSlot of [
+      {
+        ...providerScopeA2,
+        generation_key_hash: createHash('sha256')
+          .update('provider-slot-overlap-service')
+          .digest('hex'),
+      },
+      {
+        ...providerScopeB,
+        generation_key_hash: createHash('sha256')
+          .update('provider-slot-overlap-facility')
+          .digest('hex'),
+      },
+    ]) {
+      await expect(
+        database
+          .insertInto('patient_portal_appointment_slots')
+          .values({
+            ...overlappingSlot,
+            starts_at: new Date('2035-01-08T09:15:00.000Z'),
+            ends_at: new Date('2035-01-08T09:45:00.000Z'),
+          })
+          .execute(),
+      ).rejects.toMatchObject({
+        code: '23P01',
+        constraint: 'pp_appointment_slots_practitioner_time_no_overlap',
+      });
+    }
+
+    await database
+      .insertInto('patient_portal_appointment_slots')
+      .values([
+        {
+          id: fixture.slotAdjacent,
+          ...providerScopeA,
+          generation_key_hash: createHash('sha256')
+            .update('provider-slot-adjacent')
+            .digest('hex'),
+          starts_at: new Date('2035-01-08T09:30:00.000Z'),
+          ends_at: new Date('2035-01-08T10:00:00.000Z'),
+        },
+        {
+          id: fixture.slotOtherPractitioner,
+          ...otherPractitionerScope,
+          generation_key_hash: createHash('sha256')
+            .update('provider-slot-other-practitioner')
+            .digest('hex'),
+          starts_at: new Date('2035-01-08T09:15:00.000Z'),
+          ends_at: new Date('2035-01-08T09:45:00.000Z'),
+        },
+      ])
+      .execute();
+
+    await expect(
+      database
+        .insertInto('patient_portal_appointment_slots')
+        .values({
+          ...providerScopeA,
+          generation_key_hash: createHash('sha256')
+            .update('provider-slot-booked')
+            .digest('hex'),
+          starts_at: new Date('2035-01-08T11:00:00.000Z'),
+          ends_at: new Date('2035-01-08T11:30:00.000Z'),
+        })
+        .execute(),
+    ).rejects.toMatchObject({
+      code: '23505',
+      constraint: 'pp_appointment_slots_provider_generation_unique',
+    });
+    await expect(
+      database
+        .insertInto('patient_portal_appointment_slots')
+        .values({
+          bookable_practice_id: fixture.bookableA,
+          tenant_id: fixture.tenant,
+          organization_id: fixture.practiceA,
+          facility_id: fixture.facilityA,
+          starts_at: new Date('2035-01-08T12:00:00.000Z'),
+          ends_at: new Date('2035-01-08T12:30:00.000Z'),
+          status: 'available',
+          is_synthetic: true,
+        })
+        .execute(),
+    ).rejects.toMatchObject({
+      code: '23514',
+      constraint: 'pp_appointment_slots_provider_bundle_check',
+    });
+    await expect(
+      database
+        .insertInto('patient_portal_appointment_slots')
+        .values({
+          ...providerScopeA,
+          practitioner_service_assignment_id: fixture.serviceAssignmentB,
+          generation_key_hash: createHash('sha256')
+            .update('provider-slot-wrong-scope')
+            .digest('hex'),
+          starts_at: new Date('2035-01-08T12:30:00.000Z'),
+          ends_at: new Date('2035-01-08T13:00:00.000Z'),
+        })
+        .execute(),
+    ).rejects.toMatchObject({
+      code: '23503',
+      constraint: 'pp_appointment_slots_assignment_scope_fk',
+    });
+    await expect(
+      database
+        .updateTable('patient_portal_appointment_slots')
+        .set({ appointment_service_id: fixture.serviceA2 })
+        .where('id', '=', fixture.slotBooked)
+        .execute(),
+    ).rejects.toThrow('Appointment slot provider binding is immutable.');
+
+    await expect(
+      database
+        .insertInto('patient_portal_appointments')
+        .values({
+          tenant_id: fixture.tenant,
+          organization_id: fixture.practiceA,
+          patient_portal_identity_id: fixture.patientIdentity,
+          patient_portal_profile_id: null,
+          patient_portal_appointment_relationship_id: fixture.relationship,
+          appointment_slot_id: fixture.slotAdjacent,
+          status: 'requested',
+          version: 1,
+          cancelled_at: null,
+        })
+        .execute(),
+    ).rejects.toMatchObject({
+      code: '23514',
+    });
+    await expect(
+      database
+        .insertInto('patient_portal_appointments')
+        .values({
+          tenant_id: fixture.tenant,
+          organization_id: fixture.practiceA,
+          patient_portal_identity_id: fixture.patientIdentity,
+          patient_portal_profile_id: null,
+          patient_portal_appointment_relationship_id: fixture.relationship,
+          appointment_slot_id: fixture.slotAdjacent,
+          facility_id: fixture.facilityA,
+          practitioner_service_assignment_id: fixture.serviceAssignmentA,
+          status: 'requested',
+          version: 1,
+          cancelled_at: null,
+        })
+        .execute(),
+    ).rejects.toMatchObject({
+      code: '23514',
+      constraint: 'pp_appointments_provider_bundle_check',
+    });
+    await expect(
+      database
+        .insertInto('patient_portal_appointments')
+        .values({
+          tenant_id: fixture.tenant,
+          organization_id: fixture.practiceA,
+          patient_portal_identity_id: fixture.patientIdentity,
+          patient_portal_profile_id: null,
+          patient_portal_appointment_relationship_id: fixture.relationship,
+          appointment_slot_id: fixture.slotAdjacent,
+          facility_id: fixture.facilityA,
+          practitioner_facility_assignment_id: fixture.facilityAssignmentA2,
+          practitioner_service_assignment_id:
+            fixture.serviceAssignmentAOtherPractitioner,
+          practitioner_id: fixture.practitionerB,
+          appointment_service_id: fixture.serviceA,
+          status: 'requested',
+          version: 1,
+          cancelled_at: null,
+        })
+        .execute(),
+    ).rejects.toMatchObject({
+      code: '23503',
+      constraint: 'pp_appointments_provider_slot_scope_fk',
+    });
+
+    await database
+      .insertInto('patient_portal_appointments')
+      .values({
+        id: fixture.appointment,
+        tenant_id: fixture.tenant,
+        organization_id: fixture.practiceA,
+        patient_portal_identity_id: fixture.patientIdentity,
+        patient_portal_profile_id: null,
+        patient_portal_appointment_relationship_id: fixture.relationship,
+        appointment_slot_id: fixture.slotBooked,
+        facility_id: fixture.facilityA,
+        practitioner_facility_assignment_id: fixture.facilityAssignmentA,
+        practitioner_service_assignment_id: fixture.serviceAssignmentA,
+        practitioner_id: fixture.practitionerA,
+        appointment_service_id: fixture.serviceA,
+        status: 'requested',
+        version: 1,
+        cancelled_at: null,
+      })
+      .execute();
+    await expect(
+      database
+        .updateTable('patient_portal_appointment_slots')
+        .set({ status: 'withdrawn' })
+        .where('id', '=', fixture.slotBooked)
+        .execute(),
+    ).rejects.toThrow('A slot with a live appointment cannot be withdrawn.');
+    await database
+      .updateTable('patient_portal_appointment_slots')
+      .set({ status: 'withdrawn' })
+      .where('id', '=', fixture.slotAdjacent)
+      .execute();
+    const adjacentSlot = await database
+      .selectFrom('patient_portal_appointment_slots')
+      .select('status')
+      .where('id', '=', fixture.slotAdjacent)
+      .executeTakeFirstOrThrow();
+    expect(adjacentSlot.status).toBe('withdrawn');
+
+    const firstConcurrentDatabase = createDatabaseClient<DatabaseSchema>({
+      connectionString: databaseUrl!,
+      maxConnections: 1,
+      ssl: false,
+    });
+    const secondConcurrentDatabase = createDatabaseClient<DatabaseSchema>({
+      connectionString: databaseUrl!,
+      maxConnections: 1,
+      ssl: false,
+    });
+    try {
+      await Promise.all([
+        sql`set search_path to ${sql.id(schemaName)}, public`.execute(
+          firstConcurrentDatabase,
+        ),
+        sql`set search_path to ${sql.id(schemaName)}, public`.execute(
+          secondConcurrentDatabase,
+        ),
+      ]);
+      const concurrentResults = await Promise.allSettled([
+        firstConcurrentDatabase
+          .insertInto('patient_portal_appointment_slots')
+          .values({
+            ...providerScopeA,
+            generation_key_hash: createHash('sha256')
+              .update('provider-slot-concurrent-a')
+              .digest('hex'),
+            starts_at: new Date('2035-01-08T13:00:00.000Z'),
+            ends_at: new Date('2035-01-08T13:30:00.000Z'),
+          })
+          .execute(),
+        secondConcurrentDatabase
+          .insertInto('patient_portal_appointment_slots')
+          .values({
+            ...providerScopeA2,
+            generation_key_hash: createHash('sha256')
+              .update('provider-slot-concurrent-b')
+              .digest('hex'),
+            starts_at: new Date('2035-01-08T13:15:00.000Z'),
+            ends_at: new Date('2035-01-08T13:45:00.000Z'),
+          })
+          .execute(),
+      ]);
+      expect(
+        concurrentResults.filter((result) => result.status === 'fulfilled'),
+      ).toHaveLength(1);
+      const rejectedConcurrentResult = concurrentResults.find(
+        (result) => result.status === 'rejected',
+      );
+      expect(rejectedConcurrentResult?.status).toBe('rejected');
+      if (rejectedConcurrentResult?.status === 'rejected') {
+        const rejection = rejectedConcurrentResult.reason as {
+          code?: unknown;
+          constraint?: unknown;
+        };
+        expect(['23P01', '40P01']).toContain(rejection.code);
+        if (rejection.code === '23P01') {
+          expect(rejection.constraint).toBe(
+            'pp_appointment_slots_practitioner_time_no_overlap',
+          );
+        }
+      }
+      const storedConcurrentSlots = await database
+        .selectFrom('patient_portal_appointment_slots')
+        .select('id')
+        .where('tenant_id', '=', fixture.tenant)
+        .where('practitioner_id', '=', fixture.practitionerA)
+        .where('starts_at', '>=', new Date('2035-01-08T13:00:00.000Z'))
+        .where('starts_at', '<', new Date('2035-01-08T14:00:00.000Z'))
+        .execute();
+      expect(storedConcurrentSlots).toHaveLength(1);
+    } finally {
+      await Promise.all([
+        firstConcurrentDatabase.destroy(),
+        secondConcurrentDatabase.destroy(),
+      ]);
+    }
   });
 
   it('stores only hashed browser session values with bounded expiry', async () => {

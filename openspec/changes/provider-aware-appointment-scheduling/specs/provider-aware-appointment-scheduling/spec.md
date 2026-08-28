@@ -46,7 +46,11 @@ The system SHALL convert active weekly practitioner availability and dated
 exceptions from the assigned facility's IANA timezone into deterministic UTC
 slots for a bounded eight-week horizon. Regeneration SHALL be idempotent, SHALL
 preserve booked slots, and SHALL withdraw obsolete unbooked slots instead of
-deleting historical scheduling evidence.
+deleting historical scheduling evidence. Template windows SHALL use ISO
+weekdays, minute resolution, and same-local-day boundaries. Dated exceptions
+SHALL apply to either one exact practice facility or one exact
+practitioner-facility affiliation using `[start, end)` intervals and approved
+exception kinds without free text.
 
 #### Scenario: Generate future doctor slots
 
@@ -62,6 +66,16 @@ deleting historical scheduling evidence.
 
 - **WHEN** slot materialization is retried with unchanged templates and exceptions
 - **THEN** the system produces the same effective slots without duplicates or changes to referenced appointment times
+
+#### Scenario: Reject an invalid timezone boundary
+
+- **WHEN** a weekly template or dated exception resolves to an ambiguous or nonexistent local boundary in the assigned facility timezone
+- **THEN** publication is rejected without silently choosing or shifting a UTC instant
+
+#### Scenario: Apply a facility closure
+
+- **WHEN** an authorized scheduler publishes an active closure for one exact practice facility
+- **THEN** generated availability inside that interval is withdrawn for that facility only and sibling practices remain unchanged
 
 #### Scenario: Reject overlapping doctor availability
 

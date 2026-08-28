@@ -7,8 +7,8 @@
 
 - [x] 2.1 Add reversible migrations and Kysely types for tenant-owned practitioner profiles and optional explicit immutable application-user links that grant no access; practice and facility assignments remain task 2.2.
 - [x] 2.2 Add practice-owned specialties and appointment services, reuse scoped facilities, and add separate practitioner-facility affiliations plus practitioner-service eligibility with tenant and practice ownership constraints.
-- [ ] 2.3 Add weekly availability templates, dated exceptions, provider-aware materialized slots, non-overlap protection, and composite scope constraints.
-- [ ] 2.4 Backfill the generic synthetic appointment fixtures with deterministic synthetic practitioners and services while preserving referenced slot times and restart-safe seed behavior.
+- [x] 2.3 Add weekly availability templates, dated exceptions, provider-aware materialized slots, non-overlap protection, and composite scope constraints.
+- [ ] 2.4 Backfill the generic synthetic appointment fixtures with deterministic synthetic practitioners and services, atomically copy exact slot scope into existing appointments, update interim booking persistence, and preserve referenced slot times and restart-safe seed behavior.
 
 ## 3. Workforce scheduling API
 

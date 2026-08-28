@@ -314,10 +314,13 @@ async function seed(): Promise<void> {
       .insertInto('patient_portal_appointment_slots')
       .values(appointmentSlots)
       .onConflict((conflict) =>
-        conflict.columns(['bookable_practice_id', 'starts_at']).doUpdateSet({
-          is_synthetic: true,
-          updated_at: new Date(),
-        }),
+        conflict
+          .columns(['bookable_practice_id', 'starts_at'])
+          .where('practitioner_service_assignment_id', 'is', null)
+          .doUpdateSet({
+            is_synthetic: true,
+            updated_at: new Date(),
+          }),
       )
       .execute();
 
