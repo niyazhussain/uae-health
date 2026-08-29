@@ -23,6 +23,7 @@ import * as createPatientPortalAppointments from './migrations/2026-08-27T010000
 import * as createPractitionerProfiles from './migrations/2026-08-27T020000_create_practitioner_profiles.js';
 import * as createProviderSchedulingCatalogue from './migrations/2026-08-27T030000_create_provider_scheduling_catalogue.js';
 import * as createProviderAvailability from './migrations/2026-08-27T040000_create_provider_availability.js';
+import * as backfillSyntheticProviderAppointments from './migrations/2026-08-27T050000_backfill_synthetic_provider_appointments.js';
 import { PatientPortalProfileLinkService } from '../patient-portal-auth/patient-portal-profile-link.service.js';
 import { PatientPortalRegistrationService } from '../patient-portal-auth/patient-portal-registration.service.js';
 import { PatientPortalSessionService } from '../patient-portal-auth/patient-portal-session.service.js';
@@ -41,6 +42,507 @@ function workforceIdentityProvider(
       Promise.reject(new Error('Not used by migration integration tests.')),
     deleteAccount: () =>
       Promise.reject(new Error('Not used by migration integration tests.')),
+  };
+}
+
+interface IsolatedMigrationDatabase {
+  adminDatabase: Kysely<unknown>;
+  database: Kysely<DatabaseSchema>;
+  schemaName: string;
+}
+
+let isolatedProviderBackfillSchemaSequence = 0;
+
+async function createProviderBackfillTestDatabase(
+  label: string,
+): Promise<IsolatedMigrationDatabase> {
+  isolatedProviderBackfillSchemaSequence += 1;
+  const schemaName = `provider_backfill_${label}_${process.pid}_${Date.now()}_${isolatedProviderBackfillSchemaSequence}`;
+  const adminDatabase = createDatabaseClient<unknown>({
+    connectionString: databaseUrl!,
+    maxConnections: 1,
+    ssl: false,
+  });
+  const database = createDatabaseClient<DatabaseSchema>({
+    connectionString: databaseUrl!,
+    maxConnections: 1,
+    ssl: false,
+  });
+
+  try {
+    await sql`create schema ${sql.id(schemaName)}`.execute(adminDatabase);
+    await sql`set search_path to ${sql.id(schemaName)}, public`.execute(
+      database,
+    );
+    await createFacilities.up(database);
+    await createIdentityAuthorizationAudit.up(database);
+    await createWorkforceSessions.up(database);
+    await addTenantLocalRoleNameUniqueness.up(database);
+    await addIdentityProviderSyncStatus.up(database);
+    await createPatientPortalIdentity.up(database);
+    await createPatientRegistrationAndInvitations.up(database);
+    await createPatientPortalAppointments.up(database);
+    await createPractitionerProfiles.up(database);
+    await createProviderSchedulingCatalogue.up(database);
+    await createProviderAvailability.up(database);
+
+    return { adminDatabase, database, schemaName };
+  } catch (error) {
+    await database.destroy();
+    await sql`drop schema if exists ${sql.id(schemaName)} cascade`.execute(
+      adminDatabase,
+    );
+    await adminDatabase.destroy();
+    throw error;
+  }
+}
+
+async function destroyProviderBackfillTestDatabase({
+  adminDatabase,
+  database,
+  schemaName,
+}: IsolatedMigrationDatabase): Promise<void> {
+  await database.destroy();
+  await sql`drop schema if exists ${sql.id(schemaName)} cascade`.execute(
+    adminDatabase,
+  );
+  await adminDatabase.destroy();
+}
+
+function syntheticProviderFixtureId(kind: string, identity: string): string {
+  const digest = createHash('md5')
+    .update(`uae-health:synthetic-provider-scheduling:v1:${kind}:${identity}`)
+    .digest('hex');
+
+  return [
+    digest.slice(0, 8),
+    digest.slice(8, 12),
+    digest.slice(12, 16),
+    digest.slice(16, 20),
+    digest.slice(20, 32),
+  ].join('-');
+}
+
+const providerBackfillFixture = {
+  tenantId: 'ba000000-0000-4000-8000-000000000001',
+  applicationUserId: 'ba000000-0000-4000-8000-000000000002',
+  patientIdentityId: 'ba000000-0000-4000-8000-000000000003',
+  practices: {
+    missingFacility: 'ba100000-0000-4000-8000-000000000001',
+    singleFacility: 'ba100000-0000-4000-8000-000000000002',
+    deterministicFacility: 'ba100000-0000-4000-8000-000000000003',
+    noSlots: 'ba100000-0000-4000-8000-000000000004',
+  },
+  bookablePractices: {
+    missingFacility: 'ba200000-0000-4000-8000-000000000001',
+    singleFacility: 'ba200000-0000-4000-8000-000000000002',
+    deterministicFacility: 'ba200000-0000-4000-8000-000000000003',
+    noSlots: 'ba200000-0000-4000-8000-000000000004',
+  },
+  facilities: {
+    single: 'ba300000-0000-4000-8000-000000000001',
+    additional: 'ba300000-0000-4000-8000-000000000002',
+    noSlots: 'ba300000-0000-4000-8000-000000000003',
+  },
+  relationships: {
+    missingFacility: 'ba400000-0000-4000-8000-000000000001',
+    singleFacility: 'ba400000-0000-4000-8000-000000000002',
+  },
+  slots: {
+    referenced: 'ba500000-0000-4000-8000-000000000001',
+    repeatedWindow: 'ba500000-0000-4000-8000-000000000002',
+    cancelledAppointment: 'ba500000-0000-4000-8000-000000000003',
+    deterministicFacility: 'ba500000-0000-4000-8000-000000000004',
+  },
+  appointments: {
+    requested: 'ba600000-0000-4000-8000-000000000001',
+    cancelled: 'ba600000-0000-4000-8000-000000000002',
+  },
+} as const;
+
+async function insertSyntheticProviderBackfillFixture(
+  database: Kysely<DatabaseSchema>,
+): Promise<void> {
+  const fixture = providerBackfillFixture;
+  const deterministicFacilityId = syntheticProviderFixtureId(
+    'facility',
+    fixture.bookablePractices.deterministicFacility,
+  );
+
+  await database
+    .insertInto('tenants')
+    .values({
+      id: fixture.tenantId,
+      code: 'PROVIDER-BACKFILL',
+      name: 'Synthetic Provider Backfill Tenant',
+      is_synthetic: true,
+    })
+    .execute();
+  await database
+    .insertInto('organizations')
+    .values([
+      {
+        id: fixture.practices.missingFacility,
+        tenant_id: fixture.tenantId,
+        parent_organization_id: null,
+        kind: 'practice',
+        code: 'BACKFILL-MISSING-FACILITY',
+        name: 'Synthetic Missing Facility Practice',
+        is_synthetic: true,
+      },
+      {
+        id: fixture.practices.singleFacility,
+        tenant_id: fixture.tenantId,
+        parent_organization_id: null,
+        kind: 'practice',
+        code: 'BACKFILL-SINGLE-FACILITY',
+        name: 'Synthetic Single Facility Practice',
+        is_synthetic: true,
+      },
+      {
+        id: fixture.practices.deterministicFacility,
+        tenant_id: fixture.tenantId,
+        parent_organization_id: null,
+        kind: 'practice',
+        code: 'BACKFILL-DETERMINISTIC-FACILITY',
+        name: 'Synthetic Deterministic Facility Practice',
+        is_synthetic: true,
+      },
+      {
+        id: fixture.practices.noSlots,
+        tenant_id: fixture.tenantId,
+        parent_organization_id: null,
+        kind: 'practice',
+        code: 'BACKFILL-NO-SLOTS',
+        name: 'Synthetic No Slots Practice',
+        is_synthetic: true,
+      },
+    ])
+    .execute();
+  await database
+    .insertInto('facilities')
+    .values([
+      {
+        id: fixture.facilities.single,
+        tenant_id: fixture.tenantId,
+        organization_id: fixture.practices.singleFacility,
+        code: 'BACKFILL-FACILITY-SINGLE',
+        name: 'Synthetic Existing Backfill Facility',
+        timezone: 'Asia/Dubai',
+        is_synthetic: true,
+      },
+      {
+        id: deterministicFacilityId,
+        tenant_id: fixture.tenantId,
+        organization_id: fixture.practices.deterministicFacility,
+        code: 'BACKFILL-FACILITY-DETERMINISTIC',
+        name: 'Synthetic Deterministic Backfill Facility',
+        timezone: 'Asia/Dubai',
+        is_synthetic: true,
+      },
+      {
+        id: fixture.facilities.additional,
+        tenant_id: fixture.tenantId,
+        organization_id: fixture.practices.deterministicFacility,
+        code: 'BACKFILL-FACILITY-ADDITIONAL',
+        name: 'Synthetic Additional Backfill Facility',
+        timezone: 'Asia/Dubai',
+        is_synthetic: true,
+      },
+      {
+        id: fixture.facilities.noSlots,
+        tenant_id: fixture.tenantId,
+        organization_id: fixture.practices.noSlots,
+        code: 'BACKFILL-FACILITY-NO-SLOTS',
+        name: 'Synthetic No Slots Backfill Facility',
+        timezone: 'Asia/Dubai',
+        is_synthetic: true,
+      },
+    ])
+    .execute();
+  await database
+    .insertInto('application_users')
+    .values({
+      id: fixture.applicationUserId,
+      display_name: 'Synthetic Provider Backfill Patient',
+      primary_email: 'provider-backfill-patient@example.invalid',
+      is_synthetic: true,
+    })
+    .execute();
+  await database
+    .insertInto('patient_portal_identities')
+    .values({
+      id: fixture.patientIdentityId,
+      application_user_id: fixture.applicationUserId,
+      issuer: 'https://patient-idp.example.invalid/provider-backfill',
+      subject: 'synthetic-provider-backfill-patient',
+      client_id: 'synthetic-provider-backfill-client',
+      username: 'provider-backfill-patient@example.invalid',
+      status: 'active',
+      last_authenticated_at: null,
+    })
+    .execute();
+  await database
+    .insertInto('patient_portal_bookable_practices')
+    .values([
+      {
+        id: fixture.bookablePractices.missingFacility,
+        tenant_id: fixture.tenantId,
+        organization_id: fixture.practices.missingFacility,
+        timezone: 'Asia/Dubai',
+        status: 'active',
+        is_synthetic: true,
+      },
+      {
+        id: fixture.bookablePractices.singleFacility,
+        tenant_id: fixture.tenantId,
+        organization_id: fixture.practices.singleFacility,
+        timezone: 'Asia/Dubai',
+        status: 'active',
+        is_synthetic: true,
+      },
+      {
+        id: fixture.bookablePractices.deterministicFacility,
+        tenant_id: fixture.tenantId,
+        organization_id: fixture.practices.deterministicFacility,
+        timezone: 'Asia/Dubai',
+        status: 'active',
+        is_synthetic: true,
+      },
+      {
+        id: fixture.bookablePractices.noSlots,
+        tenant_id: fixture.tenantId,
+        organization_id: fixture.practices.noSlots,
+        timezone: 'Asia/Dubai',
+        status: 'active',
+        is_synthetic: true,
+      },
+    ])
+    .execute();
+  await database
+    .insertInto('patient_portal_appointment_relationships')
+    .values([
+      {
+        id: fixture.relationships.missingFacility,
+        tenant_id: fixture.tenantId,
+        organization_id: fixture.practices.missingFacility,
+        patient_portal_identity_id: fixture.patientIdentityId,
+        status: 'pending',
+      },
+      {
+        id: fixture.relationships.singleFacility,
+        tenant_id: fixture.tenantId,
+        organization_id: fixture.practices.singleFacility,
+        patient_portal_identity_id: fixture.patientIdentityId,
+        status: 'pending',
+      },
+    ])
+    .execute();
+  await database
+    .insertInto('patient_portal_appointment_slots')
+    .values([
+      {
+        id: fixture.slots.referenced,
+        bookable_practice_id: fixture.bookablePractices.missingFacility,
+        tenant_id: fixture.tenantId,
+        organization_id: fixture.practices.missingFacility,
+        starts_at: new Date('2035-01-08T05:00:00.000Z'),
+        ends_at: new Date('2035-01-08T05:30:00.000Z'),
+        status: 'available',
+        is_synthetic: true,
+      },
+      {
+        id: fixture.slots.repeatedWindow,
+        bookable_practice_id: fixture.bookablePractices.missingFacility,
+        tenant_id: fixture.tenantId,
+        organization_id: fixture.practices.missingFacility,
+        starts_at: new Date('2035-01-15T05:00:00.000Z'),
+        ends_at: new Date('2035-01-15T05:30:00.000Z'),
+        status: 'withdrawn',
+        is_synthetic: true,
+      },
+      {
+        id: fixture.slots.cancelledAppointment,
+        bookable_practice_id: fixture.bookablePractices.singleFacility,
+        tenant_id: fixture.tenantId,
+        organization_id: fixture.practices.singleFacility,
+        starts_at: new Date('2035-01-09T06:00:00.000Z'),
+        ends_at: new Date('2035-01-09T06:45:00.000Z'),
+        status: 'available',
+        is_synthetic: true,
+      },
+      {
+        id: fixture.slots.deterministicFacility,
+        bookable_practice_id: fixture.bookablePractices.deterministicFacility,
+        tenant_id: fixture.tenantId,
+        organization_id: fixture.practices.deterministicFacility,
+        starts_at: new Date('2035-01-10T19:30:00.000Z'),
+        ends_at: new Date('2035-01-10T20:00:00.000Z'),
+        status: 'available',
+        is_synthetic: true,
+      },
+    ])
+    .execute();
+  await database
+    .insertInto('patient_portal_appointments')
+    .values([
+      {
+        id: fixture.appointments.requested,
+        tenant_id: fixture.tenantId,
+        organization_id: fixture.practices.missingFacility,
+        patient_portal_identity_id: fixture.patientIdentityId,
+        patient_portal_profile_id: null,
+        patient_portal_appointment_relationship_id:
+          fixture.relationships.missingFacility,
+        appointment_slot_id: fixture.slots.referenced,
+        status: 'requested',
+        version: 1,
+        cancelled_at: null,
+      },
+      {
+        id: fixture.appointments.cancelled,
+        tenant_id: fixture.tenantId,
+        organization_id: fixture.practices.singleFacility,
+        patient_portal_identity_id: fixture.patientIdentityId,
+        patient_portal_profile_id: null,
+        patient_portal_appointment_relationship_id:
+          fixture.relationships.singleFacility,
+        appointment_slot_id: fixture.slots.cancelledAppointment,
+        status: 'cancelled',
+        version: 2,
+        cancelled_at: new Date('2034-12-01T10:00:00.000Z'),
+      },
+    ])
+    .execute();
+}
+
+interface SyntheticProviderTestScope {
+  facilityId: string;
+  practitionerFacilityAssignmentId: string;
+  practitionerServiceAssignmentId: string;
+  practitionerId: string;
+  appointmentServiceId: string;
+  availabilityTemplateId: string;
+  sourceTimezone: string;
+}
+
+async function insertSyntheticProviderTestScope(
+  database: Kysely<DatabaseSchema>,
+  input: {
+    tenantId: string;
+    organizationId: string;
+    suffix: string;
+  },
+): Promise<SyntheticProviderTestScope> {
+  const sourceTimezone = 'Asia/Dubai';
+  const facility = await database
+    .insertInto('facilities')
+    .values({
+      tenant_id: input.tenantId,
+      organization_id: input.organizationId,
+      code: `APPT-${input.suffix}-FACILITY`,
+      name: `Synthetic Appointment Facility ${input.suffix}`,
+      timezone: sourceTimezone,
+      is_synthetic: true,
+    })
+    .returning('id')
+    .executeTakeFirstOrThrow();
+  const practitioner = await database
+    .insertInto('practitioners')
+    .values({
+      tenant_id: input.tenantId,
+      application_user_id: null,
+      display_name: `Dr Synthetic Appointment ${input.suffix}`,
+      professional_title: 'Synthetic physician',
+      status: 'active',
+      is_synthetic: true,
+    })
+    .returning('id')
+    .executeTakeFirstOrThrow();
+  const specialty = await database
+    .insertInto('specialties')
+    .values({
+      tenant_id: input.tenantId,
+      organization_id: input.organizationId,
+      code: `APPT-${input.suffix}-SPECIALTY`,
+      name: `Synthetic Appointment Specialty ${input.suffix}`,
+      status: 'active',
+      is_synthetic: true,
+    })
+    .returning('id')
+    .executeTakeFirstOrThrow();
+  const facilityAssignment = await database
+    .insertInto('practitioner_facility_assignments')
+    .values({
+      tenant_id: input.tenantId,
+      organization_id: input.organizationId,
+      facility_id: facility.id,
+      practitioner_id: practitioner.id,
+      status: 'active',
+      is_synthetic: true,
+    })
+    .returning('id')
+    .executeTakeFirstOrThrow();
+  const service = await database
+    .insertInto('appointment_services')
+    .values({
+      tenant_id: input.tenantId,
+      organization_id: input.organizationId,
+      facility_id: facility.id,
+      specialty_id: specialty.id,
+      code: `APPT-${input.suffix}-CONSULT`,
+      patient_facing_name: `Synthetic Consultation ${input.suffix}`,
+      duration_minutes: 30,
+      allows_any_practitioner: false,
+      status: 'active',
+      is_synthetic: true,
+    })
+    .returning('id')
+    .executeTakeFirstOrThrow();
+  const serviceAssignment = await database
+    .insertInto('practitioner_service_assignments')
+    .values({
+      tenant_id: input.tenantId,
+      organization_id: input.organizationId,
+      facility_id: facility.id,
+      practitioner_facility_assignment_id: facilityAssignment.id,
+      practitioner_id: practitioner.id,
+      appointment_service_id: service.id,
+      status: 'active',
+      is_synthetic: true,
+    })
+    .returning('id')
+    .executeTakeFirstOrThrow();
+  const availabilityTemplate = await database
+    .insertInto('practitioner_availability_templates')
+    .values({
+      tenant_id: input.tenantId,
+      organization_id: input.organizationId,
+      facility_id: facility.id,
+      practitioner_facility_assignment_id: facilityAssignment.id,
+      practitioner_service_assignment_id: serviceAssignment.id,
+      practitioner_id: practitioner.id,
+      appointment_service_id: service.id,
+      iso_weekday: 4,
+      local_start_minute: 540,
+      local_end_minute: 570,
+      effective_from: '2035-01-01',
+      effective_until: null,
+      source_timezone: sourceTimezone,
+      status: 'active',
+      is_synthetic: true,
+    })
+    .returning('id')
+    .executeTakeFirstOrThrow();
+
+  return {
+    facilityId: facility.id,
+    practitionerFacilityAssignmentId: facilityAssignment.id,
+    practitionerServiceAssignmentId: serviceAssignment.id,
+    practitionerId: practitioner.id,
+    appointmentServiceId: service.id,
+    availabilityTemplateId: availabilityTemplate.id,
+    sourceTimezone,
   };
 }
 
@@ -185,6 +687,12 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
 
   afterAll(async () => {
     if (database) {
+      await sql`
+        delete from patient_portal_appointment_commands command
+        using patient_portal_appointments appointment
+        where command.patient_portal_appointment_id = appointment.id
+          and appointment.practitioner_id is not null
+      `.execute(database);
       await database
         .deleteFrom('patient_portal_appointments')
         .where('practitioner_id', 'is not', null)
@@ -2830,7 +3338,49 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
       ])
       .returning('id')
       .execute();
-    const slotStart = new Date(Date.now() + 24 * 60 * 60_000);
+    const firstProviderScope = await insertSyntheticProviderTestScope(
+      database,
+      {
+        tenantId: tenant.id,
+        organizationId: firstPractice.id,
+        suffix: 'A',
+      },
+    );
+    const rescheduleProviderScope = await insertSyntheticProviderTestScope(
+      database,
+      {
+        tenantId: tenant.id,
+        organizationId: firstPractice.id,
+        suffix: 'A2',
+      },
+    );
+    const secondProviderScope = await insertSyntheticProviderTestScope(
+      database,
+      {
+        tenantId: tenant.id,
+        organizationId: secondPractice.id,
+        suffix: 'B',
+      },
+    );
+    const providerSlotBundle = (
+      provider: SyntheticProviderTestScope,
+      generationIdentity: string,
+    ) => ({
+      facility_id: provider.facilityId,
+      practitioner_facility_assignment_id:
+        provider.practitionerFacilityAssignmentId,
+      practitioner_service_assignment_id:
+        provider.practitionerServiceAssignmentId,
+      practitioner_id: provider.practitionerId,
+      appointment_service_id: provider.appointmentServiceId,
+      availability_template_id: provider.availabilityTemplateId,
+      generation_key_hash: createHash('sha256')
+        .update(generationIdentity)
+        .digest('hex'),
+      source_local_date: '2035-02-01',
+      source_timezone: provider.sourceTimezone,
+    });
+    const slotStart = new Date('2035-02-01T05:00:00.000Z');
     const [firstSlot, rescheduleSlot] = await database
       .insertInto('patient_portal_appointment_slots')
       .values([
@@ -2838,6 +3388,10 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
           bookable_practice_id: firstBookablePractice.id,
           tenant_id: tenant.id,
           organization_id: firstPractice.id,
+          ...providerSlotBundle(
+            firstProviderScope,
+            'appointment-provider-slot-a',
+          ),
           starts_at: slotStart,
           ends_at: new Date(slotStart.getTime() + 30 * 60_000),
           status: 'available',
@@ -2847,6 +3401,10 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
           bookable_practice_id: firstBookablePractice.id,
           tenant_id: tenant.id,
           organization_id: firstPractice.id,
+          ...providerSlotBundle(
+            rescheduleProviderScope,
+            'appointment-provider-slot-a2',
+          ),
           starts_at: new Date(slotStart.getTime() + 60 * 60_000),
           ends_at: new Date(slotStart.getTime() + 90 * 60_000),
           status: 'available',
@@ -2861,6 +3419,10 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
         bookable_practice_id: secondBookablePractice.id,
         tenant_id: tenant.id,
         organization_id: secondPractice.id,
+        ...providerSlotBundle(
+          secondProviderScope,
+          'appointment-provider-slot-b',
+        ),
         starts_at: new Date(slotStart.getTime() + 2 * 60 * 60_000),
         ends_at: new Date(slotStart.getTime() + 150 * 60_000),
         status: 'available',
@@ -3065,6 +3627,27 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
         firstSlot.id,
       ),
     ).resolves.toEqual(requested);
+    await expect(
+      database
+        .selectFrom('patient_portal_appointments')
+        .select([
+          'facility_id',
+          'practitioner_facility_assignment_id',
+          'practitioner_service_assignment_id',
+          'practitioner_id',
+          'appointment_service_id',
+        ])
+        .where('id', '=', requested.appointment.appointmentId)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({
+      facility_id: firstProviderScope.facilityId,
+      practitioner_facility_assignment_id:
+        firstProviderScope.practitionerFacilityAssignmentId,
+      practitioner_service_assignment_id:
+        firstProviderScope.practitionerServiceAssignmentId,
+      practitioner_id: firstProviderScope.practitionerId,
+      appointment_service_id: firstProviderScope.appointmentServiceId,
+    });
 
     const secondPatient = await createPatientSession('two');
     const secondRelationship = await appointments.createRelationship(
@@ -3143,6 +3726,27 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
     expect(rescheduled.appointment).toMatchObject({
       status: 'requested',
       version: requested.appointment.version + 1,
+    });
+    await expect(
+      database
+        .selectFrom('patient_portal_appointments')
+        .select([
+          'facility_id',
+          'practitioner_facility_assignment_id',
+          'practitioner_service_assignment_id',
+          'practitioner_id',
+          'appointment_service_id',
+        ])
+        .where('id', '=', requested.appointment.appointmentId)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({
+      facility_id: rescheduleProviderScope.facilityId,
+      practitioner_facility_assignment_id:
+        rescheduleProviderScope.practitionerFacilityAssignmentId,
+      practitioner_service_assignment_id:
+        rescheduleProviderScope.practitionerServiceAssignmentId,
+      practitioner_id: rescheduleProviderScope.practitionerId,
+      appointment_service_id: rescheduleProviderScope.appointmentServiceId,
     });
     const [cancelled, replayedCancelled] = await withConcurrentAppointments(
       (first, second) =>
@@ -5183,3 +5787,1130 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
     ).rejects.toThrow('Committed audit events are append-only.');
   });
 });
+
+describeWithDatabase(
+  'synthetic provider appointment backfill migration',
+  () => {
+    const providerColumnNames = [
+      'facility_id',
+      'practitioner_facility_assignment_id',
+      'practitioner_service_assignment_id',
+      'practitioner_id',
+      'appointment_service_id',
+    ] as const;
+    const slotProviderColumnNames = [
+      ...providerColumnNames,
+      'availability_template_id',
+      'generation_key_hash',
+      'source_local_date',
+      'source_timezone',
+    ] as const;
+
+    const slotGenerationHash = (
+      templateId: string,
+      sourceLocalDate: string,
+      startsAt: Date,
+      endsAt: Date,
+    ): string =>
+      createHash('sha256')
+        .update(
+          [
+            'uae-health:synthetic-provider-slot:v1',
+            templateId,
+            sourceLocalDate,
+            Math.floor(startsAt.getTime() / 1_000),
+            Math.floor(endsAt.getTime() / 1_000),
+          ].join('|'),
+        )
+        .digest('hex');
+
+    const readProviderNullability = async (
+      database: Kysely<DatabaseSchema>,
+    ) => {
+      const result = await sql<{
+        table_name: string;
+        column_name: string;
+        is_nullable: 'YES' | 'NO';
+      }>`
+      select table_name, column_name, is_nullable
+      from information_schema.columns
+      where table_schema = current_schema()
+        and (
+          (
+            table_name = 'patient_portal_appointment_slots'
+            and column_name in (
+              'facility_id',
+              'practitioner_facility_assignment_id',
+              'practitioner_service_assignment_id',
+              'practitioner_id',
+              'appointment_service_id',
+              'availability_template_id',
+              'generation_key_hash',
+              'source_local_date',
+              'source_timezone'
+            )
+          )
+          or (
+            table_name = 'patient_portal_appointments'
+            and column_name in (
+              'facility_id',
+              'practitioner_facility_assignment_id',
+              'practitioner_service_assignment_id',
+              'practitioner_id',
+              'appointment_service_id'
+            )
+          )
+        )
+      order by table_name, column_name
+    `.execute(database);
+
+      return result.rows;
+    };
+
+    const readLegacySchedulingState = async (
+      database: Kysely<DatabaseSchema>,
+    ) => ({
+      slots: await database
+        .selectFrom('patient_portal_appointment_slots')
+        .select([
+          'id',
+          'bookable_practice_id',
+          'tenant_id',
+          'organization_id',
+          'starts_at',
+          'ends_at',
+          'status',
+          'is_synthetic',
+        ])
+        .orderBy('id')
+        .execute(),
+      appointments: await database
+        .selectFrom('patient_portal_appointments')
+        .select([
+          'id',
+          'tenant_id',
+          'organization_id',
+          'patient_portal_identity_id',
+          'patient_portal_profile_id',
+          'patient_portal_appointment_relationship_id',
+          'appointment_slot_id',
+          'status',
+          'version',
+          'cancelled_at',
+        ])
+        .orderBy('id')
+        .execute(),
+    });
+
+    it('backfills deterministic exact provider scope and reverses safely before later writes', async () => {
+      let isolated: IsolatedMigrationDatabase | undefined;
+
+      try {
+        isolated = await createProviderBackfillTestDatabase('success');
+        const { database } = isolated;
+        const fixture = providerBackfillFixture;
+        await insertSyntheticProviderBackfillFixture(database);
+        const legacyState = await readLegacySchedulingState(database);
+        const nullableBefore = await readProviderNullability(database);
+        expect(nullableBefore).toHaveLength(14);
+        expect(
+          nullableBefore.every((column) => column.is_nullable === 'YES'),
+        ).toBe(true);
+
+        await database
+          .transaction()
+          .execute((transaction) =>
+            backfillSyntheticProviderAppointments.up(transaction),
+          );
+
+        const deterministicMissingFacilityId = syntheticProviderFixtureId(
+          'facility',
+          fixture.bookablePractices.missingFacility,
+        );
+        const deterministicExistingFacilityId = syntheticProviderFixtureId(
+          'facility',
+          fixture.bookablePractices.deterministicFacility,
+        );
+        const expectedPractices = [
+          {
+            bookablePracticeId: fixture.bookablePractices.missingFacility,
+            organizationId: fixture.practices.missingFacility,
+            facilityId: deterministicMissingFacilityId,
+            durationMinutes: 30,
+          },
+          {
+            bookablePracticeId: fixture.bookablePractices.singleFacility,
+            organizationId: fixture.practices.singleFacility,
+            facilityId: fixture.facilities.single,
+            durationMinutes: 45,
+          },
+          {
+            bookablePracticeId: fixture.bookablePractices.deterministicFacility,
+            organizationId: fixture.practices.deterministicFacility,
+            facilityId: deterministicExistingFacilityId,
+            durationMinutes: 30,
+          },
+          {
+            bookablePracticeId: fixture.bookablePractices.noSlots,
+            organizationId: fixture.practices.noSlots,
+            facilityId: fixture.facilities.noSlots,
+            durationMinutes: 30,
+          },
+        ];
+
+        for (const expected of expectedPractices) {
+          const practitionerId = syntheticProviderFixtureId(
+            'practitioner',
+            expected.bookablePracticeId,
+          );
+          const specialtyId = syntheticProviderFixtureId(
+            'specialty',
+            expected.bookablePracticeId,
+          );
+          const facilityAssignmentId = syntheticProviderFixtureId(
+            'practitioner-facility-assignment',
+            expected.bookablePracticeId,
+          );
+          const appointmentServiceId = syntheticProviderFixtureId(
+            'appointment-service',
+            expected.bookablePracticeId,
+          );
+          const serviceAssignmentId = syntheticProviderFixtureId(
+            'practitioner-service-assignment',
+            expected.bookablePracticeId,
+          );
+
+          await expect(
+            database
+              .selectFrom('practitioners')
+              .select([
+                'tenant_id',
+                'application_user_id',
+                'display_name',
+                'professional_title',
+                'status',
+                'is_synthetic',
+              ])
+              .where('id', '=', practitionerId)
+              .executeTakeFirstOrThrow(),
+          ).resolves.toEqual({
+            tenant_id: fixture.tenantId,
+            application_user_id: null,
+            display_name: 'Synthetic Physician',
+            professional_title: 'General physician',
+            status: 'active',
+            is_synthetic: true,
+          });
+          await expect(
+            database
+              .selectFrom('specialties')
+              .select([
+                'tenant_id',
+                'organization_id',
+                'code',
+                'name',
+                'status',
+                'is_synthetic',
+              ])
+              .where('id', '=', specialtyId)
+              .executeTakeFirstOrThrow(),
+          ).resolves.toEqual({
+            tenant_id: fixture.tenantId,
+            organization_id: expected.organizationId,
+            code: 'GENERAL-MEDICINE',
+            name: 'General medicine',
+            status: 'active',
+            is_synthetic: true,
+          });
+          await expect(
+            database
+              .selectFrom('practitioner_facility_assignments')
+              .select([
+                'tenant_id',
+                'organization_id',
+                'facility_id',
+                'practitioner_id',
+                'status',
+                'is_synthetic',
+              ])
+              .where('id', '=', facilityAssignmentId)
+              .executeTakeFirstOrThrow(),
+          ).resolves.toEqual({
+            tenant_id: fixture.tenantId,
+            organization_id: expected.organizationId,
+            facility_id: expected.facilityId,
+            practitioner_id: practitionerId,
+            status: 'active',
+            is_synthetic: true,
+          });
+          await expect(
+            database
+              .selectFrom('appointment_services')
+              .select([
+                'tenant_id',
+                'organization_id',
+                'facility_id',
+                'specialty_id',
+                'code',
+                'patient_facing_name',
+                'duration_minutes',
+                'allows_any_practitioner',
+                'status',
+                'is_synthetic',
+              ])
+              .where('id', '=', appointmentServiceId)
+              .executeTakeFirstOrThrow(),
+          ).resolves.toEqual({
+            tenant_id: fixture.tenantId,
+            organization_id: expected.organizationId,
+            facility_id: expected.facilityId,
+            specialty_id: specialtyId,
+            code: 'GENERAL-CONSULTATION',
+            patient_facing_name: 'General consultation',
+            duration_minutes: expected.durationMinutes,
+            allows_any_practitioner: true,
+            status: 'active',
+            is_synthetic: true,
+          });
+          await expect(
+            database
+              .selectFrom('practitioner_service_assignments')
+              .select([
+                'tenant_id',
+                'organization_id',
+                'facility_id',
+                'practitioner_facility_assignment_id',
+                'practitioner_id',
+                'appointment_service_id',
+                'status',
+                'is_synthetic',
+              ])
+              .where('id', '=', serviceAssignmentId)
+              .executeTakeFirstOrThrow(),
+          ).resolves.toEqual({
+            tenant_id: fixture.tenantId,
+            organization_id: expected.organizationId,
+            facility_id: expected.facilityId,
+            practitioner_facility_assignment_id: facilityAssignmentId,
+            practitioner_id: practitionerId,
+            appointment_service_id: appointmentServiceId,
+            status: 'active',
+            is_synthetic: true,
+          });
+        }
+
+        const missingFacility = await database
+          .selectFrom('facilities')
+          .select(['tenant_id', 'organization_id', 'code', 'name', 'timezone'])
+          .where('id', '=', deterministicMissingFacilityId)
+          .executeTakeFirstOrThrow();
+        expect(missingFacility).toEqual({
+          tenant_id: fixture.tenantId,
+          organization_id: fixture.practices.missingFacility,
+          code: `SYN-${deterministicMissingFacilityId
+            .replaceAll('-', '')
+            .slice(-28)
+            .toUpperCase()}`,
+          name: 'Synthetic Appointment Centre',
+          timezone: 'Asia/Dubai',
+        });
+        await expect(
+          database
+            .selectFrom('practitioner_facility_assignments')
+            .select('facility_id')
+            .where(
+              'id',
+              '=',
+              syntheticProviderFixtureId(
+                'practitioner-facility-assignment',
+                fixture.bookablePractices.deterministicFacility,
+              ),
+            )
+            .executeTakeFirstOrThrow(),
+        ).resolves.toEqual({ facility_id: deterministicExistingFacilityId });
+
+        const expectedTemplates = [
+          {
+            bookablePracticeId: fixture.bookablePractices.missingFacility,
+            organizationId: fixture.practices.missingFacility,
+            facilityId: deterministicMissingFacilityId,
+            isoWeekday: 1,
+            startMinute: 540,
+            endMinute: 570,
+          },
+          {
+            bookablePracticeId: fixture.bookablePractices.singleFacility,
+            organizationId: fixture.practices.singleFacility,
+            facilityId: fixture.facilities.single,
+            isoWeekday: 2,
+            startMinute: 600,
+            endMinute: 645,
+          },
+          {
+            bookablePracticeId: fixture.bookablePractices.deterministicFacility,
+            organizationId: fixture.practices.deterministicFacility,
+            facilityId: deterministicExistingFacilityId,
+            isoWeekday: 3,
+            startMinute: 1410,
+            endMinute: 1440,
+          },
+        ].map((template) => ({
+          ...template,
+          id: syntheticProviderFixtureId(
+            'availability-template',
+            [
+              template.bookablePracticeId,
+              template.isoWeekday,
+              template.startMinute,
+              template.endMinute,
+              'Asia/Dubai',
+            ].join('|'),
+          ),
+        }));
+        const templates = await database
+          .selectFrom('practitioner_availability_templates')
+          .select([
+            'id',
+            'organization_id',
+            'facility_id',
+            'iso_weekday',
+            'local_start_minute',
+            'local_end_minute',
+            'effective_until',
+            'source_timezone',
+            'status',
+            sql<string>`effective_from::text`.as('effective_from'),
+          ])
+          .orderBy('id')
+          .execute();
+        expect(templates).toHaveLength(3);
+        expect(templates).toEqual(
+          expectedTemplates
+            .map((template) => ({
+              id: template.id,
+              organization_id: template.organizationId,
+              facility_id: template.facilityId,
+              iso_weekday: template.isoWeekday,
+              local_start_minute: template.startMinute,
+              local_end_minute: template.endMinute,
+              effective_from: '2020-01-01',
+              effective_until: null,
+              source_timezone: 'Asia/Dubai',
+              status: 'active',
+            }))
+            .sort((left, right) => left.id.localeCompare(right.id)),
+        );
+
+        const templateByBookablePractice = new Map(
+          expectedTemplates.map((template) => [
+            template.bookablePracticeId,
+            template.id,
+          ]),
+        );
+        const slotsAfter = await database
+          .selectFrom('patient_portal_appointment_slots')
+          .selectAll()
+          .select(
+            sql<string>`source_local_date::text`.as('source_local_date_text'),
+          )
+          .orderBy('id')
+          .execute();
+        const sourceLocalDateBySlotId = new Map([
+          [fixture.slots.referenced, '2035-01-08'],
+          [fixture.slots.repeatedWindow, '2035-01-15'],
+          [fixture.slots.cancelledAppointment, '2035-01-09'],
+          [fixture.slots.deterministicFacility, '2035-01-10'],
+        ]);
+        for (const slot of slotsAfter) {
+          const expectedPractice = expectedPractices.find(
+            (practice) =>
+              practice.bookablePracticeId === slot.bookable_practice_id,
+          );
+          expect(expectedPractice).toBeDefined();
+          const templateId = templateByBookablePractice.get(
+            slot.bookable_practice_id,
+          );
+          expect(templateId).toBeDefined();
+          const sourceLocalDate = sourceLocalDateBySlotId.get(slot.id);
+          expect(sourceLocalDate).toBeDefined();
+          expect(slot).toMatchObject({
+            facility_id: expectedPractice!.facilityId,
+            practitioner_facility_assignment_id: syntheticProviderFixtureId(
+              'practitioner-facility-assignment',
+              slot.bookable_practice_id,
+            ),
+            practitioner_service_assignment_id: syntheticProviderFixtureId(
+              'practitioner-service-assignment',
+              slot.bookable_practice_id,
+            ),
+            practitioner_id: syntheticProviderFixtureId(
+              'practitioner',
+              slot.bookable_practice_id,
+            ),
+            appointment_service_id: syntheticProviderFixtureId(
+              'appointment-service',
+              slot.bookable_practice_id,
+            ),
+            availability_template_id: templateId,
+            source_local_date_text: sourceLocalDate,
+            source_timezone: 'Asia/Dubai',
+            generation_key_hash: slotGenerationHash(
+              templateId!,
+              sourceLocalDate,
+              slot.starts_at,
+              slot.ends_at,
+            ),
+          });
+        }
+        expect(
+          slotsAfter
+            .filter(
+              (slot) =>
+                slot.bookable_practice_id ===
+                fixture.bookablePractices.missingFacility,
+            )
+            .map((slot) => slot.availability_template_id),
+        ).toEqual([
+          templateByBookablePractice.get(
+            fixture.bookablePractices.missingFacility,
+          ),
+          templateByBookablePractice.get(
+            fixture.bookablePractices.missingFacility,
+          ),
+        ]);
+
+        const appointmentsAfter = await database
+          .selectFrom('patient_portal_appointments')
+          .innerJoin(
+            'patient_portal_appointment_slots as slot',
+            'slot.id',
+            'patient_portal_appointments.appointment_slot_id',
+          )
+          .select([
+            'patient_portal_appointments.id as id',
+            'patient_portal_appointments.facility_id as facility_id',
+            'patient_portal_appointments.practitioner_facility_assignment_id as practitioner_facility_assignment_id',
+            'patient_portal_appointments.practitioner_service_assignment_id as practitioner_service_assignment_id',
+            'patient_portal_appointments.practitioner_id as practitioner_id',
+            'patient_portal_appointments.appointment_service_id as appointment_service_id',
+            'slot.facility_id as slot_facility_id',
+            'slot.practitioner_facility_assignment_id as slot_practitioner_facility_assignment_id',
+            'slot.practitioner_service_assignment_id as slot_practitioner_service_assignment_id',
+            'slot.practitioner_id as slot_practitioner_id',
+            'slot.appointment_service_id as slot_appointment_service_id',
+          ])
+          .orderBy('patient_portal_appointments.id')
+          .execute();
+        expect(appointmentsAfter).toHaveLength(2);
+        for (const appointment of appointmentsAfter) {
+          expect(appointment).toMatchObject({
+            facility_id: appointment.slot_facility_id,
+            practitioner_facility_assignment_id:
+              appointment.slot_practitioner_facility_assignment_id,
+            practitioner_service_assignment_id:
+              appointment.slot_practitioner_service_assignment_id,
+            practitioner_id: appointment.slot_practitioner_id,
+            appointment_service_id: appointment.slot_appointment_service_id,
+          });
+        }
+        expect(await readLegacySchedulingState(database)).toEqual(legacyState);
+
+        const nullProviderRows = await sql<{ count: string }>`
+          select count(*)::text as count
+          from patient_portal_appointment_slots
+          where num_nonnulls(
+            facility_id,
+            practitioner_facility_assignment_id,
+            practitioner_service_assignment_id,
+            practitioner_id,
+            appointment_service_id,
+            availability_template_id,
+            generation_key_hash,
+            source_local_date,
+            source_timezone
+          ) <> 9
+        `.execute(database);
+        expect(nullProviderRows.rows[0]?.count).toBe('0');
+        const nullAppointmentProviderRows = await sql<{ count: string }>`
+          select count(*)::text as count
+          from patient_portal_appointments
+          where num_nonnulls(
+            facility_id,
+            practitioner_facility_assignment_id,
+            practitioner_service_assignment_id,
+            practitioner_id,
+            appointment_service_id
+          ) <> 5
+        `.execute(database);
+        expect(nullAppointmentProviderRows.rows[0]?.count).toBe('0');
+        const requiredAfter = await readProviderNullability(database);
+        expect(requiredAfter).toHaveLength(14);
+        expect(
+          requiredAfter.every((column) => column.is_nullable === 'NO'),
+        ).toBe(true);
+        const manifestCounts = await sql<{
+          practices: string;
+          templates: string;
+          slots: string;
+          appointments: string;
+          generic_index: string | null;
+        }>`
+          select
+            (select count(*)::text from provider_scheduling_backfill_practices)
+              as practices,
+            (select count(*)::text from provider_scheduling_backfill_templates)
+              as templates,
+            (select count(*)::text from provider_scheduling_backfill_slots)
+              as slots,
+            (select count(*)::text from provider_scheduling_backfill_appointments)
+              as appointments,
+            to_regclass(
+              current_schema()
+              || '.pp_appointment_slots_generic_practice_start_unique'
+            )::text as generic_index
+        `.execute(database);
+        expect(manifestCounts.rows).toEqual([
+          {
+            practices: '4',
+            templates: '3',
+            slots: '4',
+            appointments: '2',
+            generic_index: null,
+          },
+        ]);
+
+        const firstBackfillIdentity = {
+          providers: await database
+            .selectFrom('practitioners')
+            .select('id')
+            .orderBy('id')
+            .execute(),
+          templates: slotsAfter.map((slot) => ({
+            id: slot.availability_template_id,
+            generationKey: slot.generation_key_hash,
+          })),
+        };
+        await database
+          .transaction()
+          .execute((transaction) =>
+            backfillSyntheticProviderAppointments.down(transaction),
+          );
+
+        expect(await readLegacySchedulingState(database)).toEqual(legacyState);
+        const slotsAfterDown = await database
+          .selectFrom('patient_portal_appointment_slots')
+          .select(slotProviderColumnNames)
+          .execute();
+        expect(
+          slotsAfterDown.every((slot) =>
+            slotProviderColumnNames.every((column) => slot[column] === null),
+          ),
+        ).toBe(true);
+        const appointmentsAfterDown = await database
+          .selectFrom('patient_portal_appointments')
+          .select(providerColumnNames)
+          .execute();
+        expect(
+          appointmentsAfterDown.every((appointment) =>
+            providerColumnNames.every((column) => appointment[column] === null),
+          ),
+        ).toBe(true);
+        expect(
+          (await readProviderNullability(database)).every(
+            (column) => column.is_nullable === 'YES',
+          ),
+        ).toBe(true);
+        const rollbackObjects = await sql<{
+          manifest: string | null;
+          generic_index: string | null;
+        }>`
+          select
+            to_regclass(
+              current_schema() || '.provider_scheduling_backfill_runs'
+            )::text as manifest,
+            to_regclass(
+              current_schema()
+              || '.pp_appointment_slots_generic_practice_start_unique'
+            )::text as generic_index
+        `.execute(database);
+        expect(rollbackObjects.rows).toEqual([
+          {
+            manifest: null,
+            generic_index: 'pp_appointment_slots_generic_practice_start_unique',
+          },
+        ]);
+        await expect(
+          database
+            .selectFrom('facilities')
+            .select('id')
+            .where('id', '=', deterministicMissingFacilityId)
+            .executeTakeFirst(),
+        ).resolves.toBeUndefined();
+        await expect(
+          database
+            .selectFrom('facilities')
+            .select('id')
+            .where('id', 'in', [
+              fixture.facilities.single,
+              deterministicExistingFacilityId,
+              fixture.facilities.additional,
+              fixture.facilities.noSlots,
+            ])
+            .execute(),
+        ).resolves.toHaveLength(4);
+        await expect(
+          database.selectFrom('practitioners').select('id').execute(),
+        ).resolves.toHaveLength(0);
+        await expect(
+          database
+            .selectFrom('practitioner_availability_templates')
+            .select('id')
+            .execute(),
+        ).resolves.toHaveLength(0);
+
+        await database
+          .transaction()
+          .execute((transaction) =>
+            backfillSyntheticProviderAppointments.up(transaction),
+          );
+        const rerunSlots = await database
+          .selectFrom('patient_portal_appointment_slots')
+          .select(['availability_template_id', 'generation_key_hash'])
+          .orderBy('id')
+          .execute();
+        expect({
+          providers: await database
+            .selectFrom('practitioners')
+            .select('id')
+            .orderBy('id')
+            .execute(),
+          templates: rerunSlots.map((slot) => ({
+            id: slot.availability_template_id,
+            generationKey: slot.generation_key_hash,
+          })),
+        }).toEqual(firstBackfillIdentity);
+        expect(await readLegacySchedulingState(database)).toEqual(legacyState);
+      } finally {
+        if (isolated) {
+          await destroyProviderBackfillTestDatabase(isolated);
+        }
+      }
+    }, 30_000);
+
+    it('refuses rollback after a later provider-aware slot is written', async () => {
+      let isolated: IsolatedMigrationDatabase | undefined;
+
+      try {
+        isolated = await createProviderBackfillTestDatabase('forward_only');
+        const { database } = isolated;
+        await insertSyntheticProviderBackfillFixture(database);
+        await database
+          .transaction()
+          .execute((transaction) =>
+            backfillSyntheticProviderAppointments.up(transaction),
+          );
+        const reference = await database
+          .selectFrom('patient_portal_appointment_slots')
+          .select(slotProviderColumnNames)
+          .where('id', '=', providerBackfillFixture.slots.referenced)
+          .executeTakeFirstOrThrow();
+        const laterStartsAt = new Date('2036-01-07T05:00:00.000Z');
+        const laterEndsAt = new Date('2036-01-07T05:30:00.000Z');
+        const laterSourceDate = '2036-01-07';
+        const laterSlot = await database
+          .insertInto('patient_portal_appointment_slots')
+          .values({
+            bookable_practice_id:
+              providerBackfillFixture.bookablePractices.missingFacility,
+            tenant_id: providerBackfillFixture.tenantId,
+            organization_id: providerBackfillFixture.practices.missingFacility,
+            ...reference,
+            generation_key_hash: slotGenerationHash(
+              reference.availability_template_id!,
+              laterSourceDate,
+              laterStartsAt,
+              laterEndsAt,
+            ),
+            source_local_date: laterSourceDate,
+            starts_at: laterStartsAt,
+            ends_at: laterEndsAt,
+            status: 'available',
+            is_synthetic: true,
+          })
+          .returning('id')
+          .executeTakeFirstOrThrow();
+
+        await expect(
+          database
+            .transaction()
+            .execute((transaction) =>
+              backfillSyntheticProviderAppointments.down(transaction),
+            ),
+        ).rejects.toThrow(/forward-only|later provider-aware/i);
+        await expect(
+          database
+            .selectFrom('patient_portal_appointment_slots')
+            .select(slotProviderColumnNames)
+            .select(
+              sql<string>`source_local_date::text`.as('source_local_date_text'),
+            )
+            .where('id', '=', laterSlot.id)
+            .executeTakeFirstOrThrow(),
+        ).resolves.toMatchObject({
+          facility_id: reference.facility_id,
+          practitioner_facility_assignment_id:
+            reference.practitioner_facility_assignment_id,
+          practitioner_service_assignment_id:
+            reference.practitioner_service_assignment_id,
+          practitioner_id: reference.practitioner_id,
+          appointment_service_id: reference.appointment_service_id,
+          availability_template_id: reference.availability_template_id,
+          generation_key_hash: slotGenerationHash(
+            reference.availability_template_id!,
+            laterSourceDate,
+            laterStartsAt,
+            laterEndsAt,
+          ),
+          source_local_date_text: laterSourceDate,
+          source_timezone: reference.source_timezone,
+        });
+        expect(
+          (await readProviderNullability(database)).every(
+            (column) => column.is_nullable === 'NO',
+          ),
+        ).toBe(true);
+      } finally {
+        if (isolated) {
+          await destroyProviderBackfillTestDatabase(isolated);
+        }
+      }
+    }, 30_000);
+
+    it('refuses rollback after an equivalent provider-aware seed update', async () => {
+      let isolated: IsolatedMigrationDatabase | undefined;
+
+      try {
+        isolated = await createProviderBackfillTestDatabase('seed_update');
+        const { database } = isolated;
+        const fixture = providerBackfillFixture;
+        await insertSyntheticProviderBackfillFixture(database);
+        await database
+          .transaction()
+          .execute((transaction) =>
+            backfillSyntheticProviderAppointments.up(transaction),
+          );
+
+        const updatedAt = new Date('2040-01-01T00:00:00.000Z');
+        await database
+          .updateTable('appointment_services')
+          .set({
+            patient_facing_name: 'General consultation',
+            updated_at: updatedAt,
+          })
+          .where(
+            'id',
+            '=',
+            syntheticProviderFixtureId(
+              'appointment-service',
+              fixture.bookablePractices.missingFacility,
+            ),
+          )
+          .executeTakeFirstOrThrow();
+        await database
+          .updateTable('patient_portal_appointment_slots')
+          .set({ is_synthetic: true, updated_at: updatedAt })
+          .where('id', '=', fixture.slots.referenced)
+          .executeTakeFirstOrThrow();
+
+        await expect(
+          database
+            .transaction()
+            .execute((transaction) =>
+              backfillSyntheticProviderAppointments.down(transaction),
+            ),
+        ).rejects.toThrow(/forward-only|changed synthetic provider fixtures/i);
+        expect(
+          (await readProviderNullability(database)).every(
+            (column) => column.is_nullable === 'NO',
+          ),
+        ).toBe(true);
+      } finally {
+        if (isolated) {
+          await destroyProviderBackfillTestDatabase(isolated);
+        }
+      }
+    }, 30_000);
+
+    it('fails closed when facility ownership is ambiguous', async () => {
+      let isolated: IsolatedMigrationDatabase | undefined;
+
+      try {
+        isolated = await createProviderBackfillTestDatabase('ambiguous');
+        const { database } = isolated;
+        const fixture = providerBackfillFixture;
+        await insertSyntheticProviderBackfillFixture(database);
+        const deterministicFacilityId = syntheticProviderFixtureId(
+          'facility',
+          fixture.bookablePractices.deterministicFacility,
+        );
+        await database
+          .deleteFrom('facilities')
+          .where('id', '=', deterministicFacilityId)
+          .execute();
+        await database
+          .insertInto('facilities')
+          .values({
+            tenant_id: fixture.tenantId,
+            organization_id: fixture.practices.deterministicFacility,
+            code: 'BACKFILL-FACILITY-AMBIGUOUS',
+            name: 'Synthetic Ambiguous Backfill Facility',
+            timezone: 'Asia/Dubai',
+            is_synthetic: true,
+          })
+          .execute();
+        const legacyState = await readLegacySchedulingState(database);
+
+        await expect(
+          database
+            .transaction()
+            .execute((transaction) =>
+              backfillSyntheticProviderAppointments.up(transaction),
+            ),
+        ).rejects.toThrow(/ambiguous|multiple synthetic facilities/i);
+        expect(await readLegacySchedulingState(database)).toEqual(legacyState);
+        await expect(
+          database.selectFrom('practitioners').select('id').execute(),
+        ).resolves.toHaveLength(0);
+        await expect(
+          database
+            .selectFrom('facilities')
+            .select('id')
+            .where(
+              'id',
+              '=',
+              syntheticProviderFixtureId(
+                'facility',
+                fixture.bookablePractices.missingFacility,
+              ),
+            )
+            .executeTakeFirst(),
+        ).resolves.toBeUndefined();
+        expect(
+          (await readProviderNullability(database)).every(
+            (column) => column.is_nullable === 'YES',
+          ),
+        ).toBe(true);
+      } finally {
+        if (isolated) {
+          await destroyProviderBackfillTestDatabase(isolated);
+        }
+      }
+    }, 30_000);
+
+    it('fails closed when a synthetic practice has only a non-synthetic facility', async () => {
+      let isolated: IsolatedMigrationDatabase | undefined;
+
+      try {
+        isolated = await createProviderBackfillTestDatabase(
+          'non_synthetic_facility',
+        );
+        const { database } = isolated;
+        const fixture = providerBackfillFixture;
+        await insertSyntheticProviderBackfillFixture(database);
+        await database
+          .deleteFrom('facilities')
+          .where('id', '=', fixture.facilities.noSlots)
+          .execute();
+        await database
+          .insertInto('facilities')
+          .values({
+            id: fixture.facilities.noSlots,
+            tenant_id: fixture.tenantId,
+            organization_id: fixture.practices.noSlots,
+            code: 'BACKFILL-NON-SYNTHETIC-FACILITY',
+            name: 'Unsupported Non-synthetic Facility',
+            timezone: 'Asia/Dubai',
+            is_synthetic: false,
+          })
+          .execute();
+        const legacyState = await readLegacySchedulingState(database);
+
+        await expect(
+          database
+            .transaction()
+            .execute((transaction) =>
+              backfillSyntheticProviderAppointments.up(transaction),
+            ),
+        ).rejects.toThrow(/cannot select a non-synthetic facility/i);
+        expect(await readLegacySchedulingState(database)).toEqual(legacyState);
+        await expect(
+          database.selectFrom('practitioners').select('id').execute(),
+        ).resolves.toHaveLength(0);
+        await expect(
+          database
+            .selectFrom('facilities')
+            .select('id')
+            .where(
+              'id',
+              '=',
+              syntheticProviderFixtureId(
+                'facility',
+                fixture.bookablePractices.missingFacility,
+              ),
+            )
+            .executeTakeFirst(),
+        ).resolves.toBeUndefined();
+        expect(
+          (await readProviderNullability(database)).every(
+            (column) => column.is_nullable === 'YES',
+          ),
+        ).toBe(true);
+      } finally {
+        if (isolated) {
+          await destroyProviderBackfillTestDatabase(isolated);
+        }
+      }
+    }, 30_000);
+
+    it('fails closed when the selected facility timezone differs from the bookable practice', async () => {
+      let isolated: IsolatedMigrationDatabase | undefined;
+
+      try {
+        isolated = await createProviderBackfillTestDatabase(
+          'facility_timezone_mismatch',
+        );
+        const { database } = isolated;
+        const fixture = providerBackfillFixture;
+        await insertSyntheticProviderBackfillFixture(database);
+        await database
+          .updateTable('facilities')
+          .set({ timezone: 'Asia/Singapore' })
+          .where('id', '=', fixture.facilities.single)
+          .execute();
+        const legacyState = await readLegacySchedulingState(database);
+
+        await expect(
+          database
+            .transaction()
+            .execute((transaction) =>
+              backfillSyntheticProviderAppointments.up(transaction),
+            ),
+        ).rejects.toThrow(
+          /matching facility and bookable timezones|facility.*bookable.*timezone/i,
+        );
+        expect(await readLegacySchedulingState(database)).toEqual(legacyState);
+        await expect(
+          database.selectFrom('practitioners').select('id').execute(),
+        ).resolves.toHaveLength(0);
+        await expect(
+          database
+            .selectFrom('facilities')
+            .select('id')
+            .where(
+              'id',
+              '=',
+              syntheticProviderFixtureId(
+                'facility',
+                fixture.bookablePractices.missingFacility,
+              ),
+            )
+            .executeTakeFirst(),
+        ).resolves.toBeUndefined();
+        expect(
+          (await readProviderNullability(database)).every(
+            (column) => column.is_nullable === 'YES',
+          ),
+        ).toBe(true);
+      } finally {
+        if (isolated) {
+          await destroyProviderBackfillTestDatabase(isolated);
+        }
+      }
+    }, 30_000);
+
+    it('fails closed when one synthetic practice has mixed slot durations', async () => {
+      let isolated: IsolatedMigrationDatabase | undefined;
+
+      try {
+        isolated = await createProviderBackfillTestDatabase('mixed_duration');
+        const { database } = isolated;
+        const fixture = providerBackfillFixture;
+        await insertSyntheticProviderBackfillFixture(database);
+        await database
+          .insertInto('patient_portal_appointment_slots')
+          .values({
+            id: 'ba500000-0000-4000-8000-000000000005',
+            bookable_practice_id: fixture.bookablePractices.missingFacility,
+            tenant_id: fixture.tenantId,
+            organization_id: fixture.practices.missingFacility,
+            starts_at: new Date('2035-01-22T05:00:00.000Z'),
+            ends_at: new Date('2035-01-22T05:45:00.000Z'),
+            status: 'available',
+            is_synthetic: true,
+          })
+          .execute();
+        const legacyState = await readLegacySchedulingState(database);
+
+        await expect(
+          database
+            .transaction()
+            .execute((transaction) =>
+              backfillSyntheticProviderAppointments.up(transaction),
+            ),
+        ).rejects.toThrow(/duration|mixed/i);
+        expect(await readLegacySchedulingState(database)).toEqual(legacyState);
+        await expect(
+          database.selectFrom('practitioners').select('id').execute(),
+        ).resolves.toHaveLength(0);
+        expect(
+          (await readProviderNullability(database)).every(
+            (column) => column.is_nullable === 'YES',
+          ),
+        ).toBe(true);
+      } finally {
+        if (isolated) {
+          await destroyProviderBackfillTestDatabase(isolated);
+        }
+      }
+    }, 30_000);
+
+    it('fails closed for a non-synthetic generic slot without partial backfill', async () => {
+      let isolated: IsolatedMigrationDatabase | undefined;
+
+      try {
+        isolated = await createProviderBackfillTestDatabase('unsupported');
+        const { database } = isolated;
+        await insertSyntheticProviderBackfillFixture(database);
+        await database
+          .updateTable('patient_portal_appointment_slots')
+          .set({ is_synthetic: false })
+          .where('id', '=', providerBackfillFixture.slots.referenced)
+          .execute();
+        const legacyState = await readLegacySchedulingState(database);
+
+        await expect(
+          database
+            .transaction()
+            .execute((transaction) =>
+              backfillSyntheticProviderAppointments.up(transaction),
+            ),
+        ).rejects.toThrow(
+          /accepts only synthetic practice slots|non-synthetic|unsupported/i,
+        );
+        expect(await readLegacySchedulingState(database)).toEqual(legacyState);
+        await expect(
+          database.selectFrom('practitioners').select('id').execute(),
+        ).resolves.toHaveLength(0);
+        expect(
+          (await readProviderNullability(database)).every(
+            (column) => column.is_nullable === 'YES',
+          ),
+        ).toBe(true);
+      } finally {
+        if (isolated) {
+          await destroyProviderBackfillTestDatabase(isolated);
+        }
+      }
+    }, 30_000);
+  },
+);

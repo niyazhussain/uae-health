@@ -87,6 +87,35 @@ exception kinds without free text.
 - **WHEN** an authorized scheduler deactivates a practitioner assignment or service that has live appointment requests
 - **THEN** the system prevents new bookings, preserves those requests and their slots, and returns safe affected-request identifiers for explicit staff resolution
 
+### Requirement: Backfill synthetic generic scheduling data safely
+
+The system SHALL replace every existing synthetic generic consultation slot
+and appointment with deterministic provider, service, facility, assignment,
+template, and generation ownership without changing referenced slot identifiers
+or appointment times. The backfill SHALL fail closed for non-synthetic or
+ambiguous generic ownership, and subsequent seed runs SHALL append only
+deterministic future provider-aware availability.
+
+#### Scenario: Preserve a referenced synthetic appointment slot
+
+- **WHEN** the provider backfill processes a generic synthetic slot referenced by an appointment
+- **THEN** the same slot identifier, UTC start and end, status, appointment reference, and patient scope remain while the exact provider bundle is added to both rows
+
+#### Scenario: Reject ambiguous facility ownership
+
+- **WHEN** a synthetic bookable practice has several possible facilities and no deterministic fixture facility
+- **THEN** the backfill aborts without selecting a facility by query order or partially updating scheduling data
+
+#### Scenario: Reject contradictory legacy schedule evidence
+
+- **WHEN** a selected facility timezone differs from its bookable-practice timezone, or one practice has mixed or fractional slot durations
+- **THEN** the backfill aborts atomically without inventing a timezone, duration, provider scope, or partial fixture
+
+#### Scenario: Rerun the provider-aware synthetic seed
+
+- **WHEN** the local synthetic seed runs repeatedly across restarts
+- **THEN** referenced slots remain unchanged, equivalent future occurrences are reused, and only new deterministic future occurrences are appended
+
 ### Requirement: Discover safe provider-aware availability
 
 The patient portal SHALL let an authenticated patient discover a bookable

@@ -40,6 +40,17 @@ interface AppointmentRecord {
   slotId: string;
 }
 
+interface ResolvedAvailableSlot {
+  id: string;
+  starts_at: Date;
+  ends_at: Date;
+  facility_id: string;
+  practitioner_facility_assignment_id: string;
+  practitioner_service_assignment_id: string;
+  practitioner_id: string;
+  appointment_service_id: string;
+}
+
 interface StoredCommand {
   requestHash: string;
   appointmentRelationshipId: string | null;
@@ -504,6 +515,13 @@ export class PatientAppointmentsService {
                 ? context.appointmentRelationshipId
                 : null,
             appointment_slot_id: slot.id,
+            facility_id: slot.facility_id,
+            practitioner_facility_assignment_id:
+              slot.practitioner_facility_assignment_id,
+            practitioner_service_assignment_id:
+              slot.practitioner_service_assignment_id,
+            practitioner_id: slot.practitioner_id,
+            appointment_service_id: slot.appointment_service_id,
             status: 'requested',
             version: 1,
             cancelled_at: null,
@@ -548,6 +566,13 @@ export class PatientAppointmentsService {
             status: appointment.status,
             version: appointment.version,
             slotId: slot.id,
+            facilityId: slot.facility_id,
+            practitionerFacilityAssignmentId:
+              slot.practitioner_facility_assignment_id,
+            practitionerServiceAssignmentId:
+              slot.practitioner_service_assignment_id,
+            practitionerId: slot.practitioner_id,
+            appointmentServiceId: slot.appointment_service_id,
           },
         });
 
@@ -806,6 +831,13 @@ export class PatientAppointmentsService {
           .updateTable('patient_portal_appointments')
           .set({
             appointment_slot_id: slot.id,
+            facility_id: slot.facility_id,
+            practitioner_facility_assignment_id:
+              slot.practitioner_facility_assignment_id,
+            practitioner_service_assignment_id:
+              slot.practitioner_service_assignment_id,
+            practitioner_id: slot.practitioner_id,
+            appointment_service_id: slot.appointment_service_id,
             version: appointment.version + 1,
             updated_at: now,
           })
@@ -861,6 +893,13 @@ export class PatientAppointmentsService {
             status: updated.status,
             version: updated.version,
             slotId: slot.id,
+            facilityId: slot.facility_id,
+            practitionerFacilityAssignmentId:
+              slot.practitioner_facility_assignment_id,
+            practitionerServiceAssignmentId:
+              slot.practitioner_service_assignment_id,
+            practitionerId: slot.practitioner_id,
+            appointmentServiceId: slot.appointment_service_id,
           },
         });
         return {
@@ -1322,11 +1361,20 @@ export class PatientAppointmentsService {
     database: Transaction<DatabaseSchema>,
     practice: BookablePractice,
     slotId: string,
-  ): Promise<{ id: string; starts_at: Date; ends_at: Date } | null> {
+  ): Promise<ResolvedAvailableSlot | null> {
     const now = new Date();
     const slot = await database
       .selectFrom('patient_portal_appointment_slots as slot')
-      .select(['slot.id', 'slot.starts_at', 'slot.ends_at'])
+      .select([
+        'slot.id',
+        'slot.starts_at',
+        'slot.ends_at',
+        'slot.facility_id',
+        'slot.practitioner_facility_assignment_id',
+        'slot.practitioner_service_assignment_id',
+        'slot.practitioner_id',
+        'slot.appointment_service_id',
+      ])
       .where('slot.id', '=', slotId)
       .where('slot.bookable_practice_id', '=', practice.bookablePracticeId)
       .where('slot.status', '=', 'available')
@@ -1343,7 +1391,28 @@ export class PatientAppointmentsService {
       .forUpdate()
       .executeTakeFirst();
 
-    return slot ?? null;
+    if (
+      !slot?.facility_id ||
+      !slot.practitioner_facility_assignment_id ||
+      !slot.practitioner_service_assignment_id ||
+      !slot.practitioner_id ||
+      !slot.appointment_service_id
+    ) {
+      return null;
+    }
+
+    return {
+      id: slot.id,
+      starts_at: slot.starts_at,
+      ends_at: slot.ends_at,
+      facility_id: slot.facility_id,
+      practitioner_facility_assignment_id:
+        slot.practitioner_facility_assignment_id,
+      practitioner_service_assignment_id:
+        slot.practitioner_service_assignment_id,
+      practitioner_id: slot.practitioner_id,
+      appointment_service_id: slot.appointment_service_id,
+    };
   }
 
   private async findScopedAppointmentForUpdate(

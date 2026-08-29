@@ -231,6 +231,39 @@ After validation, provider/service/facility ownership becomes required for
 consultation slots. Seed reruns preserve referenced slots and create only
 deterministic future synthetic availability.
 
+Fixture identifiers are namespace-derived from the opaque bookable-practice
+identifier rather than database discovery order. The backfill uses the
+deterministic synthetic facility when it already exists; otherwise it may use
+the practice's one existing synthetic facility or create the deterministic
+facility when none exists. It fails closed when only non-synthetic facilities
+exist or several non-deterministic synthetic facilities make the choice
+ambiguous. It never selects the first facility returned by a query.
+
+The generated facility code derives from the namespace-derived facility
+identifier rather than a truncated structured practice identifier. An existing
+facility's IANA timezone must match the legacy bookable-practice timezone;
+otherwise the migration aborts instead of choosing between contradictory local
+schedule interpretations. The service duration is the practice's one distinct
+positive whole-minute legacy slot duration, or 30 minutes only when it has no
+slots. Mixed durations fail closed, and seed reruns retain the persisted
+duration and exact facility chain.
+
+Each legacy slot receives the template matching its source local weekday,
+window, and facility timezone. The migration and seed use the same deterministic
+template identifier and SHA-256 occurrence key, so a later seed retry reuses the
+backfilled slot instead of moving or duplicating it. Slot and appointment
+provider bundles are populated in one transaction before every provider column
+becomes required. The interim booking and rescheduling writer copies those
+values only from the locked server-resolved slot. A slot may end at exact local
+midnight, represented as template minute 1440; other cross-day legacy windows
+remain unsupported and abort the backfill.
+
+The migration records the exact rows it backfilled for a safe pre-write down
+path. Rollback refuses when provider-aware rows created after the backfill are
+present; after the provider-aware seed or application writes new rows, recovery
+is forward-only. Unsupported non-synthetic or ambiguous generic fixtures abort
+the up migration without partially changing scheduling data.
+
 The API transition is additive until the web client consumes provider-aware
 responses. Removal of generic fields occurs only after compatibility tests pass.
 Rollback before provider-aware writes may use the migration down path; after
