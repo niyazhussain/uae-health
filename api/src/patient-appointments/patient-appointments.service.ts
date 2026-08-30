@@ -154,16 +154,120 @@ export class PatientAppointmentsService {
         expression.exists(
           expression
             .selectFrom('patient_portal_appointment_slots as slot')
+            .innerJoin('facilities as facility', (join) =>
+              join
+                .onRef('facility.id', '=', 'slot.facility_id')
+                .onRef('facility.tenant_id', '=', 'slot.tenant_id')
+                .onRef('facility.organization_id', '=', 'slot.organization_id'),
+            )
+            .innerJoin(
+              'practitioner_facility_assignments as facility_assignment',
+              (join) =>
+                join
+                  .onRef(
+                    'facility_assignment.id',
+                    '=',
+                    'slot.practitioner_facility_assignment_id',
+                  )
+                  .onRef('facility_assignment.tenant_id', '=', 'slot.tenant_id')
+                  .onRef(
+                    'facility_assignment.organization_id',
+                    '=',
+                    'slot.organization_id',
+                  )
+                  .onRef(
+                    'facility_assignment.facility_id',
+                    '=',
+                    'slot.facility_id',
+                  )
+                  .onRef(
+                    'facility_assignment.practitioner_id',
+                    '=',
+                    'slot.practitioner_id',
+                  ),
+            )
+            .innerJoin('practitioners as practitioner', (join) =>
+              join
+                .onRef('practitioner.id', '=', 'slot.practitioner_id')
+                .onRef('practitioner.tenant_id', '=', 'slot.tenant_id'),
+            )
+            .innerJoin('appointment_services as service', (join) =>
+              join
+                .onRef('service.id', '=', 'slot.appointment_service_id')
+                .onRef('service.tenant_id', '=', 'slot.tenant_id')
+                .onRef('service.organization_id', '=', 'slot.organization_id')
+                .onRef('service.facility_id', '=', 'slot.facility_id'),
+            )
+            .innerJoin('specialties as specialty', (join) =>
+              join
+                .onRef('specialty.id', '=', 'service.specialty_id')
+                .onRef('specialty.tenant_id', '=', 'service.tenant_id')
+                .onRef(
+                  'specialty.organization_id',
+                  '=',
+                  'service.organization_id',
+                ),
+            )
+            .innerJoin(
+              'practitioner_service_assignments as service_assignment',
+              (join) =>
+                join
+                  .onRef(
+                    'service_assignment.id',
+                    '=',
+                    'slot.practitioner_service_assignment_id',
+                  )
+                  .onRef('service_assignment.tenant_id', '=', 'slot.tenant_id')
+                  .onRef(
+                    'service_assignment.organization_id',
+                    '=',
+                    'slot.organization_id',
+                  )
+                  .onRef(
+                    'service_assignment.facility_id',
+                    '=',
+                    'slot.facility_id',
+                  )
+                  .onRef(
+                    'service_assignment.practitioner_facility_assignment_id',
+                    '=',
+                    'slot.practitioner_facility_assignment_id',
+                  )
+                  .onRef(
+                    'service_assignment.practitioner_id',
+                    '=',
+                    'slot.practitioner_id',
+                  )
+                  .onRef(
+                    'service_assignment.appointment_service_id',
+                    '=',
+                    'slot.appointment_service_id',
+                  ),
+            )
             .select(sql`1`.as('one'))
             .whereRef('slot.bookable_practice_id', '=', 'bookable.id')
+            .whereRef('slot.tenant_id', '=', 'bookable.tenant_id')
+            .whereRef('slot.organization_id', '=', 'bookable.organization_id')
             .where('slot.status', '=', 'available')
             .where('slot.is_synthetic', '=', true)
-            .where('slot.starts_at', '>', now).where(sql<boolean>`not exists (
-              select 1
-              from patient_portal_appointments appointment
-              where appointment.appointment_slot_id = slot.id
-                and appointment.status = 'requested'
-            )`),
+            .where('slot.starts_at', '>', now)
+            .where('facility.is_synthetic', '=', true)
+            .where('facility_assignment.status', '=', 'active')
+            .where('facility_assignment.is_synthetic', '=', true)
+            .where('practitioner.status', '=', 'active')
+            .where('practitioner.is_synthetic', '=', true)
+            .where('specialty.status', '=', 'active')
+            .where('specialty.is_synthetic', '=', true)
+            .where('service.status', '=', 'active')
+            .where('service.is_synthetic', '=', true)
+            .where('service_assignment.status', '=', 'active')
+            .where('service_assignment.is_synthetic', '=', true)
+            .where(sql<boolean>`not exists (
+                select 1
+                from patient_portal_appointments appointment
+                where appointment.appointment_slot_id = slot.id
+                  and appointment.status = 'requested'
+              )`),
         ),
       )
       .orderBy('organization.name', 'asc')
@@ -353,11 +457,102 @@ export class PatientAppointmentsService {
     const now = new Date();
     const slots = await this.database.client
       .selectFrom('patient_portal_appointment_slots as slot')
+      .innerJoin('facilities as facility', (join) =>
+        join
+          .onRef('facility.id', '=', 'slot.facility_id')
+          .onRef('facility.tenant_id', '=', 'slot.tenant_id')
+          .onRef('facility.organization_id', '=', 'slot.organization_id'),
+      )
+      .innerJoin(
+        'practitioner_facility_assignments as facility_assignment',
+        (join) =>
+          join
+            .onRef(
+              'facility_assignment.id',
+              '=',
+              'slot.practitioner_facility_assignment_id',
+            )
+            .onRef('facility_assignment.tenant_id', '=', 'slot.tenant_id')
+            .onRef(
+              'facility_assignment.organization_id',
+              '=',
+              'slot.organization_id',
+            )
+            .onRef('facility_assignment.facility_id', '=', 'slot.facility_id')
+            .onRef(
+              'facility_assignment.practitioner_id',
+              '=',
+              'slot.practitioner_id',
+            ),
+      )
+      .innerJoin('practitioners as practitioner', (join) =>
+        join
+          .onRef('practitioner.id', '=', 'slot.practitioner_id')
+          .onRef('practitioner.tenant_id', '=', 'slot.tenant_id'),
+      )
+      .innerJoin('appointment_services as service', (join) =>
+        join
+          .onRef('service.id', '=', 'slot.appointment_service_id')
+          .onRef('service.tenant_id', '=', 'slot.tenant_id')
+          .onRef('service.organization_id', '=', 'slot.organization_id')
+          .onRef('service.facility_id', '=', 'slot.facility_id'),
+      )
+      .innerJoin('specialties as specialty', (join) =>
+        join
+          .onRef('specialty.id', '=', 'service.specialty_id')
+          .onRef('specialty.tenant_id', '=', 'service.tenant_id')
+          .onRef('specialty.organization_id', '=', 'service.organization_id'),
+      )
+      .innerJoin(
+        'practitioner_service_assignments as service_assignment',
+        (join) =>
+          join
+            .onRef(
+              'service_assignment.id',
+              '=',
+              'slot.practitioner_service_assignment_id',
+            )
+            .onRef('service_assignment.tenant_id', '=', 'slot.tenant_id')
+            .onRef(
+              'service_assignment.organization_id',
+              '=',
+              'slot.organization_id',
+            )
+            .onRef('service_assignment.facility_id', '=', 'slot.facility_id')
+            .onRef(
+              'service_assignment.practitioner_facility_assignment_id',
+              '=',
+              'slot.practitioner_facility_assignment_id',
+            )
+            .onRef(
+              'service_assignment.practitioner_id',
+              '=',
+              'slot.practitioner_id',
+            )
+            .onRef(
+              'service_assignment.appointment_service_id',
+              '=',
+              'slot.appointment_service_id',
+            ),
+      )
       .select(['slot.id', 'slot.starts_at', 'slot.ends_at'])
       .where('slot.bookable_practice_id', '=', bookable.bookablePracticeId)
+      .where('slot.tenant_id', '=', bookable.tenantId)
+      .where('slot.organization_id', '=', bookable.organizationId)
       .where('slot.status', '=', 'available')
       .where('slot.is_synthetic', '=', true)
       .where('slot.starts_at', '>', now)
+      .where('facility.is_synthetic', '=', true)
+      .where('facility_assignment.status', '=', 'active')
+      .where('facility_assignment.is_synthetic', '=', true)
+      .where('practitioner.status', '=', 'active')
+      .where('practitioner.is_synthetic', '=', true)
+      .where('specialty.status', '=', 'active')
+      .where('specialty.is_synthetic', '=', true)
+      .where('service.status', '=', 'active')
+      .where('service.is_synthetic', '=', true)
+      .where('service_assignment.status', '=', 'active')
+      .where('service_assignment.is_synthetic', '=', true)
       .where(
         sql<boolean>`not exists (
         select 1
@@ -1198,6 +1393,7 @@ export class PatientAppointmentsService {
     database: DatabaseExecutor,
     bookablePracticeId: string,
   ): Promise<BookablePractice | null> {
+    const now = new Date();
     const practice = await database
       .selectFrom('patient_portal_bookable_practices as bookable')
       .innerJoin('tenants as tenant', 'tenant.id', 'bookable.tenant_id')
@@ -1220,6 +1416,67 @@ export class PatientAppointmentsService {
       .where('tenant.is_synthetic', '=', true)
       .where('organization.kind', '=', 'practice')
       .where('organization.is_synthetic', '=', true)
+      .where(
+        sql<boolean>`exists (
+        select 1
+        from patient_portal_appointment_slots slot
+        join facilities facility
+          on facility.id = slot.facility_id
+         and facility.tenant_id = slot.tenant_id
+         and facility.organization_id = slot.organization_id
+         and facility.is_synthetic = true
+        join practitioner_facility_assignments facility_assignment
+          on facility_assignment.id = slot.practitioner_facility_assignment_id
+         and facility_assignment.tenant_id = slot.tenant_id
+         and facility_assignment.organization_id = slot.organization_id
+         and facility_assignment.facility_id = slot.facility_id
+         and facility_assignment.practitioner_id = slot.practitioner_id
+         and facility_assignment.status = 'active'
+         and facility_assignment.is_synthetic = true
+        join practitioners practitioner
+          on practitioner.id = slot.practitioner_id
+         and practitioner.tenant_id = slot.tenant_id
+         and practitioner.status = 'active'
+         and practitioner.is_synthetic = true
+        join appointment_services service
+          on service.id = slot.appointment_service_id
+         and service.tenant_id = slot.tenant_id
+         and service.organization_id = slot.organization_id
+         and service.facility_id = slot.facility_id
+         and service.status = 'active'
+         and service.is_synthetic = true
+        join specialties specialty
+          on specialty.id = service.specialty_id
+         and specialty.tenant_id = service.tenant_id
+         and specialty.organization_id = service.organization_id
+         and specialty.status = 'active'
+         and specialty.is_synthetic = true
+        join practitioner_service_assignments service_assignment
+          on service_assignment.id = slot.practitioner_service_assignment_id
+         and service_assignment.tenant_id = slot.tenant_id
+         and service_assignment.organization_id = slot.organization_id
+         and service_assignment.facility_id = slot.facility_id
+         and service_assignment.practitioner_facility_assignment_id =
+             slot.practitioner_facility_assignment_id
+         and service_assignment.practitioner_id = slot.practitioner_id
+         and service_assignment.appointment_service_id =
+             slot.appointment_service_id
+         and service_assignment.status = 'active'
+         and service_assignment.is_synthetic = true
+        where slot.bookable_practice_id = bookable.id
+          and slot.tenant_id = bookable.tenant_id
+          and slot.organization_id = bookable.organization_id
+          and slot.status = 'available'
+          and slot.is_synthetic = true
+          and slot.starts_at > ${now}
+          and not exists (
+            select 1
+            from patient_portal_appointments appointment
+            where appointment.appointment_slot_id = slot.id
+              and appointment.status = 'requested'
+          )
+      )`,
+      )
       .executeTakeFirst();
 
     return practice
@@ -1365,6 +1622,84 @@ export class PatientAppointmentsService {
     const now = new Date();
     const slot = await database
       .selectFrom('patient_portal_appointment_slots as slot')
+      .innerJoin('facilities as facility', (join) =>
+        join
+          .onRef('facility.id', '=', 'slot.facility_id')
+          .onRef('facility.tenant_id', '=', 'slot.tenant_id')
+          .onRef('facility.organization_id', '=', 'slot.organization_id'),
+      )
+      .innerJoin(
+        'practitioner_facility_assignments as facility_assignment',
+        (join) =>
+          join
+            .onRef(
+              'facility_assignment.id',
+              '=',
+              'slot.practitioner_facility_assignment_id',
+            )
+            .onRef('facility_assignment.tenant_id', '=', 'slot.tenant_id')
+            .onRef(
+              'facility_assignment.organization_id',
+              '=',
+              'slot.organization_id',
+            )
+            .onRef('facility_assignment.facility_id', '=', 'slot.facility_id')
+            .onRef(
+              'facility_assignment.practitioner_id',
+              '=',
+              'slot.practitioner_id',
+            ),
+      )
+      .innerJoin('practitioners as practitioner', (join) =>
+        join
+          .onRef('practitioner.id', '=', 'slot.practitioner_id')
+          .onRef('practitioner.tenant_id', '=', 'slot.tenant_id'),
+      )
+      .innerJoin('appointment_services as service', (join) =>
+        join
+          .onRef('service.id', '=', 'slot.appointment_service_id')
+          .onRef('service.tenant_id', '=', 'slot.tenant_id')
+          .onRef('service.organization_id', '=', 'slot.organization_id')
+          .onRef('service.facility_id', '=', 'slot.facility_id'),
+      )
+      .innerJoin('specialties as specialty', (join) =>
+        join
+          .onRef('specialty.id', '=', 'service.specialty_id')
+          .onRef('specialty.tenant_id', '=', 'service.tenant_id')
+          .onRef('specialty.organization_id', '=', 'service.organization_id'),
+      )
+      .innerJoin(
+        'practitioner_service_assignments as service_assignment',
+        (join) =>
+          join
+            .onRef(
+              'service_assignment.id',
+              '=',
+              'slot.practitioner_service_assignment_id',
+            )
+            .onRef('service_assignment.tenant_id', '=', 'slot.tenant_id')
+            .onRef(
+              'service_assignment.organization_id',
+              '=',
+              'slot.organization_id',
+            )
+            .onRef('service_assignment.facility_id', '=', 'slot.facility_id')
+            .onRef(
+              'service_assignment.practitioner_facility_assignment_id',
+              '=',
+              'slot.practitioner_facility_assignment_id',
+            )
+            .onRef(
+              'service_assignment.practitioner_id',
+              '=',
+              'slot.practitioner_id',
+            )
+            .onRef(
+              'service_assignment.appointment_service_id',
+              '=',
+              'slot.appointment_service_id',
+            ),
+      )
       .select([
         'slot.id',
         'slot.starts_at',
@@ -1377,9 +1712,22 @@ export class PatientAppointmentsService {
       ])
       .where('slot.id', '=', slotId)
       .where('slot.bookable_practice_id', '=', practice.bookablePracticeId)
+      .where('slot.tenant_id', '=', practice.tenantId)
+      .where('slot.organization_id', '=', practice.organizationId)
       .where('slot.status', '=', 'available')
       .where('slot.is_synthetic', '=', true)
       .where('slot.starts_at', '>', now)
+      .where('facility.is_synthetic', '=', true)
+      .where('facility_assignment.status', '=', 'active')
+      .where('facility_assignment.is_synthetic', '=', true)
+      .where('practitioner.status', '=', 'active')
+      .where('practitioner.is_synthetic', '=', true)
+      .where('specialty.status', '=', 'active')
+      .where('specialty.is_synthetic', '=', true)
+      .where('service.status', '=', 'active')
+      .where('service.is_synthetic', '=', true)
+      .where('service_assignment.status', '=', 'active')
+      .where('service_assignment.is_synthetic', '=', true)
       .where(
         sql<boolean>`not exists (
         select 1
@@ -1388,7 +1736,18 @@ export class PatientAppointmentsService {
           and appointment.status = 'requested'
       )`,
       )
-      .forUpdate()
+      // Serialize commands for the same slot while allowing different slots
+      // to share the stable provider chain. Catalogue deactivation still needs
+      // an exclusive row lock and therefore waits for these shared locks.
+      .forUpdate('slot')
+      .forShare([
+        'facility',
+        'facility_assignment',
+        'practitioner',
+        'service',
+        'specialty',
+        'service_assignment',
+      ])
       .executeTakeFirst();
 
     if (

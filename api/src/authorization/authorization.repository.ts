@@ -4,6 +4,7 @@ import { DatabaseService } from '../database/database.service.js';
 import { WORKFORCE_IDENTITY_PROVIDER } from '../identity-provider/identity-provider.constants.js';
 import type { WorkforceIdentityProviderPort } from '../identity-provider/identity-provider.types.js';
 import type {
+  AuthorizationDatabaseExecutor,
   AuthorizationRepositoryPort,
   AuthorizationRequest,
   AuthorizedAccess,
@@ -28,9 +29,10 @@ export class AuthorizationRepository implements AuthorizationRepositoryPort {
 
   async findAuthorizedAccess(
     request: AuthorizationRequest,
+    executor: AuthorizationDatabaseExecutor = this.database.client,
   ): Promise<AuthorizedAccess | null> {
     const result = await sql<AuthorizedAccessRow>`
-      with resolved_actor as (
+      with resolved_actors as (
         select distinct identity.application_user_id
         from user_identities identity
         join identity_connections connection
@@ -40,16 +42,25 @@ export class AuthorizationRepository implements AuthorizationRepositoryPort {
         where identity.subject = ${request.principal.subject}
           and identity.status = 'active'
           and connection.issuer = ${this.providerIssuer}
+          and connection.tenant_id = ${request.tenantId}
           and connection.status = 'active'
           and actor.status = 'active'
       )
       select distinct
         actor.application_user_id,
         membership.id as membership_id
-      from resolved_actor actor
+      from resolved_actors actor
+      join tenants tenant
+        on tenant.id = ${request.tenantId}
+       and tenant.status = 'active'
+      join organizations organization
+        on organization.id = ${request.organizationId}
+       and organization.tenant_id = tenant.id
+       and organization.kind = 'practice'
       join organization_memberships membership
         on membership.application_user_id = actor.application_user_id
-      where membership.tenant_id = ${request.tenantId}
+      where (select count(*) from resolved_actors) = 1
+        and membership.tenant_id = tenant.id
         and membership.organization_id = ${request.organizationId}
         and membership.status = 'active'
         and membership.valid_from <= now()
@@ -133,7 +144,7 @@ export class AuthorizationRepository implements AuthorizationRepositoryPort {
           )
         )
       limit 1
-    `.execute(this.database.client);
+    `.execute(executor);
 
     const row = result.rows[0];
 
@@ -145,10 +156,13 @@ export class AuthorizationRepository implements AuthorizationRepositoryPort {
       : null;
   }
 
-  async recordDeniedAccess(request: AuthorizationRequest): Promise<void> {
-    const actorUserId = await this.findActiveActorUserId(request);
+  async recordDeniedAccess(
+    request: AuthorizationRequest,
+    executor: AuthorizationDatabaseExecutor = this.database.client,
+  ): Promise<void> {
+    const actorUserId = await this.findActiveActorUserId(request, executor);
 
-    await this.database.client
+    await executor
       .insertInto('audit_events')
       .values({
         actor_type: actorUserId ? 'user' : 'system',
@@ -175,28 +189,35 @@ export class AuthorizationRepository implements AuthorizationRepositoryPort {
 
   private async findActiveActorUserId(
     request: AuthorizationRequest,
+    executor: AuthorizationDatabaseExecutor,
   ): Promise<string | null> {
-    const actors = await this.database.client
-      .selectFrom('user_identities as identity')
-      .innerJoin(
-        'identity_connections as connection',
-        'connection.id',
-        'identity.identity_connection_id',
+    const result = await sql<{ application_user_id: string }>`
+      with resolved_actors as (
+        select distinct identity.application_user_id
+        from user_identities identity
+        join identity_connections connection
+          on connection.id = identity.identity_connection_id
+        join application_users actor
+          on actor.id = identity.application_user_id
+        where identity.subject = ${request.principal.subject}
+          and identity.status = 'active'
+          and connection.issuer = ${this.providerIssuer}
+          and connection.tenant_id = ${request.tenantId}
+          and connection.status = 'active'
+          and actor.status = 'active'
       )
-      .innerJoin(
-        'application_users as application_user',
-        'application_user.id',
-        'identity.application_user_id',
-      )
-      .select('identity.application_user_id')
-      .distinct()
-      .where('identity.subject', '=', request.principal.subject)
-      .where('identity.status', '=', 'active')
-      .where('connection.issuer', '=', this.providerIssuer)
-      .where('connection.status', '=', 'active')
-      .where('application_user.status', '=', 'active')
-      .execute();
+      select actor.application_user_id
+      from resolved_actors actor
+      join tenants tenant
+        on tenant.id = ${request.tenantId}
+       and tenant.status = 'active'
+      join organizations organization
+        on organization.id = ${request.organizationId}
+       and organization.tenant_id = tenant.id
+       and organization.kind = 'practice'
+      where (select count(*) from resolved_actors) = 1
+    `.execute(executor);
 
-    return actors.length === 1 ? actors[0].application_user_id : null;
+    return result.rows[0]?.application_user_id ?? null;
   }
 }

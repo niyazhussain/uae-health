@@ -192,6 +192,39 @@ describe('AppController (e2e)', () => {
       });
   });
 
+  it('/v1/admin/scheduling/contexts rejects an unauthenticated request', () => {
+    const server = app.getHttpServer() as Server;
+
+    return request(server)
+      .get('/v1/admin/scheduling/contexts')
+      .expect(401)
+      .expect({
+        message: 'Active workforce session required.',
+        error: 'Unauthorized',
+        statusCode: 401,
+      });
+  });
+
+  it('/v1/admin/scheduling/specialties rejects an unauthenticated mutation', () => {
+    const server = app.getHttpServer() as Server;
+
+    return request(server)
+      .post('/v1/admin/scheduling/specialties')
+      .set('Idempotency-Key', '12345678-1234-4234-8234-123456789012')
+      .send({
+        organizationId: '20000000-0000-4000-8000-000000000001',
+        code: 'SYNTHETIC-E2E',
+        name: 'Synthetic e2e specialty',
+        reasonCode: 'catalogue-setup',
+      })
+      .expect(401)
+      .expect({
+        message: 'Active workforce session required.',
+        error: 'Unauthorized',
+        statusCode: 401,
+      });
+  });
+
   afterEach(async () => {
     await app.close();
   });

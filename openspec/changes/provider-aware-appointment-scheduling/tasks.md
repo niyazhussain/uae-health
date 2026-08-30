@@ -12,7 +12,7 @@
 
 ## 3. Workforce scheduling API
 
-- [ ] 3.1 Implement exact-practice, database-authorized practitioner, specialty, service, and assignment management APIs protected by `scheduling.manage`.
+- [x] 3.1 Implement exact-practice, database-authorized, durably idempotent practitioner, specialty, service, and assignment management APIs protected by `scheduling.manage`, with optimistic concurrency and active-chain booking enforcement.
 - [ ] 3.2 Implement authorized availability-template, exception, and bounded eight-week slot-materialization APIs with idempotent regeneration and booked-slot preservation.
 - [ ] 3.3 Implement scoped workforce appointment queues and idempotent confirm and decline commands requiring both `scheduling.manage` and `patients.read`, approved reason codes, and transactional audit evidence.
 

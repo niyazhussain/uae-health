@@ -269,6 +269,65 @@ responses. Removal of generic fields occurs only after compatibility tests pass.
 Rollback before provider-aware writes may use the migration down path; after
 such writes, recovery is forward-only to avoid discarding scheduling evidence.
 
+### 10. Catalogue administration is exact-practice, idempotent, and local in scope
+
+Task 3.1 exposes provider-neutral workforce scheduling APIs under
+`/v1/admin/scheduling`. The browser supplies an opaque organization identifier
+and, for facility-owned operations, an opaque facility identifier. The API
+derives the tenant from PostgreSQL, requires one active workforce identity, an
+active direct membership, and a current database-backed `scheduling.manage`
+assignment for that exact practice. Descendant grants are not inherited.
+Practice-wide catalogue mutations require an organization-wide assignment;
+facility-owned mutations may use either that organization-wide assignment or a
+matching facility-scoped assignment and facility membership. Authorization is
+re-evaluated inside every bounded-retry serializable mutation.
+
+The POC APIs operate only on active synthetic tenants and on existing synthetic
+practices and facilities; practices and facilities do not yet have separate
+lifecycle columns. The server owns every `is_synthetic` value. A scheduler
+may create a tenant practitioner together with its first active exact-practice
+facility affiliation, but task 3.1 does not expose tenant-global practitioner
+display, title, or lifecycle edits. A one-time application-user link is allowed
+only while all practitioner affiliations belong to the requesting practice and
+the target is one unambiguous active synthetic workforce member of that same
+tenant and practice. An existing linked practitioner may gain an affiliation in
+another practice only when that linked user is an active member there. These
+rules support an explicit shared doctor without making a guessed practitioner
+identifier an authority or exposing sibling-practice assignments.
+
+Specialties are created active and may be renamed or terminally retired after
+all dependent services are inactive. Services are created inactive. Service
+eligibility may be activated while its service is still inactive after the
+practitioner, specialty, and facility affiliation are revalidated; service
+activation then requires at least one complete active eligibility chain.
+Affiliations and eligibility rows are deactivated rather than deleted.
+Deactivating an affiliation also deactivates its local service eligibility and
+does not silently restore it later. Deactivation preserves slots and live
+appointments and returns the total affected count, at most 100 opaque affected
+appointment identifiers, and an explicit truncation flag. Task 3.3's scoped
+work queue provides the paginated resolution path when that bounded evidence is
+truncated.
+Service duration is selected at creation and is not mutable through task 3.1;
+task 3.2 owns duration changes together with slot withdrawal and regeneration.
+
+Every scheduling mutation requires an `Idempotency-Key`, an approved closed
+reason code, and, for updates, the expected `updated_at` value. PostgreSQL stores
+only hashes of the command key and request fingerprint plus the safe response
+snapshot, scoped to the immutable application user, operation, tenant, and
+practice. Current authorization is checked before replay. An equivalent retry
+returns the original result, a changed payload under the same key conflicts,
+and a stale update conflicts without overwriting a newer decision. Approved
+reason codes map server-side to canonical audit prose; raw free text is never
+stored. Success audit evidence and the durable command result commit in the
+same transaction. A lost authorization commits no domain change and writes a
+separate privacy-safe denial event before returning a generic forbidden result.
+
+All catalogue reads and patient availability/booking queries revalidate the
+complete active practitioner, specialty, facility-affiliation, service, and
+service-eligibility chain. Consequently a local deactivation immediately stops
+new discovery and booking while existing requests and their immutable provider
+evidence remain available for explicit staff resolution.
+
 ## Risks / Trade-offs
 
 - **Unverified professional labels could imply credentialing** → Restrict the

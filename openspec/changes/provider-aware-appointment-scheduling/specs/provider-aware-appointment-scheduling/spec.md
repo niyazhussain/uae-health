@@ -141,6 +141,69 @@ facility, facility timezone, and UTC appointment time for patient review.
 - **WHEN** a practitioner also works for a different practice
 - **THEN** discovery in the current practice does not reveal the other assignment, its schedule, or its appointments
 
+### Requirement: Administer the scheduling catalogue in one exact practice
+
+The system SHALL expose database-authorized workforce scheduling catalogue
+commands for synthetic practitioners, specialties, services, facility
+affiliations, and service eligibility. The server SHALL derive tenant ownership
+from the selected organization, SHALL NOT inherit descendant access, and SHALL
+re-evaluate `scheduling.manage` inside each serializable mutation. Facility-owned
+commands SHALL additionally enforce the actor's facility membership and role
+scope. Tenant-global practitioner profile changes SHALL not be available to an
+exact-practice scheduler.
+
+#### Scenario: Create a synthetic doctor for one facility
+
+- **WHEN** an authorized scheduler creates a doctor in an exact synthetic practice facility
+- **THEN** one active tenant practitioner and one active local facility affiliation commit without creating or changing authentication, membership, role, or patient-data access
+
+#### Scenario: Link a local workforce member explicitly
+
+- **WHEN** an authorized scheduler links an unshared unlinked practitioner to one active synthetic workforce member in the same tenant and practice
+- **THEN** the immutable application-user link is set once without exposing email, identity-provider subject, or sibling-practice membership
+
+#### Scenario: Reject inherited or sibling-practice authority
+
+- **WHEN** a caller has only descendant scope, a sibling-practice grant, or a guessed practitioner identifier
+- **THEN** the mutation is denied generically, changes no catalogue row, and records privacy-safe denial evidence whenever a valid audit scope can be resolved
+
+#### Scenario: Publish only a complete active service chain
+
+- **WHEN** an authorized scheduler activates a service
+- **THEN** the transaction succeeds only when its specialty and at least one exact practitioner, facility affiliation, and service-eligibility chain are active
+
+#### Scenario: Deactivate local provider eligibility
+
+- **WHEN** an authorized scheduler deactivates a facility affiliation, service, or service eligibility with existing live requests
+- **THEN** new discovery and booking stop immediately while slots and requests remain unchanged and the response contains a total count, a bounded set of opaque affected appointment identifiers, and an explicit truncation indicator
+
+### Requirement: Make scheduling catalogue commands retry-safe
+
+The system SHALL require a durable idempotency key and approved reason code for
+every scheduling catalogue mutation. Updates SHALL also require the expected
+last-updated value. Command keys and request payloads SHALL be hashed before
+persistence, and current authorization SHALL be checked before command replay.
+
+#### Scenario: Replay an equivalent catalogue command
+
+- **WHEN** the same authorized actor retries one operation, idempotency key, and payload
+- **THEN** the original safe result is returned without another catalogue change or success audit event
+
+#### Scenario: Reject a changed idempotency payload
+
+- **WHEN** the same actor reuses an idempotency key with a different scheduling payload
+- **THEN** the system returns a conflict and changes no catalogue or audit state
+
+#### Scenario: Reject a stale catalogue update
+
+- **WHEN** a scheduler updates a row using an older `updated_at` value
+- **THEN** the command returns a conflict without overwriting the newer lifecycle or configuration state
+
+#### Scenario: Roll back when scheduling audit persistence fails
+
+- **WHEN** a required scheduling success audit event cannot be stored
+- **THEN** the catalogue mutation and durable command result both roll back
+
 ### Requirement: Bind consultations to one concrete provider and context
 
 Every consultation appointment SHALL belong to one patient identity, one

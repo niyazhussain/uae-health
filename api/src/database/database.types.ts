@@ -28,6 +28,17 @@ export type PatientPortalAppointmentCommandOperation =
   | 'appointment_create'
   | 'appointment_cancellation'
   | 'appointment_reschedule';
+export type WorkforceSchedulingCommandOperation =
+  | 'practitioner_create'
+  | 'practitioner_link_application_user'
+  | 'practitioner_facility_assignment_create'
+  | 'practitioner_facility_assignment_status'
+  | 'specialty_create'
+  | 'specialty_update'
+  | 'service_create'
+  | 'service_update'
+  | 'practitioner_service_assignment_create'
+  | 'practitioner_service_assignment_status';
 export type PatientPortalRegistrationRequestStatus =
   'pending_provider' | 'pending_binding' | 'accepted' | 'rate_limited';
 export type PatientPortalInvitationStatus =
@@ -553,6 +564,25 @@ export interface PatientPortalAppointmentCommandTable {
   created_at: Generated<Date>;
 }
 
+/**
+ * Durable idempotency evidence for exact-practice workforce scheduling
+ * catalogue commands. Raw command keys and request payloads are never stored.
+ */
+export interface WorkforceSchedulingCommandTable {
+  id: Generated<string>;
+  actor_user_id: string;
+  tenant_id: string;
+  organization_id: string;
+  organization_kind: Generated<'practice'>;
+  operation: WorkforceSchedulingCommandOperation;
+  idempotency_key_hash: string;
+  request_hash: string;
+  response_data: Record<string, unknown>;
+  target_entity_type: string;
+  target_entity_id: string;
+  created_at: Generated<Date>;
+}
+
 export interface DatabaseSchema {
   tenants: TenantTable;
   organizations: OrganizationTable;
@@ -588,4 +618,5 @@ export interface DatabaseSchema {
   patient_portal_appointment_slots: PatientPortalAppointmentSlotTable;
   patient_portal_appointments: PatientPortalAppointmentTable;
   patient_portal_appointment_commands: PatientPortalAppointmentCommandTable;
+  workforce_scheduling_commands: WorkforceSchedulingCommandTable;
 }

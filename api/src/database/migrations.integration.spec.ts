@@ -24,6 +24,7 @@ import * as createPractitionerProfiles from './migrations/2026-08-27T020000_crea
 import * as createProviderSchedulingCatalogue from './migrations/2026-08-27T030000_create_provider_scheduling_catalogue.js';
 import * as createProviderAvailability from './migrations/2026-08-27T040000_create_provider_availability.js';
 import * as backfillSyntheticProviderAppointments from './migrations/2026-08-27T050000_backfill_synthetic_provider_appointments.js';
+import * as createWorkforceSchedulingCommands from './migrations/2026-08-27T060000_create_workforce_scheduling_commands.js';
 import { PatientPortalProfileLinkService } from '../patient-portal-auth/patient-portal-profile-link.service.js';
 import { PatientPortalRegistrationService } from '../patient-portal-auth/patient-portal-registration.service.js';
 import { PatientPortalSessionService } from '../patient-portal-auth/patient-portal-session.service.js';
@@ -683,10 +684,22 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
       .execute();
 
     await createProviderAvailability.up(database);
+    await createWorkforceSchedulingCommands.up(database);
   });
 
   afterAll(async () => {
     if (database) {
+      await createWorkforceSchedulingCommands.down(database);
+
+      const rolledBackWorkforceSchedulingCommands = await sql<{
+        table_name: string | null;
+      }>`
+        select to_regclass('workforce_scheduling_commands')::text as table_name
+      `.execute(database);
+      expect(
+        rolledBackWorkforceSchedulingCommands.rows[0]?.table_name,
+      ).toBeNull();
+
       await sql`
         delete from patient_portal_appointment_commands command
         using patient_portal_appointments appointment
@@ -1905,6 +1918,446 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
     });
     expect(JSON.stringify(patientSafeProjection)).not.toContain(
       'scheduling-physician@example.invalid',
+    );
+  });
+
+  it('stores exact-practice workforce scheduling command evidence with bounded values', async () => {
+    const firstTenant = await database
+      .insertInto('tenants')
+      .values({
+        code: 'SCHEDULING-COMMAND-A',
+        name: 'Synthetic Scheduling Command Tenant A',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const secondTenant = await database
+      .insertInto('tenants')
+      .values({
+        code: 'SCHEDULING-COMMAND-B',
+        name: 'Synthetic Scheduling Command Tenant B',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const practice = await database
+      .insertInto('organizations')
+      .values({
+        tenant_id: firstTenant.id,
+        parent_organization_id: null,
+        kind: 'practice',
+        code: 'SCHEDULING-COMMAND-PRACTICE',
+        name: 'Synthetic Scheduling Command Practice',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const siblingPractice = await database
+      .insertInto('organizations')
+      .values({
+        tenant_id: firstTenant.id,
+        parent_organization_id: null,
+        kind: 'practice',
+        code: 'SCHEDULING-COMMAND-SIBLING',
+        name: 'Synthetic Sibling Scheduling Command Practice',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const group = await database
+      .insertInto('organizations')
+      .values({
+        tenant_id: firstTenant.id,
+        parent_organization_id: null,
+        kind: 'group',
+        code: 'SCHEDULING-COMMAND-GROUP',
+        name: 'Synthetic Scheduling Command Group',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const foreignPractice = await database
+      .insertInto('organizations')
+      .values({
+        tenant_id: secondTenant.id,
+        parent_organization_id: null,
+        kind: 'practice',
+        code: 'SCHEDULING-COMMAND-FOREIGN',
+        name: 'Synthetic Foreign Scheduling Command Practice',
+        is_synthetic: true,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const actors = await database
+      .insertInto('application_users')
+      .values([
+        {
+          display_name: 'Synthetic Scheduling Command Actor A',
+          primary_email: 'scheduling-command-actor-a@example.invalid',
+          is_synthetic: true,
+        },
+        {
+          display_name: 'Synthetic Scheduling Command Actor B',
+          primary_email: 'scheduling-command-actor-b@example.invalid',
+          is_synthetic: true,
+        },
+      ])
+      .returning('id')
+      .execute();
+    const operations = [
+      ['practitioner_create', 'practitioner'],
+      ['practitioner_link_application_user', 'practitioner'],
+      [
+        'practitioner_facility_assignment_create',
+        'practitioner_facility_assignment',
+      ],
+      [
+        'practitioner_facility_assignment_status',
+        'practitioner_facility_assignment',
+      ],
+      ['specialty_create', 'specialty'],
+      ['specialty_update', 'specialty'],
+      ['service_create', 'appointment_service'],
+      ['service_update', 'appointment_service'],
+      [
+        'practitioner_service_assignment_create',
+        'practitioner_service_assignment',
+      ],
+      [
+        'practitioner_service_assignment_status',
+        'practitioner_service_assignment',
+      ],
+    ] as const;
+    const hashFor = (value: string): string =>
+      createHash('sha256').update(value).digest('hex');
+    const idempotencyKeyHash = hashFor(
+      'synthetic-shared-workforce-scheduling-command-key',
+    );
+
+    await database
+      .insertInto('workforce_scheduling_commands')
+      .values(
+        operations.map(([operation, targetEntityType], index) => {
+          const targetEntityId = `ca000000-0000-4000-8000-${String(
+            index + 1,
+          ).padStart(12, '0')}`;
+
+          return {
+            actor_user_id: actors[0].id,
+            tenant_id: firstTenant.id,
+            organization_id: practice.id,
+            operation,
+            idempotency_key_hash: idempotencyKeyHash,
+            request_hash: hashFor(`synthetic-${operation}-request`),
+            response_data: {
+              operation,
+              targetEntityId,
+            },
+            target_entity_type: targetEntityType,
+            target_entity_id: targetEntityId,
+          };
+        }),
+      )
+      .execute();
+
+    const commands = await database
+      .selectFrom('workforce_scheduling_commands')
+      .select(['operation', 'organization_kind', 'response_data'])
+      .where('actor_user_id', '=', actors[0].id)
+      .orderBy('operation')
+      .execute();
+    expect(commands).toHaveLength(operations.length);
+    expect(
+      commands.every(
+        ({ organization_kind }) => organization_kind === 'practice',
+      ),
+    ).toBe(true);
+    expect(
+      commands.every(({ response_data }) => !Array.isArray(response_data)),
+    ).toBe(true);
+
+    await expect(
+      database
+        .insertInto('workforce_scheduling_commands')
+        .values({
+          actor_user_id: actors[0].id,
+          tenant_id: firstTenant.id,
+          organization_id: practice.id,
+          operation: 'practitioner_create',
+          idempotency_key_hash: idempotencyKeyHash,
+          request_hash: hashFor('synthetic-changed-request'),
+          response_data: {},
+          target_entity_type: 'practitioner',
+          target_entity_id: 'ca000000-0000-4000-8000-000000000099',
+        })
+        .execute(),
+    ).rejects.toMatchObject({
+      code: '23505',
+      constraint: 'workforce_scheduling_commands_actor_operation_key_unique',
+    });
+
+    await expect(
+      database
+        .insertInto('workforce_scheduling_commands')
+        .values({
+          actor_user_id: actors[1].id,
+          tenant_id: firstTenant.id,
+          organization_id: practice.id,
+          operation: 'practitioner_create',
+          idempotency_key_hash: idempotencyKeyHash,
+          request_hash: hashFor('synthetic-second-actor-request'),
+          response_data: {},
+          target_entity_type: 'practitioner',
+          target_entity_id: 'ca000000-0000-4000-8000-000000000100',
+        })
+        .execute(),
+    ).resolves.toBeDefined();
+
+    await expect(
+      database
+        .insertInto('workforce_scheduling_commands')
+        .values({
+          actor_user_id: actors[0].id,
+          tenant_id: firstTenant.id,
+          organization_id: siblingPractice.id,
+          operation: 'practitioner_create',
+          idempotency_key_hash: idempotencyKeyHash,
+          request_hash: hashFor('synthetic-sibling-practice-request'),
+          response_data: {},
+          target_entity_type: 'practitioner',
+          target_entity_id: 'ca000000-0000-4000-8000-000000000108',
+        })
+        .execute(),
+    ).resolves.toBeDefined();
+
+    await expect(
+      database
+        .insertInto('workforce_scheduling_commands')
+        .values({
+          actor_user_id: actors[0].id,
+          tenant_id: firstTenant.id,
+          organization_id: group.id,
+          operation: 'specialty_create',
+          idempotency_key_hash: hashFor('synthetic-group-command-key'),
+          request_hash: hashFor('synthetic-group-command-request'),
+          response_data: {},
+          target_entity_type: 'specialty',
+          target_entity_id: 'ca000000-0000-4000-8000-000000000101',
+        })
+        .execute(),
+    ).rejects.toMatchObject({
+      code: '23503',
+      constraint: 'workforce_scheduling_commands_practice_fk',
+    });
+
+    await expect(
+      database
+        .insertInto('workforce_scheduling_commands')
+        .values({
+          actor_user_id: actors[0].id,
+          tenant_id: firstTenant.id,
+          organization_id: foreignPractice.id,
+          operation: 'specialty_create',
+          idempotency_key_hash: hashFor('synthetic-cross-tenant-command-key'),
+          request_hash: hashFor('synthetic-cross-tenant-command-request'),
+          response_data: {},
+          target_entity_type: 'specialty',
+          target_entity_id: 'ca000000-0000-4000-8000-000000000102',
+        })
+        .execute(),
+    ).rejects.toMatchObject({
+      code: '23503',
+      constraint: 'workforce_scheduling_commands_practice_fk',
+    });
+
+    await expect(
+      database
+        .insertInto('workforce_scheduling_commands')
+        .values({
+          actor_user_id: actors[0].id,
+          tenant_id: firstTenant.id,
+          organization_id: practice.id,
+          operation: 'specialty_create',
+          idempotency_key_hash: 'a'.repeat(63),
+          request_hash: hashFor('synthetic-invalid-key-request'),
+          response_data: {},
+          target_entity_type: 'specialty',
+          target_entity_id: 'ca000000-0000-4000-8000-000000000103',
+        })
+        .execute(),
+    ).rejects.toMatchObject({
+      code: '23514',
+      constraint: 'workforce_scheduling_commands_idempotency_hash_check',
+    });
+
+    await expect(
+      database
+        .insertInto('workforce_scheduling_commands')
+        .values({
+          actor_user_id: actors[0].id,
+          tenant_id: firstTenant.id,
+          organization_id: practice.id,
+          operation: 'specialty_create',
+          idempotency_key_hash: hashFor('synthetic-invalid-request-key'),
+          request_hash: 'A'.repeat(64),
+          response_data: {},
+          target_entity_type: 'specialty',
+          target_entity_id: 'ca000000-0000-4000-8000-000000000104',
+        })
+        .execute(),
+    ).rejects.toMatchObject({
+      code: '23514',
+      constraint: 'workforce_scheduling_commands_request_hash_check',
+    });
+
+    await expect(
+      database
+        .insertInto('workforce_scheduling_commands')
+        .values({
+          actor_user_id: actors[0].id,
+          tenant_id: firstTenant.id,
+          organization_id: practice.id,
+          operation: 'specialty_create',
+          idempotency_key_hash: hashFor('synthetic-blank-target-key'),
+          request_hash: hashFor('synthetic-blank-target-request'),
+          response_data: {},
+          target_entity_type: '   ',
+          target_entity_id: 'ca000000-0000-4000-8000-000000000107',
+        })
+        .execute(),
+    ).rejects.toMatchObject({
+      code: '23514',
+      constraint: 'workforce_scheduling_commands_target_type_check',
+    });
+
+    await expect(
+      sql`
+        insert into workforce_scheduling_commands (
+          actor_user_id,
+          tenant_id,
+          organization_id,
+          operation,
+          idempotency_key_hash,
+          request_hash,
+          response_data,
+          target_entity_type,
+          target_entity_id
+        ) values (
+          ${actors[0].id},
+          ${firstTenant.id},
+          ${practice.id},
+          'unsupported_operation',
+          ${hashFor('synthetic-unsupported-command-key')},
+          ${hashFor('synthetic-unsupported-command-request')},
+          '{}'::jsonb,
+          'specialty',
+          'ca000000-0000-4000-8000-000000000105'
+        )
+      `.execute(database),
+    ).rejects.toMatchObject({
+      code: '23514',
+      constraint: 'workforce_scheduling_commands_operation_check',
+    });
+
+    await expect(
+      sql`
+        insert into workforce_scheduling_commands (
+          actor_user_id,
+          tenant_id,
+          organization_id,
+          operation,
+          idempotency_key_hash,
+          request_hash,
+          response_data,
+          target_entity_type,
+          target_entity_id
+        ) values (
+          ${actors[0].id},
+          ${firstTenant.id},
+          ${practice.id},
+          'specialty_create',
+          ${hashFor('synthetic-array-response-command-key')},
+          ${hashFor('synthetic-array-response-command-request')},
+          '[]'::jsonb,
+          'specialty',
+          'ca000000-0000-4000-8000-000000000106'
+        )
+      `.execute(database),
+    ).rejects.toMatchObject({
+      code: '23514',
+      constraint: 'workforce_scheduling_commands_response_object_check',
+    });
+
+    const schemaColumns = await sql<{
+      column_name: string;
+      is_nullable: 'YES' | 'NO';
+    }>`
+      select column_name, is_nullable
+      from information_schema.columns
+      where table_schema = current_schema()
+        and table_name = 'workforce_scheduling_commands'
+      order by ordinal_position
+    `.execute(database);
+    expect(schemaColumns.rows.map(({ column_name }) => column_name)).toEqual([
+      'id',
+      'actor_user_id',
+      'tenant_id',
+      'organization_id',
+      'organization_kind',
+      'operation',
+      'idempotency_key_hash',
+      'request_hash',
+      'response_data',
+      'target_entity_type',
+      'target_entity_id',
+      'created_at',
+    ]);
+    expect(
+      schemaColumns.rows.every(({ is_nullable }) => is_nullable === 'NO'),
+    ).toBe(true);
+
+    const schemaConstraints = await sql<{
+      conname: string;
+      contype: string;
+      confdeltype: string;
+    }>`
+      select conname, contype::text, confdeltype::text
+      from pg_constraint
+      where connamespace = current_schema()::regnamespace
+        and conrelid = 'workforce_scheduling_commands'::regclass
+    `.execute(database);
+    const restrictiveForeignKeys = schemaConstraints.rows
+      .filter(({ contype }) => contype === 'f')
+      .map(({ conname, confdeltype }) => ({ conname, confdeltype }));
+    expect(restrictiveForeignKeys).toEqual(
+      expect.arrayContaining([
+        {
+          conname: 'workforce_scheduling_commands_actor_fk',
+          confdeltype: 'r',
+        },
+        {
+          conname: 'workforce_scheduling_commands_tenant_fk',
+          confdeltype: 'r',
+        },
+        {
+          conname: 'workforce_scheduling_commands_practice_fk',
+          confdeltype: 'r',
+        },
+      ]),
+    );
+
+    const schemaIndexes = await sql<{ indexname: string }>`
+      select indexname
+      from pg_indexes
+      where schemaname = current_schema()
+        and tablename = 'workforce_scheduling_commands'
+    `.execute(database);
+    expect(schemaIndexes.rows.map(({ indexname }) => indexname)).toEqual(
+      expect.arrayContaining([
+        'workforce_scheduling_commands_actor_operation_key_unique',
+        'workforce_scheduling_commands_practice_created_idx',
+        'workforce_scheduling_commands_target_idx',
+      ]),
     );
   });
 

@@ -10,6 +10,7 @@ import { AuthorizationModule } from './authorization/authorization.module.js';
 import { WorkforceDirectoryModule } from './workforce-directory/workforce-directory.module.js';
 import { PatientPortalAuthModule } from './patient-portal-auth/patient-portal-auth.module.js';
 import { PatientAppointmentsModule } from './patient-appointments/patient-appointments.module.js';
+import { WorkforceSchedulingModule } from './workforce-scheduling/workforce-scheduling.module.js';
 
 @Module({
   imports: [
@@ -36,6 +37,7 @@ import { PatientAppointmentsModule } from './patient-appointments/patient-appoin
     WorkforceDirectoryModule,
     PatientPortalAuthModule,
     PatientAppointmentsModule,
+    WorkforceSchedulingModule,
     HealthModule,
   ],
   providers: [
