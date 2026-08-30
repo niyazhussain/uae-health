@@ -26,6 +26,7 @@ import * as createProviderAvailability from './migrations/2026-08-27T040000_crea
 import * as backfillSyntheticProviderAppointments from './migrations/2026-08-27T050000_backfill_synthetic_provider_appointments.js';
 import * as createWorkforceSchedulingCommands from './migrations/2026-08-27T060000_create_workforce_scheduling_commands.js';
 import * as addDeferredSlotWithdrawal from './migrations/2026-08-27T070000_add_deferred_slot_withdrawal.js';
+import * as addWorkforceAppointmentDecisions from './migrations/2026-08-27T080000_add_workforce_appointment_decisions.js';
 import { PatientPortalProfileLinkService } from '../patient-portal-auth/patient-portal-profile-link.service.js';
 import { PatientPortalRegistrationService } from '../patient-portal-auth/patient-portal-registration.service.js';
 import { PatientPortalSessionService } from '../patient-portal-auth/patient-portal-session.service.js';
@@ -691,10 +692,23 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
     await createProviderAvailability.up(database);
     await createWorkforceSchedulingCommands.up(database);
     await addDeferredSlotWithdrawal.up(database);
+    await addWorkforceAppointmentDecisions.up(database);
   });
 
   afterAll(async () => {
     if (database) {
+      await addWorkforceAppointmentDecisions.down(database);
+
+      const rolledBackAppointmentDecisionIndexes = await sql<{
+        count: number;
+      }>`
+        select count(*)::integer as count
+        from pg_indexes
+        where schemaname = current_schema()
+          and indexname = 'pp_appointments_workforce_facility_queue_idx'
+      `.execute(database);
+      expect(rolledBackAppointmentDecisionIndexes.rows[0]?.count).toBe(0);
+
       await database
         .deleteFrom('workforce_scheduling_commands')
         .where('operation', 'in', [
@@ -2071,6 +2085,7 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
       ['availability_exception_cancel', 'availability_exception'],
       ['availability_template_materialize', 'availability_template'],
       ['service_duration_update', 'appointment_service'],
+      ['appointment_request_decision', 'patient_portal_appointment'],
     ] as const;
     const hashFor = (value: string): string =>
       createHash('sha256').update(value).digest('hex');
@@ -2404,6 +2419,11 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
       ]),
     );
 
+    await database
+      .deleteFrom('workforce_scheduling_commands')
+      .where('operation', '=', 'appointment_request_decision')
+      .execute();
+
     await expect(addDeferredSlotWithdrawal.down(database)).rejects.toThrow(
       /forward-only.*availability command evidence/i,
     );
@@ -2418,6 +2438,174 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
         'availability_template_materialize',
         'service_duration_update',
       ])
+      .execute();
+  });
+
+  it('adds guarded workforce appointment decisions and exact-facility queue indexes', async () => {
+    const replacementAppointmentId = 'f8000000-0000-4000-8000-000000000002';
+    const decisionCommandIdempotencyHash = createHash('sha256')
+      .update('synthetic-appointment-decision-command-key')
+      .digest('hex');
+    const decisionCommandRequestHash = createHash('sha256')
+      .update('synthetic-appointment-decision-command-request')
+      .digest('hex');
+
+    const indexes = await sql<{
+      indexname: string;
+      indexdef: string;
+      predicate: string | null;
+    }>`
+      select
+        index_class.relname as indexname,
+        pg_get_indexdef(index_class.oid) as indexdef,
+        pg_get_expr(index.indpred, index.indrelid) as predicate
+      from pg_index index
+      join pg_class table_class on table_class.oid = index.indrelid
+      join pg_class index_class on index_class.oid = index.indexrelid
+      where table_class.relnamespace = current_schema()::regnamespace
+        and table_class.relname = 'patient_portal_appointments'
+        and index_class.relname in (
+          'pp_appointments_live_slot_unique',
+          'pp_appointments_workforce_facility_queue_idx'
+        )
+      order by index_class.relname
+    `.execute(database);
+    const liveSlotIndex = indexes.rows.find(
+      ({ indexname }) => indexname === 'pp_appointments_live_slot_unique',
+    );
+    const facilityQueueIndex = indexes.rows.find(
+      ({ indexname }) =>
+        indexname === 'pp_appointments_workforce_facility_queue_idx',
+    );
+
+    expect(liveSlotIndex?.indexdef).toMatch(/create unique index/i);
+    expect(liveSlotIndex?.predicate).toContain('requested');
+    expect(liveSlotIndex?.predicate).toContain('confirmed');
+    expect(liveSlotIndex?.predicate).not.toContain('declined');
+    expect(liveSlotIndex?.predicate).not.toContain('cancelled');
+    expect(facilityQueueIndex?.indexdef).toContain(
+      '(tenant_id, organization_id, facility_id, status, appointment_slot_id, id)',
+    );
+
+    await database
+      .updateTable('patient_portal_appointments')
+      .set({ status: 'confirmed' })
+      .where('id', '=', legacyAvailabilityFixture.appointmentId)
+      .executeTakeFirstOrThrow();
+
+    await expect(
+      database
+        .insertInto('patient_portal_appointments')
+        .values({
+          id: replacementAppointmentId,
+          tenant_id: legacyAvailabilityFixture.tenantId,
+          organization_id: legacyAvailabilityFixture.organizationId,
+          patient_portal_identity_id:
+            legacyAvailabilityFixture.patientIdentityId,
+          patient_portal_profile_id: null,
+          patient_portal_appointment_relationship_id:
+            legacyAvailabilityFixture.relationshipId,
+          appointment_slot_id: legacyAvailabilityFixture.slotId,
+          status: 'requested',
+          version: 1,
+          cancelled_at: null,
+        })
+        .execute(),
+    ).rejects.toMatchObject({
+      code: '23505',
+      constraint: 'pp_appointments_live_slot_unique',
+    });
+
+    await expect(
+      database
+        .updateTable('patient_portal_appointments')
+        .set({ status: 'declined', cancelled_at: new Date() })
+        .where('id', '=', legacyAvailabilityFixture.appointmentId)
+        .execute(),
+    ).rejects.toMatchObject({
+      code: '23514',
+      constraint: 'pp_appointments_cancellation_check',
+    });
+
+    await database
+      .updateTable('patient_portal_appointments')
+      .set({ status: 'declined', cancelled_at: null })
+      .where('id', '=', legacyAvailabilityFixture.appointmentId)
+      .executeTakeFirstOrThrow();
+    await expect(
+      database
+        .insertInto('patient_portal_appointments')
+        .values({
+          id: replacementAppointmentId,
+          tenant_id: legacyAvailabilityFixture.tenantId,
+          organization_id: legacyAvailabilityFixture.organizationId,
+          patient_portal_identity_id:
+            legacyAvailabilityFixture.patientIdentityId,
+          patient_portal_profile_id: null,
+          patient_portal_appointment_relationship_id:
+            legacyAvailabilityFixture.relationshipId,
+          appointment_slot_id: legacyAvailabilityFixture.slotId,
+          status: 'requested',
+          version: 1,
+          cancelled_at: null,
+        })
+        .execute(),
+    ).resolves.toBeDefined();
+    await database
+      .deleteFrom('patient_portal_appointments')
+      .where('id', '=', replacementAppointmentId)
+      .execute();
+
+    await expect(
+      sql`
+        update patient_portal_appointments
+        set status = 'unsupported'
+        where id = ${legacyAvailabilityFixture.appointmentId}
+      `.execute(database),
+    ).rejects.toMatchObject({
+      code: '23514',
+      constraint: 'pp_appointments_status_check',
+    });
+
+    await database
+      .updateTable('patient_portal_appointments')
+      .set({ status: 'confirmed', cancelled_at: null })
+      .where('id', '=', legacyAvailabilityFixture.appointmentId)
+      .executeTakeFirstOrThrow();
+    await expect(
+      addWorkforceAppointmentDecisions.down(database),
+    ).rejects.toThrow(/forward-only.*appointment decisions/i);
+    await database
+      .updateTable('patient_portal_appointments')
+      .set({ status: 'requested', cancelled_at: null })
+      .where('id', '=', legacyAvailabilityFixture.appointmentId)
+      .executeTakeFirstOrThrow();
+
+    await database
+      .insertInto('workforce_scheduling_commands')
+      .values({
+        actor_user_id: legacyAvailabilityFixture.applicationUserId,
+        tenant_id: legacyAvailabilityFixture.tenantId,
+        organization_id: legacyAvailabilityFixture.organizationId,
+        operation: 'appointment_request_decision',
+        idempotency_key_hash: decisionCommandIdempotencyHash,
+        request_hash: decisionCommandRequestHash,
+        response_data: {
+          appointmentId: legacyAvailabilityFixture.appointmentId,
+          status: 'confirmed',
+          version: 2,
+        },
+        target_entity_type: 'patient_portal_appointment',
+        target_entity_id: legacyAvailabilityFixture.appointmentId,
+      })
+      .execute();
+    await expect(
+      addWorkforceAppointmentDecisions.down(database),
+    ).rejects.toThrow(/forward-only.*decision command evidence/i);
+    await database
+      .deleteFrom('workforce_scheduling_commands')
+      .where('operation', '=', 'appointment_request_decision')
+      .where('idempotency_key_hash', '=', decisionCommandIdempotencyHash)
       .execute();
   });
 

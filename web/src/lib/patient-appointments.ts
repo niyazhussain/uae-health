@@ -78,8 +78,7 @@ export interface PatientAppointmentAvailabilityResponse {
 }
 
 export type PatientAppointmentStatus =
-  | "requested"
-  | "cancelled";
+  "requested" | "confirmed" | "declined" | "cancelled";
 
 export interface PatientAppointment {
   appointmentId: string;

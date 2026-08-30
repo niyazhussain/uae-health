@@ -264,6 +264,46 @@ describe('AppController (e2e)', () => {
       });
   });
 
+  it('/v1/admin/scheduling/appointments rejects an unauthenticated queue read', () => {
+    const server = app.getHttpServer() as Server;
+
+    return request(server)
+      .get('/v1/admin/scheduling/appointments')
+      .query({
+        organizationId: '20000000-0000-4000-8000-000000000001',
+        facilityId: '30000000-0000-4000-8000-000000000001',
+      })
+      .expect(401)
+      .expect({
+        message: 'Active workforce session required.',
+        error: 'Unauthorized',
+        statusCode: 401,
+      });
+  });
+
+  it('/v1/admin/scheduling/appointments status rejects an unauthenticated decision', () => {
+    const server = app.getHttpServer() as Server;
+
+    return request(server)
+      .patch(
+        '/v1/admin/scheduling/appointments/70000000-0000-4000-8000-000000000001/status',
+      )
+      .set('Idempotency-Key', '12345678-1234-4234-8234-123456789012')
+      .send({
+        organizationId: '20000000-0000-4000-8000-000000000001',
+        facilityId: '30000000-0000-4000-8000-000000000001',
+        status: 'confirmed',
+        expectedVersion: 1,
+        reasonCode: 'appointment-request-confirmed',
+      })
+      .expect(401)
+      .expect({
+        message: 'Active workforce session required.',
+        error: 'Unauthorized',
+        statusCode: 401,
+      });
+  });
+
   afterEach(async () => {
     await app.close();
   });

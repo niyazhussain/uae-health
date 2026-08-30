@@ -263,6 +263,49 @@ cancellation and rescheduling use the existing version and idempotency model.
 Rescheduling locks the old appointment and new slot, preserves history through
 audit evidence, and never silently changes the practitioner.
 
+Task 3.3 exposes a facility-scoped, bounded workforce request queue. Every queue
+read and decision requires both `scheduling.manage` and `patients.read` for the
+same active workforce actor, direct practice membership, exact practice, and
+requested facility. The facility identifier is mandatory and is validated
+before any appointment lookup or durable-command replay. A queue row may expose
+the patient's approved display name; appointment, slot, practitioner, service,
+and facility identifiers and safe labels; UTC timing; lifecycle state and
+version; and creation/update timestamps. It excludes email, username,
+application-user and identity-provider identifiers, portal profile or pending
+relationship identifiers, other practice relationships, and clinical data.
+Rows remain visible when a provider chain is inactive or the slot is pending
+withdrawal because those are precisely the requests staff must resolve.
+`GET /v1/admin/scheduling/appointments` orders by slot start and appointment
+identifier, defaults to the live `requested|confirmed` states, accepts an exact
+status plus practitioner or service filters, and returns at most 100 rows per
+page. The single decision route is
+`PATCH /v1/admin/scheduling/appointments/:appointmentId/status`.
+
+One `requested -> confirmed|declined` status command requires the expected
+version, a durable idempotency key, and a closed reason code. Confirmation uses
+`appointment-request-confirmed`. Decline uses one of
+`appointment-request-provider-unavailable`,
+`appointment-request-service-unavailable`, or
+`appointment-request-scheduling-conflict`; no free text is accepted. Current
+dual authorization is evaluated inside every bounded-retry serializable attempt
+before replay. An equivalent retry returns its original safe response, while a
+changed payload, stale version, or already-decided appointment conflicts.
+`updated_at` plus transactional audit evidence records the decision time and
+actor; separate provider- or patient-identifying decision columns are not
+stored. “Current requested appointment” means the locked status and optimistic
+version are current; the POC permits staff to resolve an overdue request and
+does not treat confirmation as attendance or clinical evidence.
+
+Confirming preserves the exact patient/provider/slot bundle and live capacity,
+including an existing `withdrawal_pending` marker for explicit follow-up.
+Declining releases capacity and, in the same transaction, invokes the shared
+deferred-slot resolver: an invalid pending slot becomes withdrawn, while a slot
+that is valid again becomes available. Queue reads and decisions deliberately
+do not require a currently active provider chain, so deactivation cannot hide a
+live request. Task 3.3 expands patient read responses to represent confirmed and
+declined states without defining new patient mutations; confirmed cancellation
+or rescheduling behavior remains task 4.3.
+
 Composite foreign keys SHALL prove that appointment, patient context, slot,
 practitioner assignment, service, facility, tenant, and practice belong to one
 scope. A partial unique index SHALL prevent more than one live appointment for a

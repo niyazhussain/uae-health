@@ -27,6 +27,7 @@ import { CreatePatientAppointmentRelationshipDto } from './dto/create-patient-ap
 import { CreatePatientAppointmentDto } from './dto/create-patient-appointment.dto.js';
 import { ReschedulePatientAppointmentDto } from './dto/reschedule-patient-appointment.dto.js';
 import { PatientAppointmentsService } from './patient-appointments.service.js';
+import type { PatientAppointmentView } from './patient-appointments.types.js';
 import { PatientPortalAppointmentContextGuard } from './patient-portal-appointment-context.guard.js';
 
 @ApiTags('Patient appointments')
@@ -116,7 +117,7 @@ export class PatientAppointmentsController {
     timezone: string;
     appointments: Array<{
       appointmentId: string;
-      status: 'requested' | 'cancelled';
+      status: PatientAppointmentView['status'];
       startsAt: string;
       endsAt: string;
       version: number;

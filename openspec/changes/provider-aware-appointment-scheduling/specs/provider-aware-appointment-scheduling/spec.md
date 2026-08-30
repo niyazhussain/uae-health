@@ -284,20 +284,61 @@ patient-identifying appointment summaries and confirm or decline a requested
 appointment. `requested` and `confirmed` appointments SHALL reserve provider
 capacity; `declined` and `cancelled` appointments SHALL not.
 
+The queue and decision SHALL be scoped to one required exact facility. The two
+permissions SHALL resolve to the same active actor and direct practice
+membership before appointment lookup or command replay. Responses MAY include
+the patient's display name and safe scheduling labels but SHALL exclude patient
+contact data, application-user and identity-provider identifiers, portal
+profile or pending-relationship identifiers, sibling-practice data, provider
+login data, and clinical information. Decisions SHALL require the current
+version, a durable idempotency key, and a closed approved reason code without
+free text.
+
+#### Scenario: Review one facility request queue
+
+- **WHEN** an authorized scheduler lists appointment requests for one exact practice facility
+- **THEN** the system returns a bounded deterministic page of safe summaries, including requests whose provider chain is inactive or whose slot is pending withdrawal, without exposing another facility or practice
+
 #### Scenario: Confirm an appointment request
 
 - **WHEN** an in-scope authorized scheduler confirms a current requested appointment
 - **THEN** the system records the confirmed state and version atomically without changing its patient, doctor, service, facility, or slot
+
+#### Scenario: Confirm an invalidated live request explicitly
+
+- **GIVEN** a requested appointment retains an available slot marked for deferred withdrawal
+- **WHEN** an authorized scheduler confirms the request
+- **THEN** the appointment remains the live capacity reservation and the pending marker remains for explicit follow-up
 
 #### Scenario: Decline an appointment request
 
 - **WHEN** an in-scope authorized scheduler declines a current requested appointment using an approved reason code
 - **THEN** the system releases the slot, records safe audit evidence, and does not include clinical or free-text patient data
 
+#### Scenario: Decline a request on a pending-withdrawal slot
+
+- **WHEN** an authorized scheduler declines the only live request on a slot marked for deferred withdrawal
+- **THEN** the same transaction re-evaluates current availability and either withdraws the invalid slot or restores it only when it is valid again
+
+#### Scenario: Replay an equivalent appointment decision
+
+- **WHEN** the same currently authorized actor retries one decision key and unchanged payload
+- **THEN** the original safe result is returned without another state change or success audit event
+
+#### Scenario: Reject a stale or changed appointment decision
+
+- **WHEN** a decision uses a stale version, targets an appointment no longer requested, or reuses its key with another payload
+- **THEN** the system returns a safe conflict without changing appointment, slot, command, or audit state
+
 #### Scenario: Deny an unauthorized decision
 
 - **WHEN** a workforce user lacks current `scheduling.manage`, `patients.read`, or exact organization scope
 - **THEN** the system denies the appointment decision and records a privacy-safe authorization denial
+
+#### Scenario: Preserve patient read compatibility
+
+- **WHEN** a workforce decision changes an appointment to confirmed or declined
+- **THEN** authenticated patient appointment reads represent the new state safely while new patient mutation rules remain deferred to the provider-aware patient-change task
 
 ### Requirement: Preserve provider integrity during patient changes
 

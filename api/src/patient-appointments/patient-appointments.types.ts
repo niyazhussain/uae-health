@@ -1,3 +1,4 @@
+import type { PatientPortalAppointmentStatus } from '../database/database.types.js';
 import type { PatientPortalAccessContext } from '../patient-portal-auth/patient-portal-auth.types.js';
 
 export type PatientAppointmentContext = Extract<
@@ -7,7 +8,7 @@ export type PatientAppointmentContext = Extract<
 
 export interface PatientAppointmentView {
   appointmentId: string;
-  status: 'requested' | 'cancelled';
+  status: PatientPortalAppointmentStatus;
   startsAt: string;
   endsAt: string;
   version: number;

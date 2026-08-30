@@ -14,7 +14,7 @@
 
 - [x] 3.1 Implement exact-practice, database-authorized, durably idempotent practitioner, specialty, service, and assignment management APIs protected by `scheduling.manage`, with optimistic concurrency and active-chain booking enforcement.
 - [x] 3.2 Implement authorized availability-template, exception, service-duration, and bounded eight-week slot-materialization APIs with DST-rejecting idempotent regeneration, deferred live-slot withdrawal, and booked-slot preservation.
-- [ ] 3.3 Implement scoped workforce appointment queues and idempotent confirm and decline commands requiring both `scheduling.manage` and `patients.read`, approved reason codes, and transactional audit evidence.
+- [x] 3.3 Implement exact-facility workforce appointment queues and versioned idempotent confirm and decline commands requiring both `scheduling.manage` and `patients.read`, closed reason codes, transactional audit evidence, deferred-slot release, and patient read compatibility.
 
 ## 4. Patient provider-aware API
 

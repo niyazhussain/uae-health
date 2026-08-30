@@ -13,7 +13,8 @@ export type PatientPortalProfileLinkStatus = 'active' | 'revoked';
 export type PatientPortalAppointmentRelationshipStatus = 'pending';
 export type PatientPortalBookablePracticeStatus = 'active' | 'unavailable';
 export type PatientPortalAppointmentSlotStatus = 'available' | 'withdrawn';
-export type PatientPortalAppointmentStatus = 'requested' | 'cancelled';
+export type PatientPortalAppointmentStatus =
+  'requested' | 'confirmed' | 'declined' | 'cancelled';
 export type PractitionerStatus = 'active' | 'inactive';
 export type SpecialtyStatus = 'active' | 'retired';
 export type AppointmentServiceStatus = 'active' | 'inactive';
@@ -45,7 +46,8 @@ export type WorkforceSchedulingCommandOperation =
   | 'availability_exception_create'
   | 'availability_exception_cancel'
   | 'availability_template_materialize'
-  | 'service_duration_update';
+  | 'service_duration_update'
+  | 'appointment_request_decision';
 export type PatientPortalRegistrationRequestStatus =
   'pending_provider' | 'pending_binding' | 'accepted' | 'rate_limited';
 export type PatientPortalInvitationStatus =

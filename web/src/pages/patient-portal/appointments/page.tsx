@@ -75,11 +75,16 @@ function formatAppointmentTime(
 }
 
 function appointmentStatus(appointment: PatientAppointment) {
-  if (appointment.status === "cancelled") {
-    return <Badge variant="outline">Cancelled</Badge>;
+  switch (appointment.status) {
+    case "confirmed":
+      return <Badge variant="success">Confirmed</Badge>;
+    case "declined":
+      return <Badge variant="destructive">Declined</Badge>;
+    case "cancelled":
+      return <Badge variant="outline">Cancelled</Badge>;
+    case "requested":
+      return <Badge variant="warning">Appointment requested</Badge>;
   }
-
-  return <Badge variant="warning">Appointment requested</Badge>;
 }
 
 export function PatientAppointmentsPage({
