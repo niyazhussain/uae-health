@@ -30,23 +30,39 @@ import type { AuthenticatedPrincipal } from '../auth/auth.types.js';
 import { WorkforceSessionAuthenticationGuard } from '../auth/workforce-session-authentication.guard.js';
 import { ChangePractitionerFacilityAssignmentStatusDto } from './dto/change-practitioner-facility-assignment-status.dto.js';
 import { ChangePractitionerServiceAssignmentStatusDto } from './dto/change-practitioner-service-assignment-status.dto.js';
+import { AvailabilityExceptionListQueryDto } from './dto/availability-exception-list-query.dto.js';
+import { AvailabilityTemplateListQueryDto } from './dto/availability-template-list-query.dto.js';
+import { CancelAvailabilityExceptionDto } from './dto/cancel-availability-exception.dto.js';
+import { ChangeAppointmentServiceDurationDto } from './dto/change-appointment-service-duration.dto.js';
+import { ChangeAvailabilityTemplateStatusDto } from './dto/change-availability-template-status.dto.js';
+import { CreateAvailabilityExceptionDto } from './dto/create-availability-exception.dto.js';
+import { CreateAvailabilityTemplateDto } from './dto/create-availability-template.dto.js';
 import { CreatePractitionerFacilityAssignmentDto } from './dto/create-practitioner-facility-assignment.dto.js';
 import { CreatePractitionerServiceAssignmentDto } from './dto/create-practitioner-service-assignment.dto.js';
 import { CreateWorkforceAppointmentServiceDto } from './dto/create-workforce-appointment-service.dto.js';
 import { CreateWorkforcePractitionerDto } from './dto/create-workforce-practitioner.dto.js';
 import { CreateWorkforceSpecialtyDto } from './dto/create-workforce-specialty.dto.js';
 import { LinkPractitionerApplicationUserDto } from './dto/link-practitioner-application-user.dto.js';
+import { MaterializeAvailabilityTemplateDto } from './dto/materialize-availability-template.dto.js';
+import { ReplaceAvailabilityTemplateDto } from './dto/replace-availability-template.dto.js';
 import { UpdateWorkforceAppointmentServiceDto } from './dto/update-workforce-appointment-service.dto.js';
 import { UpdateWorkforceSpecialtyDto } from './dto/update-workforce-specialty.dto.js';
 import { WorkforceSchedulingListQueryDto } from './dto/workforce-scheduling-list-query.dto.js';
+import { WorkforceAvailabilitySlotListQueryDto } from './dto/workforce-availability-slot-list-query.dto.js';
 import { WorkforceSchedulingService } from './workforce-scheduling.service.js';
 import type {
   AppointmentServiceMutationResponse,
+  AppointmentServiceDurationMutationResponse,
+  AvailabilityExceptionMutationResponse,
+  AvailabilityTemplateMutationResponse,
   PractitionerFacilityAssignmentMutationResponse,
   PractitionerMutationResponse,
   PractitionerServiceAssignmentMutationResponse,
   SpecialtyMutationResponse,
   WorkforceAppointmentServiceView,
+  WorkforceAvailabilityExceptionView,
+  WorkforceAvailabilitySlotView,
+  WorkforceAvailabilityTemplateView,
   WorkforcePractitionerView,
   WorkforceSchedulingContextsResponse,
   WorkforceSchedulingPage,
@@ -316,6 +332,162 @@ export class WorkforceSchedulingController {
       principal,
       idempotencyKey,
       assignmentId,
+      input,
+    );
+  }
+
+  @Get('availability-templates')
+  @Header('Cache-Control', 'no-store')
+  @ApiOperation({ summary: 'List weekly availability templates' })
+  @ApiOkResponse({ description: 'An exact-facility template page.' })
+  availabilityTemplates(
+    @CurrentPrincipal() principal: AuthenticatedPrincipal,
+    @Query() query: AvailabilityTemplateListQueryDto,
+  ): Promise<WorkforceSchedulingPage<WorkforceAvailabilityTemplateView>> {
+    return this.scheduling.listAvailabilityTemplates(principal, query);
+  }
+
+  @Post('availability-templates')
+  @ApiOperation({ summary: 'Create a weekly availability template' })
+  @ApiCreatedResponse({
+    description: 'The template and bounded publication summary.',
+  })
+  createAvailabilityTemplate(
+    @CurrentPrincipal() principal: AuthenticatedPrincipal,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @Body() input: CreateAvailabilityTemplateDto,
+  ): Promise<AvailabilityTemplateMutationResponse> {
+    return this.scheduling.createAvailabilityTemplate(
+      principal,
+      idempotencyKey,
+      input,
+    );
+  }
+
+  @Put('availability-templates/:templateId')
+  @ApiOperation({ summary: 'Replace an immutable availability definition' })
+  @ApiOkResponse({
+    description: 'The replacement and bounded publication summary.',
+  })
+  replaceAvailabilityTemplate(
+    @CurrentPrincipal() principal: AuthenticatedPrincipal,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @Param('templateId', new ParseUUIDPipe()) templateId: string,
+    @Body() input: ReplaceAvailabilityTemplateDto,
+  ): Promise<AvailabilityTemplateMutationResponse> {
+    return this.scheduling.replaceAvailabilityTemplate(
+      principal,
+      idempotencyKey,
+      templateId,
+      input,
+    );
+  }
+
+  @Patch('availability-templates/:templateId/status')
+  @ApiOperation({ summary: 'Activate or deactivate weekly availability' })
+  @ApiOkResponse({ description: 'The template and reconciliation summary.' })
+  changeAvailabilityTemplateStatus(
+    @CurrentPrincipal() principal: AuthenticatedPrincipal,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @Param('templateId', new ParseUUIDPipe()) templateId: string,
+    @Body() input: ChangeAvailabilityTemplateStatusDto,
+  ): Promise<AvailabilityTemplateMutationResponse> {
+    return this.scheduling.changeAvailabilityTemplateStatus(
+      principal,
+      idempotencyKey,
+      templateId,
+      input,
+    );
+  }
+
+  @Post('availability-templates/:templateId/materializations')
+  @ApiOperation({ summary: 'Reconcile one weekly availability template' })
+  @ApiOkResponse({ description: 'The deterministic reconciliation summary.' })
+  materializeAvailabilityTemplate(
+    @CurrentPrincipal() principal: AuthenticatedPrincipal,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @Param('templateId', new ParseUUIDPipe()) templateId: string,
+    @Body() input: MaterializeAvailabilityTemplateDto,
+  ): Promise<AvailabilityTemplateMutationResponse> {
+    return this.scheduling.materializeAvailabilityTemplate(
+      principal,
+      idempotencyKey,
+      templateId,
+      input,
+    );
+  }
+
+  @Get('availability-exceptions')
+  @Header('Cache-Control', 'no-store')
+  @ApiOperation({ summary: 'List facility and practitioner exceptions' })
+  @ApiOkResponse({ description: 'An exact-facility exception page.' })
+  availabilityExceptions(
+    @CurrentPrincipal() principal: AuthenticatedPrincipal,
+    @Query() query: AvailabilityExceptionListQueryDto,
+  ): Promise<WorkforceSchedulingPage<WorkforceAvailabilityExceptionView>> {
+    return this.scheduling.listAvailabilityExceptions(principal, query);
+  }
+
+  @Post('availability-exceptions')
+  @ApiOperation({ summary: 'Create and apply an availability exception' })
+  @ApiCreatedResponse({
+    description: 'The active exception and reconciliation summary.',
+  })
+  createAvailabilityException(
+    @CurrentPrincipal() principal: AuthenticatedPrincipal,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @Body() input: CreateAvailabilityExceptionDto,
+  ): Promise<AvailabilityExceptionMutationResponse> {
+    return this.scheduling.createAvailabilityException(
+      principal,
+      idempotencyKey,
+      input,
+    );
+  }
+
+  @Patch('availability-exceptions/:exceptionId/status')
+  @ApiOperation({ summary: 'Cancel an availability exception terminally' })
+  @ApiOkResponse({
+    description: 'The cancelled exception and reconciliation summary.',
+  })
+  cancelAvailabilityException(
+    @CurrentPrincipal() principal: AuthenticatedPrincipal,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @Param('exceptionId', new ParseUUIDPipe()) exceptionId: string,
+    @Body() input: CancelAvailabilityExceptionDto,
+  ): Promise<AvailabilityExceptionMutationResponse> {
+    return this.scheduling.cancelAvailabilityException(
+      principal,
+      idempotencyKey,
+      exceptionId,
+      input,
+    );
+  }
+
+  @Get('slots')
+  @Header('Cache-Control', 'no-store')
+  @ApiOperation({ summary: 'List bounded workforce availability slots' })
+  @ApiOkResponse({ description: 'An exact-facility operational slot page.' })
+  availabilitySlots(
+    @CurrentPrincipal() principal: AuthenticatedPrincipal,
+    @Query() query: WorkforceAvailabilitySlotListQueryDto,
+  ): Promise<WorkforceSchedulingPage<WorkforceAvailabilitySlotView>> {
+    return this.scheduling.listAvailabilitySlots(principal, query);
+  }
+
+  @Patch('services/:serviceId/duration')
+  @ApiOperation({ summary: 'Change a service duration and regenerate slots' })
+  @ApiOkResponse({ description: 'The service and reconciliation summary.' })
+  changeServiceDuration(
+    @CurrentPrincipal() principal: AuthenticatedPrincipal,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @Param('serviceId', new ParseUUIDPipe()) serviceId: string,
+    @Body() input: ChangeAppointmentServiceDurationDto,
+  ): Promise<AppointmentServiceDurationMutationResponse> {
+    return this.scheduling.changeServiceDuration(
+      principal,
+      idempotencyKey,
+      serviceId,
       input,
     );
   }

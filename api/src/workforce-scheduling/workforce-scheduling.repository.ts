@@ -16,24 +16,56 @@ import type {
 import { WORKFORCE_IDENTITY_PROVIDER } from '../identity-provider/identity-provider.constants.js';
 import type { WorkforceIdentityProviderPort } from '../identity-provider/identity-provider.types.js';
 import { workforceSchedulingAuditReason } from './workforce-scheduling-reasons.js';
+import {
+  materializeProviderAvailability,
+  planProviderAvailabilityReconciliation,
+  type ProviderAvailabilityExceptionInterval,
+  type ProviderAvailabilityStoredSlot,
+  type ProviderAvailabilityTemplateDefinition,
+} from './provider-availability-materializer.js';
+import {
+  AvailabilityMaterializationError,
+  captureAvailabilityHorizon,
+  parseCanonicalLocalDate,
+  parseCanonicalLocalDateTime,
+  resolveCanonicalLocalException,
+  resolveLocalMinuteBoundary,
+} from './provider-availability-time.js';
 import type {
+  AppointmentServiceDurationMutationResponse,
   AppointmentServiceMutationResponse,
+  AvailabilityExceptionMutationResponse,
+  AvailabilityMaterializationSummary,
+  AvailabilityTemplateMutationResponse,
+  CancelAvailabilityExceptionInput,
+  ChangeAppointmentServiceDurationInput,
+  ChangeAvailabilityTemplateStatusInput,
   ChangePractitionerFacilityAssignmentStatusInput,
   ChangePractitionerServiceAssignmentStatusInput,
+  CreateAvailabilityExceptionInput,
+  CreateAvailabilityTemplateInput,
   CreateAppointmentServiceInput,
   CreatePractitionerFacilityAssignmentInput,
   CreatePractitionerInput,
   CreatePractitionerServiceAssignmentInput,
   CreateSpecialtyInput,
   LinkPractitionerApplicationUserInput,
+  MaterializeAvailabilityTemplateInput,
   PractitionerFacilityAssignmentMutationResponse,
   PractitionerMutationResponse,
   PractitionerServiceAssignmentMutationResponse,
+  ReplaceAvailabilityTemplateInput,
   SchedulingMutationRequest,
   SpecialtyMutationResponse,
   UpdateAppointmentServiceInput,
   UpdateSpecialtyInput,
   WorkforceAppointmentServiceView,
+  WorkforceAvailabilityExceptionListQuery,
+  WorkforceAvailabilityExceptionView,
+  WorkforceAvailabilitySlotListQuery,
+  WorkforceAvailabilitySlotView,
+  WorkforceAvailabilityTemplateListQuery,
+  WorkforceAvailabilityTemplateView,
   WorkforcePractitionerView,
   WorkforceSchedulingContext,
   WorkforceSchedulingListQuery,
@@ -45,6 +77,7 @@ import {
   WorkforceSchedulingConflictError,
   WorkforceSchedulingPersistenceError,
   WorkforceSchedulingTargetUnavailableError,
+  WorkforceSchedulingValidationError,
 } from './workforce-scheduling.types.js';
 
 type DatabaseExecutor = Kysely<DatabaseSchema> | Transaction<DatabaseSchema>;
@@ -77,6 +110,7 @@ interface StoredSchedulingCommand {
 
 interface MutationMetadata {
   correlationId: string;
+  frozenNow: Date;
   idempotencyKeyHash: string;
   requestHash: string;
   operation: WorkforceSchedulingCommandOperation;
@@ -85,6 +119,64 @@ interface MutationMetadata {
 interface AffectedAppointments {
   count: number;
   ids: string[];
+}
+
+interface AvailabilityAssignmentScope {
+  bookablePracticeId: string;
+  facility: FacilityContext;
+  practitionerFacilityAssignmentId: string;
+  practitionerServiceAssignmentId: string;
+  practitionerId: string;
+  appointmentServiceId: string;
+  durationMinutes: number;
+  practitionerStatus: 'active' | 'inactive';
+  facilityAssignmentStatus: 'active' | 'inactive';
+  serviceAssignmentStatus: 'active' | 'inactive';
+  serviceStatus: 'active' | 'inactive';
+  specialtyStatus: 'active' | 'retired';
+}
+
+interface AvailabilityTemplateRow extends ProviderAvailabilityTemplateDefinition {
+  updatedAt: Date;
+}
+
+interface AvailabilityExceptionRow extends ProviderAvailabilityExceptionInterval {
+  localStartsAt: string;
+  localEndsAt: string;
+  isAllDay: boolean;
+  updatedAt: Date;
+}
+
+interface AvailabilityTemplateTarget {
+  id: string;
+  facilityId: string;
+  practitionerServiceAssignmentId: string;
+  practitionerId: string;
+  status: 'active' | 'inactive';
+  updatedAt: Date;
+}
+
+interface AvailabilityExceptionTarget {
+  id: string;
+  facilityId: string;
+  practitionerFacilityAssignmentId: string | null;
+  practitionerId: string | null;
+  kind: 'facility_closed' | 'practitioner_unavailable';
+  status: 'active' | 'cancelled';
+  updatedAt: Date;
+}
+
+interface AvailabilityServiceTarget {
+  id: string;
+  facility: FacilityContext;
+  durationMinutes: number;
+  status: 'active' | 'inactive';
+  specialtyStatus: 'active' | 'retired';
+  updatedAt: Date;
+}
+
+interface AvailabilityReconciliationResult {
+  summary: AvailabilityMaterializationSummary;
 }
 
 class SchedulingAuthorizationDeniedError extends Error {
@@ -135,7 +227,9 @@ function isRetryableTransactionError(error: unknown): boolean {
 
 function isConstraintConflict(error: unknown): boolean {
   const code = databaseErrorCode(error);
-  return code === '23503' || code === '23505' || code === '23514';
+  return (
+    code === '23503' || code === '23505' || code === '23514' || code === '23P01'
+  );
 }
 
 function isUniqueViolation(error: unknown): boolean {
@@ -764,6 +858,411 @@ export class WorkforceSchedulingRepository {
         }),
       };
     } catch (error) {
+      return this.mapReadFailure(error);
+    }
+  }
+
+  async listAvailabilityTemplates(
+    principal: AuthenticatedPrincipal,
+    query: WorkforceAvailabilityTemplateListQuery,
+  ): Promise<WorkforceSchedulingPage<WorkforceAvailabilityTemplateView>> {
+    try {
+      const practice = await this.requirePractice(
+        this.database.client,
+        query.organizationId,
+      );
+      const scope = await this.authorizedPracticeScope(
+        principal,
+        practice,
+        'scheduling.availability_templates.read',
+        true,
+      );
+      const facilityIds = scope.facilities.map(({ facilityId }) => facilityId);
+      if (
+        facilityIds.length === 0 ||
+        (query.facilityId !== undefined &&
+          !facilityIds.includes(query.facilityId))
+      ) {
+        return this.emptyPage(query);
+      }
+
+      let base = this.database.client
+        .selectFrom('practitioner_availability_templates as template')
+        .innerJoin('facilities as facility', (join) =>
+          join
+            .onRef('facility.id', '=', 'template.facility_id')
+            .onRef('facility.tenant_id', '=', 'template.tenant_id')
+            .onRef('facility.organization_id', '=', 'template.organization_id'),
+        )
+        .innerJoin('practitioners as practitioner', (join) =>
+          join
+            .onRef('practitioner.id', '=', 'template.practitioner_id')
+            .onRef('practitioner.tenant_id', '=', 'template.tenant_id'),
+        )
+        .innerJoin('appointment_services as service', (join) =>
+          join
+            .onRef('service.id', '=', 'template.appointment_service_id')
+            .onRef('service.tenant_id', '=', 'template.tenant_id')
+            .onRef('service.organization_id', '=', 'template.organization_id')
+            .onRef('service.facility_id', '=', 'template.facility_id'),
+        )
+        .where('template.tenant_id', '=', practice.tenantId)
+        .where('template.organization_id', '=', practice.organizationId)
+        .where('template.facility_id', 'in', facilityIds)
+        .where('template.is_synthetic', '=', true)
+        .where('facility.is_synthetic', '=', true)
+        .where('practitioner.is_synthetic', '=', true)
+        .where('service.is_synthetic', '=', true);
+      if (query.facilityId) {
+        base = base.where('template.facility_id', '=', query.facilityId);
+      }
+      if (query.practitionerFacilityAssignmentId) {
+        base = base.where(
+          'template.practitioner_facility_assignment_id',
+          '=',
+          query.practitionerFacilityAssignmentId,
+        );
+      }
+      if (query.practitionerServiceAssignmentId) {
+        base = base.where(
+          'template.practitioner_service_assignment_id',
+          '=',
+          query.practitionerServiceAssignmentId,
+        );
+      }
+      if (query.appointmentServiceId) {
+        base = base.where(
+          'template.appointment_service_id',
+          '=',
+          query.appointmentServiceId,
+        );
+      }
+      if (query.status) {
+        base = base.where('template.status', '=', query.status);
+      }
+
+      const [countRow, templates] = await Promise.all([
+        base
+          .select((expression) =>
+            expression.fn.countAll<string>().as('total_count'),
+          )
+          .executeTakeFirst(),
+        base
+          .select([
+            'template.id',
+            'template.facility_id',
+            'facility.name as facility_name',
+            'template.practitioner_facility_assignment_id',
+            'template.practitioner_service_assignment_id',
+            'template.practitioner_id',
+            'practitioner.display_name as practitioner_display_name',
+            'template.appointment_service_id',
+            'service.patient_facing_name as service_name',
+            'service.duration_minutes',
+            'template.iso_weekday',
+            'template.local_start_minute',
+            'template.local_end_minute',
+            'template.effective_from',
+            'template.effective_until',
+            'template.source_timezone',
+            'template.status',
+            'template.updated_at',
+          ])
+          .orderBy('facility.name', 'asc')
+          .orderBy('practitioner.display_name', 'asc')
+          .orderBy('template.iso_weekday', 'asc')
+          .orderBy('template.local_start_minute', 'asc')
+          .orderBy('template.id', 'asc')
+          .limit(query.pageSize)
+          .offset((query.page - 1) * query.pageSize)
+          .execute(),
+      ]);
+
+      return {
+        page: query.page,
+        pageSize: query.pageSize,
+        total: asCount(countRow?.total_count),
+        items: templates.map((template) =>
+          this.mapAvailabilityTemplateView(template),
+        ),
+      };
+    } catch (error) {
+      return this.mapReadFailure(error);
+    }
+  }
+
+  async listAvailabilityExceptions(
+    principal: AuthenticatedPrincipal,
+    query: WorkforceAvailabilityExceptionListQuery,
+  ): Promise<WorkforceSchedulingPage<WorkforceAvailabilityExceptionView>> {
+    try {
+      const practice = await this.requirePractice(
+        this.database.client,
+        query.organizationId,
+      );
+      const scope = await this.authorizedPracticeScope(
+        principal,
+        practice,
+        'scheduling.availability_exceptions.read',
+        true,
+      );
+      const facilityIds = scope.facilities.map(({ facilityId }) => facilityId);
+      if (
+        facilityIds.length === 0 ||
+        (query.facilityId !== undefined &&
+          !facilityIds.includes(query.facilityId))
+      ) {
+        return this.emptyPage(query);
+      }
+
+      let base = this.database.client
+        .selectFrom('provider_availability_exceptions as exception')
+        .innerJoin('facilities as facility', (join) =>
+          join
+            .onRef('facility.id', '=', 'exception.facility_id')
+            .onRef('facility.tenant_id', '=', 'exception.tenant_id')
+            .onRef(
+              'facility.organization_id',
+              '=',
+              'exception.organization_id',
+            ),
+        )
+        .leftJoin(
+          'practitioner_facility_assignments as facility_assignment',
+          (join) =>
+            join
+              .onRef(
+                'facility_assignment.id',
+                '=',
+                'exception.practitioner_facility_assignment_id',
+              )
+              .onRef(
+                'facility_assignment.tenant_id',
+                '=',
+                'exception.tenant_id',
+              )
+              .onRef(
+                'facility_assignment.organization_id',
+                '=',
+                'exception.organization_id',
+              )
+              .onRef(
+                'facility_assignment.facility_id',
+                '=',
+                'exception.facility_id',
+              ),
+        )
+        .leftJoin('practitioners as practitioner', (join) =>
+          join
+            .onRef('practitioner.id', '=', 'exception.practitioner_id')
+            .onRef('practitioner.tenant_id', '=', 'exception.tenant_id'),
+        )
+        .where('exception.tenant_id', '=', practice.tenantId)
+        .where('exception.organization_id', '=', practice.organizationId)
+        .where('exception.facility_id', 'in', facilityIds)
+        .where('exception.is_synthetic', '=', true)
+        .where('facility.is_synthetic', '=', true);
+      if (query.facilityId) {
+        base = base.where('exception.facility_id', '=', query.facilityId);
+      }
+      if (query.practitionerFacilityAssignmentId) {
+        base = base.where(
+          'exception.practitioner_facility_assignment_id',
+          '=',
+          query.practitionerFacilityAssignmentId,
+        );
+      }
+      if (query.kind) base = base.where('exception.kind', '=', query.kind);
+      if (query.status)
+        base = base.where('exception.status', '=', query.status);
+      if (query.startsBefore) {
+        base = base.where(
+          'exception.starts_at',
+          '<',
+          new Date(query.startsBefore),
+        );
+      }
+      if (query.endsAfter) {
+        base = base.where('exception.ends_at', '>', new Date(query.endsAfter));
+      }
+
+      const [countRow, exceptions] = await Promise.all([
+        base
+          .select((expression) =>
+            expression.fn.countAll<string>().as('total_count'),
+          )
+          .executeTakeFirst(),
+        base
+          .select([
+            'exception.id',
+            'exception.facility_id',
+            'facility.name as facility_name',
+            'exception.practitioner_facility_assignment_id',
+            'exception.practitioner_id',
+            'practitioner.display_name as practitioner_display_name',
+            'exception.kind',
+            'exception.is_all_day',
+            'exception.local_starts_at',
+            'exception.local_ends_at',
+            'exception.starts_at',
+            'exception.ends_at',
+            'exception.source_timezone',
+            'exception.status',
+            'exception.updated_at',
+          ])
+          .orderBy('exception.starts_at', 'desc')
+          .orderBy('exception.id', 'asc')
+          .limit(query.pageSize)
+          .offset((query.page - 1) * query.pageSize)
+          .execute(),
+      ]);
+
+      return {
+        page: query.page,
+        pageSize: query.pageSize,
+        total: asCount(countRow?.total_count),
+        items: exceptions.map((exception) =>
+          this.mapAvailabilityExceptionView(exception),
+        ),
+      };
+    } catch (error) {
+      return this.mapReadFailure(error);
+    }
+  }
+
+  async listAvailabilitySlots(
+    principal: AuthenticatedPrincipal,
+    query: WorkforceAvailabilitySlotListQuery,
+  ): Promise<WorkforceSchedulingPage<WorkforceAvailabilitySlotView>> {
+    try {
+      const practice = await this.requirePractice(
+        this.database.client,
+        query.organizationId,
+      );
+      const facility = await this.requireFacility(
+        this.database.client,
+        practice,
+        query.facilityId,
+      );
+      const scope = await this.authorizedPracticeScope(
+        principal,
+        practice,
+        'scheduling.availability_slots.read',
+        true,
+      );
+      if (
+        !scope.facilities.some(
+          ({ facilityId }) => facilityId === facility.facilityId,
+        )
+      ) {
+        return this.emptyPage(query);
+      }
+      const startsAt = new Date(query.startsAt);
+      const endsAt = new Date(query.endsAt);
+      const horizon = captureAvailabilityHorizon(startsAt, facility.timezone);
+      const maximumEnd = resolveLocalMinuteBoundary(
+        horizon.localEndDateExclusive,
+        0,
+        facility.timezone,
+      ).instant;
+      if (
+        !Number.isFinite(startsAt.getTime()) ||
+        !Number.isFinite(endsAt.getTime()) ||
+        startsAt >= endsAt ||
+        endsAt > maximumEnd
+      ) {
+        throw new WorkforceSchedulingValidationError(
+          'The slot range must be an increasing interval of at most 56 facility-local days.',
+        );
+      }
+
+      let base = this.database.client
+        .selectFrom('patient_portal_appointment_slots as slot')
+        .where('slot.tenant_id', '=', practice.tenantId)
+        .where('slot.organization_id', '=', practice.organizationId)
+        .where('slot.facility_id', '=', facility.facilityId)
+        .where('slot.starts_at', '>=', startsAt)
+        .where('slot.starts_at', '<', endsAt)
+        .where('slot.is_synthetic', '=', true)
+        .where('slot.practitioner_service_assignment_id', 'is not', null);
+      if (query.appointmentServiceId) {
+        base = base.where(
+          'slot.appointment_service_id',
+          '=',
+          query.appointmentServiceId,
+        );
+      }
+      if (query.practitionerId) {
+        base = base.where('slot.practitioner_id', '=', query.practitionerId);
+      }
+      if (query.status) base = base.where('slot.status', '=', query.status);
+
+      const [countRow, slots] = await Promise.all([
+        base
+          .select((expression) =>
+            expression.fn.countAll<string>().as('total_count'),
+          )
+          .executeTakeFirst(),
+        base
+          .select([
+            'slot.id',
+            'slot.availability_template_id',
+            'slot.facility_id',
+            'slot.practitioner_facility_assignment_id',
+            'slot.practitioner_service_assignment_id',
+            'slot.practitioner_id',
+            'slot.appointment_service_id',
+            'slot.source_local_date',
+            'slot.source_timezone',
+            'slot.starts_at',
+            'slot.ends_at',
+            'slot.status',
+            'slot.withdrawal_pending',
+            'slot.updated_at',
+          ])
+          .select(
+            sql<boolean>`exists (
+              select 1
+              from patient_portal_appointments appointment
+              where appointment.appointment_slot_id = slot.id
+                and appointment.status in ('requested', 'confirmed')
+            )`.as('has_live_appointment'),
+          )
+          .orderBy('slot.starts_at', 'asc')
+          .orderBy('slot.id', 'asc')
+          .limit(query.pageSize)
+          .offset((query.page - 1) * query.pageSize)
+          .execute(),
+      ]);
+
+      return {
+        page: query.page,
+        pageSize: query.pageSize,
+        total: asCount(countRow?.total_count),
+        items: slots.map((slot) => ({
+          appointmentSlotId: slot.id,
+          availabilityTemplateId: slot.availability_template_id!,
+          facilityId: slot.facility_id!,
+          practitionerFacilityAssignmentId:
+            slot.practitioner_facility_assignment_id!,
+          practitionerServiceAssignmentId:
+            slot.practitioner_service_assignment_id!,
+          practitionerId: slot.practitioner_id!,
+          appointmentServiceId: slot.appointment_service_id!,
+          sourceLocalDate: slot.source_local_date!,
+          sourceTimezone: slot.source_timezone!,
+          startsAt: slot.starts_at.toISOString(),
+          endsAt: slot.ends_at.toISOString(),
+          status: slot.status,
+          withdrawalPending: slot.withdrawal_pending,
+          hasLiveAppointment: slot.has_live_appointment,
+          updatedAt: slot.updated_at.toISOString(),
+        })),
+      };
+    } catch (error) {
+      if (error instanceof AvailabilityMaterializationError) {
+        throw new WorkforceSchedulingValidationError(error.message);
+      }
       return this.mapReadFailure(error);
     }
   }
@@ -2583,6 +3082,2668 @@ export class WorkforceSchedulingRepository {
     );
   }
 
+  createAvailabilityTemplate(
+    request: SchedulingMutationRequest<CreateAvailabilityTemplateInput>,
+  ): Promise<AvailabilityTemplateMutationResponse> {
+    return this.executeMutation(
+      request,
+      'availability_template_create',
+      { input: request.input },
+      async (database, metadata) => {
+        const practice = await this.requirePractice(
+          database,
+          request.input.organizationId,
+        );
+        const reason = workforceSchedulingAuditReason(request.input.reasonCode);
+        const initialScope = await this.findAvailabilityAssignmentScope(
+          database,
+          practice,
+          request.input.practitionerServiceAssignmentId,
+        );
+        if (!initialScope) {
+          await this.requireAnySchedulingAuthorization(
+            request.principal,
+            practice,
+            metadata.correlationId,
+            'scheduling.availability_template_created',
+            'practitioner_service_assignment',
+            request.input.practitionerServiceAssignmentId,
+            reason,
+            database,
+          );
+          this.scopedTargetUnavailable(
+            request.principal,
+            practice,
+            metadata.correlationId,
+            'practitioner_service_assignment',
+            request.input.practitionerServiceAssignmentId,
+          );
+        }
+        const access = await this.requireFacilityAuthorization(
+          request.principal,
+          practice,
+          initialScope.facility.facilityId,
+          metadata.correlationId,
+          'scheduling.availability_template_created',
+          'practitioner_service_assignment',
+          initialScope.practitionerServiceAssignmentId,
+          reason,
+          database,
+        );
+        const replay =
+          await this.replayCommand<AvailabilityTemplateMutationResponse>(
+            database,
+            access,
+            practice,
+            metadata,
+          );
+        if (replay) return replay;
+        this.assertTemplateAvailabilityReason(request.input.reasonCode);
+        this.validateAvailabilityTemplateDefinition(request.input);
+
+        await this.lockPractitionerMutexes(database, practice, [
+          initialScope.practitionerId,
+        ]);
+        const scope = await this.findAvailabilityAssignmentScope(
+          database,
+          practice,
+          request.input.practitionerServiceAssignmentId,
+          'share',
+        );
+        if (!scope) {
+          this.scopedTargetUnavailable(
+            request.principal,
+            practice,
+            metadata.correlationId,
+            'practitioner_service_assignment',
+            request.input.practitionerServiceAssignmentId,
+            initialScope.facility.facilityId,
+          );
+        }
+        if (request.input.status === 'active') {
+          this.assertActiveAvailabilityChain(scope);
+        }
+        const inserted = await database
+          .insertInto('practitioner_availability_templates')
+          .values({
+            tenant_id: practice.tenantId,
+            organization_id: practice.organizationId,
+            facility_id: scope.facility.facilityId,
+            practitioner_facility_assignment_id:
+              scope.practitionerFacilityAssignmentId,
+            practitioner_service_assignment_id:
+              scope.practitionerServiceAssignmentId,
+            practitioner_id: scope.practitionerId,
+            appointment_service_id: scope.appointmentServiceId,
+            iso_weekday: request.input.isoWeekday,
+            local_start_minute: request.input.localStartMinute,
+            local_end_minute: request.input.localEndMinute,
+            effective_from: request.input.effectiveFrom,
+            effective_until: request.input.effectiveUntil ?? null,
+            source_timezone: scope.facility.timezone,
+            status: request.input.status,
+            is_synthetic: true,
+          })
+          .returning('id')
+          .executeTakeFirstOrThrow();
+        const materialization =
+          request.input.status === 'active'
+            ? (
+                await this.reconcileAvailability(
+                  database,
+                  practice,
+                  scope.facility,
+                  [scope.practitionerId],
+                  metadata.frozenNow,
+                )
+              ).summary
+            : this.emptyAvailabilitySummary(
+                metadata.frozenNow,
+                scope.facility.timezone,
+              );
+        const response: AvailabilityTemplateMutationResponse = {
+          template: await this.loadAvailabilityTemplateView(
+            database,
+            practice,
+            inserted.id,
+          ),
+          replacedTemplateId: null,
+          materialization,
+        };
+        await this.insertSuccessAudit(database, {
+          principal: request.principal,
+          access,
+          practice,
+          facilityId: scope.facility.facilityId,
+          correlationId: metadata.correlationId,
+          action: 'scheduling.availability_template_created',
+          targetEntityType: 'practitioner_availability_template',
+          targetEntityId: inserted.id,
+          reason,
+          beforeData: null,
+          afterData: this.availabilityAuditData(response.materialization, {
+            templateId: inserted.id,
+            status: response.template.status,
+          }),
+        });
+        await this.insertCommand(
+          database,
+          access,
+          practice,
+          metadata,
+          { ...response },
+          'practitioner_availability_template',
+          inserted.id,
+        );
+        return response;
+      },
+    );
+  }
+
+  replaceAvailabilityTemplate(
+    request: SchedulingMutationRequest<ReplaceAvailabilityTemplateInput>,
+    templateId: string,
+  ): Promise<AvailabilityTemplateMutationResponse> {
+    return this.executeMutation(
+      request,
+      'availability_template_replace',
+      { templateId, input: request.input },
+      async (database, metadata) => {
+        const practice = await this.requirePractice(
+          database,
+          request.input.organizationId,
+        );
+        const reason = workforceSchedulingAuditReason(request.input.reasonCode);
+        const initialTarget = await this.findAvailabilityTemplateTarget(
+          database,
+          practice,
+          templateId,
+        );
+        if (!initialTarget) {
+          await this.requireAnySchedulingAuthorization(
+            request.principal,
+            practice,
+            metadata.correlationId,
+            'scheduling.availability_template_replaced',
+            'practitioner_availability_template',
+            templateId,
+            reason,
+            database,
+          );
+          this.scopedTargetUnavailable(
+            request.principal,
+            practice,
+            metadata.correlationId,
+            'practitioner_availability_template',
+            templateId,
+          );
+        }
+        const facility = await this.requireMutationFacility(
+          database,
+          practice,
+          initialTarget.facilityId,
+          request.principal,
+          metadata.correlationId,
+          'scheduling.availability_template_replaced',
+          reason,
+        );
+        const access = await this.requireFacilityAuthorization(
+          request.principal,
+          practice,
+          facility.facilityId,
+          metadata.correlationId,
+          'scheduling.availability_template_replaced',
+          'practitioner_availability_template',
+          templateId,
+          reason,
+          database,
+        );
+        const replay =
+          await this.replayCommand<AvailabilityTemplateMutationResponse>(
+            database,
+            access,
+            practice,
+            metadata,
+          );
+        if (replay) return replay;
+        this.assertTemplateAvailabilityReason(request.input.reasonCode);
+        this.validateAvailabilityTemplateDefinition(request.input);
+        if (
+          request.input.practitionerServiceAssignmentId !==
+          initialTarget.practitionerServiceAssignmentId
+        ) {
+          throw new WorkforceSchedulingConflictError(
+            'A replacement must retain the original provider eligibility scope.',
+          );
+        }
+
+        await this.lockPractitionerMutexes(database, practice, [
+          initialTarget.practitionerId,
+        ]);
+        await this.loadStoredAvailabilitySlots(
+          database,
+          practice,
+          facility,
+          [initialTarget.practitionerId],
+          metadata.frozenNow,
+        );
+        const target = await this.findAvailabilityTemplateTarget(
+          database,
+          practice,
+          templateId,
+          true,
+        );
+        if (!target) {
+          this.scopedTargetUnavailable(
+            request.principal,
+            practice,
+            metadata.correlationId,
+            'practitioner_availability_template',
+            templateId,
+            facility.facilityId,
+          );
+        }
+        if (
+          !matchesExpectedTimestamp(
+            target.updatedAt,
+            request.input.expectedUpdatedAt,
+          )
+        ) {
+          throw new WorkforceSchedulingConflictError(
+            'The availability template changed before this request was applied.',
+          );
+        }
+        const scope = await this.findAvailabilityAssignmentScope(
+          database,
+          practice,
+          target.practitionerServiceAssignmentId,
+          'share',
+        );
+        if (!scope) throw new WorkforceSchedulingPersistenceError();
+        if (request.input.status === 'active') {
+          this.assertActiveAvailabilityChain(scope);
+        }
+
+        const existing = await database
+          .selectFrom('practitioner_availability_templates as template')
+          .select(['template.id', 'template.status'])
+          .where(
+            'template.practitioner_service_assignment_id',
+            '=',
+            scope.practitionerServiceAssignmentId,
+          )
+          .where('template.iso_weekday', '=', request.input.isoWeekday)
+          .where(
+            'template.local_start_minute',
+            '=',
+            request.input.localStartMinute,
+          )
+          .where('template.local_end_minute', '=', request.input.localEndMinute)
+          .where('template.effective_from', '=', request.input.effectiveFrom)
+          .where(
+            'template.effective_until',
+            request.input.effectiveUntil === undefined ? 'is' : '=',
+            request.input.effectiveUntil ?? null,
+          )
+          .where('template.source_timezone', '=', facility.timezone)
+          .forUpdate()
+          .executeTakeFirst();
+        const updatedAt = new Date();
+        let replacementId: string;
+        if (existing) {
+          replacementId = existing.id;
+          if (target.id !== existing.id && target.status !== 'inactive') {
+            await database
+              .updateTable('practitioner_availability_templates')
+              .set({ status: 'inactive', updated_at: updatedAt })
+              .where('id', '=', target.id)
+              .executeTakeFirstOrThrow();
+          }
+          if (existing.status !== request.input.status) {
+            await database
+              .updateTable('practitioner_availability_templates')
+              .set({ status: request.input.status, updated_at: updatedAt })
+              .where('id', '=', existing.id)
+              .executeTakeFirstOrThrow();
+          }
+        } else {
+          if (target.status !== 'inactive') {
+            await database
+              .updateTable('practitioner_availability_templates')
+              .set({ status: 'inactive', updated_at: updatedAt })
+              .where('id', '=', target.id)
+              .executeTakeFirstOrThrow();
+          }
+          const inserted = await database
+            .insertInto('practitioner_availability_templates')
+            .values({
+              tenant_id: practice.tenantId,
+              organization_id: practice.organizationId,
+              facility_id: facility.facilityId,
+              practitioner_facility_assignment_id:
+                scope.practitionerFacilityAssignmentId,
+              practitioner_service_assignment_id:
+                scope.practitionerServiceAssignmentId,
+              practitioner_id: scope.practitionerId,
+              appointment_service_id: scope.appointmentServiceId,
+              iso_weekday: request.input.isoWeekday,
+              local_start_minute: request.input.localStartMinute,
+              local_end_minute: request.input.localEndMinute,
+              effective_from: request.input.effectiveFrom,
+              effective_until: request.input.effectiveUntil ?? null,
+              source_timezone: facility.timezone,
+              status: request.input.status,
+              is_synthetic: true,
+            })
+            .returning('id')
+            .executeTakeFirstOrThrow();
+          replacementId = inserted.id;
+        }
+        const materialization = (
+          await this.reconcileAvailability(
+            database,
+            practice,
+            facility,
+            [scope.practitionerId],
+            metadata.frozenNow,
+          )
+        ).summary;
+        const response: AvailabilityTemplateMutationResponse = {
+          template: await this.loadAvailabilityTemplateView(
+            database,
+            practice,
+            replacementId,
+          ),
+          replacedTemplateId: replacementId === target.id ? null : target.id,
+          materialization,
+        };
+        await this.insertSuccessAudit(database, {
+          principal: request.principal,
+          access,
+          practice,
+          facilityId: facility.facilityId,
+          correlationId: metadata.correlationId,
+          action: 'scheduling.availability_template_replaced',
+          targetEntityType: 'practitioner_availability_template',
+          targetEntityId: replacementId,
+          reason,
+          beforeData: {
+            templateId: target.id,
+            status: target.status,
+            updatedAt: target.updatedAt.toISOString(),
+          },
+          afterData: this.availabilityAuditData(materialization, {
+            templateId: replacementId,
+            replacedTemplateId: replacementId === target.id ? null : target.id,
+            status: response.template.status,
+          }),
+        });
+        await this.insertCommand(
+          database,
+          access,
+          practice,
+          metadata,
+          { ...response },
+          'practitioner_availability_template',
+          replacementId,
+        );
+        return response;
+      },
+    );
+  }
+
+  changeAvailabilityTemplateStatus(
+    request: SchedulingMutationRequest<ChangeAvailabilityTemplateStatusInput>,
+    templateId: string,
+  ): Promise<AvailabilityTemplateMutationResponse> {
+    return this.executeMutation(
+      request,
+      'availability_template_status',
+      { templateId, input: request.input },
+      async (database, metadata) => {
+        const practice = await this.requirePractice(
+          database,
+          request.input.organizationId,
+        );
+        const reason = workforceSchedulingAuditReason(request.input.reasonCode);
+        const initial = await this.findAvailabilityTemplateTarget(
+          database,
+          practice,
+          templateId,
+        );
+        if (!initial) {
+          await this.requireAnySchedulingAuthorization(
+            request.principal,
+            practice,
+            metadata.correlationId,
+            'scheduling.availability_template_status_changed',
+            'practitioner_availability_template',
+            templateId,
+            reason,
+            database,
+          );
+          this.scopedTargetUnavailable(
+            request.principal,
+            practice,
+            metadata.correlationId,
+            'practitioner_availability_template',
+            templateId,
+          );
+        }
+        const facility = await this.requireMutationFacility(
+          database,
+          practice,
+          initial.facilityId,
+          request.principal,
+          metadata.correlationId,
+          'scheduling.availability_template_status_changed',
+          reason,
+        );
+        const access = await this.requireFacilityAuthorization(
+          request.principal,
+          practice,
+          facility.facilityId,
+          metadata.correlationId,
+          'scheduling.availability_template_status_changed',
+          'practitioner_availability_template',
+          templateId,
+          reason,
+          database,
+        );
+        const replay =
+          await this.replayCommand<AvailabilityTemplateMutationResponse>(
+            database,
+            access,
+            practice,
+            metadata,
+          );
+        if (replay) return replay;
+        this.assertTemplateAvailabilityReason(request.input.reasonCode);
+        await this.lockPractitionerMutexes(database, practice, [
+          initial.practitionerId,
+        ]);
+        await this.loadStoredAvailabilitySlots(
+          database,
+          practice,
+          facility,
+          [initial.practitionerId],
+          metadata.frozenNow,
+        );
+        const target = await this.findAvailabilityTemplateTarget(
+          database,
+          practice,
+          templateId,
+          true,
+        );
+        if (!target) {
+          this.scopedTargetUnavailable(
+            request.principal,
+            practice,
+            metadata.correlationId,
+            'practitioner_availability_template',
+            templateId,
+            facility.facilityId,
+          );
+        }
+        if (
+          !matchesExpectedTimestamp(
+            target.updatedAt,
+            request.input.expectedUpdatedAt,
+          )
+        ) {
+          throw new WorkforceSchedulingConflictError(
+            'The availability template changed before this request was applied.',
+          );
+        }
+        const scope = await this.findAvailabilityAssignmentScope(
+          database,
+          practice,
+          target.practitionerServiceAssignmentId,
+          'share',
+        );
+        if (!scope) throw new WorkforceSchedulingPersistenceError();
+        if (request.input.status === 'active') {
+          this.assertActiveAvailabilityChain(scope);
+        }
+        const updatedAt = new Date();
+        await database
+          .updateTable('practitioner_availability_templates')
+          .set({ status: request.input.status, updated_at: updatedAt })
+          .where('id', '=', target.id)
+          .executeTakeFirstOrThrow();
+        const materialization = (
+          await this.reconcileAvailability(
+            database,
+            practice,
+            facility,
+            [scope.practitionerId],
+            metadata.frozenNow,
+          )
+        ).summary;
+        const response: AvailabilityTemplateMutationResponse = {
+          template: await this.loadAvailabilityTemplateView(
+            database,
+            practice,
+            target.id,
+          ),
+          replacedTemplateId: null,
+          materialization,
+        };
+        await this.insertSuccessAudit(database, {
+          principal: request.principal,
+          access,
+          practice,
+          facilityId: facility.facilityId,
+          correlationId: metadata.correlationId,
+          action: 'scheduling.availability_template_status_changed',
+          targetEntityType: 'practitioner_availability_template',
+          targetEntityId: target.id,
+          reason,
+          beforeData: {
+            templateId: target.id,
+            status: target.status,
+            updatedAt: target.updatedAt.toISOString(),
+          },
+          afterData: this.availabilityAuditData(materialization, {
+            templateId: target.id,
+            status: response.template.status,
+            updatedAt: response.template.updatedAt,
+          }),
+        });
+        await this.insertCommand(
+          database,
+          access,
+          practice,
+          metadata,
+          { ...response },
+          'practitioner_availability_template',
+          target.id,
+        );
+        return response;
+      },
+    );
+  }
+
+  materializeAvailabilityTemplate(
+    request: SchedulingMutationRequest<MaterializeAvailabilityTemplateInput>,
+    templateId: string,
+  ): Promise<AvailabilityTemplateMutationResponse> {
+    return this.executeMutation(
+      request,
+      'availability_template_materialize',
+      { templateId, input: request.input },
+      async (database, metadata) => {
+        const practice = await this.requirePractice(
+          database,
+          request.input.organizationId,
+        );
+        const reason = workforceSchedulingAuditReason(request.input.reasonCode);
+        const initial = await this.findAvailabilityTemplateTarget(
+          database,
+          practice,
+          templateId,
+        );
+        if (!initial) {
+          await this.requireAnySchedulingAuthorization(
+            request.principal,
+            practice,
+            metadata.correlationId,
+            'scheduling.availability_template_materialized',
+            'practitioner_availability_template',
+            templateId,
+            reason,
+            database,
+          );
+          this.scopedTargetUnavailable(
+            request.principal,
+            practice,
+            metadata.correlationId,
+            'practitioner_availability_template',
+            templateId,
+          );
+        }
+        const facility = await this.requireMutationFacility(
+          database,
+          practice,
+          initial.facilityId,
+          request.principal,
+          metadata.correlationId,
+          'scheduling.availability_template_materialized',
+          reason,
+        );
+        const access = await this.requireFacilityAuthorization(
+          request.principal,
+          practice,
+          facility.facilityId,
+          metadata.correlationId,
+          'scheduling.availability_template_materialized',
+          'practitioner_availability_template',
+          templateId,
+          reason,
+          database,
+        );
+        const replay =
+          await this.replayCommand<AvailabilityTemplateMutationResponse>(
+            database,
+            access,
+            practice,
+            metadata,
+          );
+        if (replay) return replay;
+        this.assertTemplateAvailabilityReason(request.input.reasonCode);
+        await this.lockPractitionerMutexes(database, practice, [
+          initial.practitionerId,
+        ]);
+        await this.loadStoredAvailabilitySlots(
+          database,
+          practice,
+          facility,
+          [initial.practitionerId],
+          metadata.frozenNow,
+        );
+        const target = await this.findAvailabilityTemplateTarget(
+          database,
+          practice,
+          templateId,
+          true,
+        );
+        if (!target) throw new WorkforceSchedulingPersistenceError();
+        if (
+          !matchesExpectedTimestamp(
+            target.updatedAt,
+            request.input.expectedUpdatedAt,
+          )
+        ) {
+          throw new WorkforceSchedulingConflictError(
+            'The availability template changed before this request was applied.',
+          );
+        }
+        if (target.status !== 'active') {
+          throw new WorkforceSchedulingConflictError(
+            'Only an active availability template can be materialized.',
+          );
+        }
+        const scope = await this.findAvailabilityAssignmentScope(
+          database,
+          practice,
+          target.practitionerServiceAssignmentId,
+          'share',
+        );
+        if (!scope) throw new WorkforceSchedulingPersistenceError();
+        this.assertActiveAvailabilityChain(scope);
+        const materialization = (
+          await this.reconcileAvailability(
+            database,
+            practice,
+            facility,
+            [scope.practitionerId],
+            metadata.frozenNow,
+          )
+        ).summary;
+        const response: AvailabilityTemplateMutationResponse = {
+          template: await this.loadAvailabilityTemplateView(
+            database,
+            practice,
+            target.id,
+          ),
+          replacedTemplateId: null,
+          materialization,
+        };
+        await this.insertSuccessAudit(database, {
+          principal: request.principal,
+          access,
+          practice,
+          facilityId: facility.facilityId,
+          correlationId: metadata.correlationId,
+          action: 'scheduling.availability_template_materialized',
+          targetEntityType: 'practitioner_availability_template',
+          targetEntityId: target.id,
+          reason,
+          beforeData: null,
+          afterData: this.availabilityAuditData(materialization, {
+            templateId: target.id,
+            status: target.status,
+          }),
+        });
+        await this.insertCommand(
+          database,
+          access,
+          practice,
+          metadata,
+          { ...response },
+          'practitioner_availability_template',
+          target.id,
+        );
+        return response;
+      },
+    );
+  }
+
+  createAvailabilityException(
+    request: SchedulingMutationRequest<CreateAvailabilityExceptionInput>,
+  ): Promise<AvailabilityExceptionMutationResponse> {
+    return this.executeMutation(
+      request,
+      'availability_exception_create',
+      { input: request.input },
+      async (database, metadata) => {
+        const practice = await this.requirePractice(
+          database,
+          request.input.organizationId,
+        );
+        const reason = workforceSchedulingAuditReason(request.input.reasonCode);
+        const facility = await this.requireMutationFacility(
+          database,
+          practice,
+          request.input.facilityId,
+          request.principal,
+          metadata.correlationId,
+          'scheduling.availability_exception_created',
+          reason,
+        );
+        const access = await this.requireFacilityAuthorization(
+          request.principal,
+          practice,
+          facility.facilityId,
+          metadata.correlationId,
+          'scheduling.availability_exception_created',
+          'facility',
+          facility.facilityId,
+          reason,
+          database,
+        );
+        const replay =
+          await this.replayCommand<AvailabilityExceptionMutationResponse>(
+            database,
+            access,
+            practice,
+            metadata,
+          );
+        if (replay) return replay;
+
+        await this.requireActiveBookablePractice(database, practice);
+
+        const expectedReason =
+          request.input.kind === 'facility_closed'
+            ? 'facility-availability-change'
+            : 'provider-availability-change';
+        if (request.input.reasonCode !== expectedReason) {
+          throw new WorkforceSchedulingValidationError(
+            'The exception reason does not match its immutable scope.',
+          );
+        }
+        const resolved = resolveCanonicalLocalException({
+          localStartsAt: request.input.localStartsAt,
+          localEndsAt: request.input.localEndsAt,
+          sourceTimezone: facility.timezone,
+          isAllDay: request.input.isAllDay,
+          horizon: captureAvailabilityHorizon(
+            metadata.frozenNow,
+            facility.timezone,
+          ),
+        });
+
+        let practitionerFacilityAssignmentId: string | null = null;
+        let practitionerId: string | null = null;
+        let affectedPractitionerIds: string[];
+        if (request.input.kind === 'practitioner_unavailable') {
+          if (!request.input.practitionerFacilityAssignmentId) {
+            throw new WorkforceSchedulingValidationError(
+              'A practitioner-unavailable exception requires an exact active facility affiliation.',
+            );
+          }
+          try {
+            const practitioner =
+              await this.requireActivePractitionerFacilityScope(
+                database,
+                practice,
+                facility.facilityId,
+                request.input.practitionerFacilityAssignmentId,
+              );
+            practitionerFacilityAssignmentId = practitioner.assignmentId;
+            practitionerId = practitioner.practitionerId;
+            affectedPractitionerIds = [practitioner.practitionerId];
+          } catch (error) {
+            if (!(error instanceof WorkforceSchedulingTargetUnavailableError)) {
+              throw error;
+            }
+            this.scopedTargetUnavailable(
+              request.principal,
+              practice,
+              metadata.correlationId,
+              'practitioner_facility_assignment',
+              request.input.practitionerFacilityAssignmentId,
+              facility.facilityId,
+            );
+          }
+        } else {
+          if (request.input.practitionerFacilityAssignmentId !== undefined) {
+            throw new WorkforceSchedulingValidationError(
+              'A facility closure cannot target one practitioner.',
+            );
+          }
+          affectedPractitionerIds =
+            await this.availabilityPractitionerIdsForFacility(
+              database,
+              practice,
+              facility.facilityId,
+            );
+        }
+        await this.lockPractitionerMutexes(
+          database,
+          practice,
+          affectedPractitionerIds,
+        );
+        await this.loadStoredAvailabilitySlots(
+          database,
+          practice,
+          facility,
+          affectedPractitionerIds,
+          metadata.frozenNow,
+        );
+        const inserted = await database
+          .insertInto('provider_availability_exceptions')
+          .values({
+            tenant_id: practice.tenantId,
+            organization_id: practice.organizationId,
+            facility_id: facility.facilityId,
+            practitioner_facility_assignment_id:
+              practitionerFacilityAssignmentId,
+            practitioner_id: practitionerId,
+            kind: request.input.kind,
+            is_all_day: request.input.isAllDay,
+            local_starts_at: resolved.localStartsAt,
+            local_ends_at: resolved.localEndsAt,
+            starts_at: resolved.startsAt,
+            ends_at: resolved.endsAt,
+            source_timezone: facility.timezone,
+            status: 'active',
+            is_synthetic: true,
+          })
+          .returning('id')
+          .executeTakeFirstOrThrow();
+        const materialization = (
+          await this.reconcileAvailability(
+            database,
+            practice,
+            facility,
+            affectedPractitionerIds,
+            metadata.frozenNow,
+          )
+        ).summary;
+        const response: AvailabilityExceptionMutationResponse = {
+          exception: await this.loadAvailabilityExceptionView(
+            database,
+            practice,
+            inserted.id,
+          ),
+          materialization,
+        };
+        await this.insertSuccessAudit(database, {
+          principal: request.principal,
+          access,
+          practice,
+          facilityId: facility.facilityId,
+          correlationId: metadata.correlationId,
+          action: 'scheduling.availability_exception_created',
+          targetEntityType: 'provider_availability_exception',
+          targetEntityId: inserted.id,
+          reason,
+          beforeData: null,
+          afterData: this.availabilityAuditData(materialization, {
+            exceptionId: inserted.id,
+            exceptionKind: request.input.kind,
+            status: 'active',
+            practitionerScoped: practitionerId !== null,
+          }),
+        });
+        await this.insertCommand(
+          database,
+          access,
+          practice,
+          metadata,
+          { ...response },
+          'provider_availability_exception',
+          inserted.id,
+        );
+        return response;
+      },
+    );
+  }
+
+  cancelAvailabilityException(
+    request: SchedulingMutationRequest<CancelAvailabilityExceptionInput>,
+    exceptionId: string,
+  ): Promise<AvailabilityExceptionMutationResponse> {
+    return this.executeMutation(
+      request,
+      'availability_exception_cancel',
+      { exceptionId, input: request.input },
+      async (database, metadata) => {
+        const practice = await this.requirePractice(
+          database,
+          request.input.organizationId,
+        );
+        const reason = workforceSchedulingAuditReason(request.input.reasonCode);
+        const initial = await this.findAvailabilityExceptionTarget(
+          database,
+          practice,
+          exceptionId,
+        );
+        if (!initial) {
+          await this.requireAnySchedulingAuthorization(
+            request.principal,
+            practice,
+            metadata.correlationId,
+            'scheduling.availability_exception_cancelled',
+            'provider_availability_exception',
+            exceptionId,
+            reason,
+            database,
+          );
+          this.scopedTargetUnavailable(
+            request.principal,
+            practice,
+            metadata.correlationId,
+            'provider_availability_exception',
+            exceptionId,
+          );
+        }
+        const facility = await this.requireMutationFacility(
+          database,
+          practice,
+          initial.facilityId,
+          request.principal,
+          metadata.correlationId,
+          'scheduling.availability_exception_cancelled',
+          reason,
+        );
+        const access = await this.requireFacilityAuthorization(
+          request.principal,
+          practice,
+          facility.facilityId,
+          metadata.correlationId,
+          'scheduling.availability_exception_cancelled',
+          'provider_availability_exception',
+          exceptionId,
+          reason,
+          database,
+        );
+        const replay =
+          await this.replayCommand<AvailabilityExceptionMutationResponse>(
+            database,
+            access,
+            practice,
+            metadata,
+          );
+        if (replay) return replay;
+        const expectedReason =
+          initial.kind === 'facility_closed'
+            ? 'facility-availability-change'
+            : 'provider-availability-change';
+        if (request.input.reasonCode !== expectedReason) {
+          throw new WorkforceSchedulingValidationError(
+            'The exception cancellation reason does not match its immutable scope.',
+          );
+        }
+
+        const affectedPractitionerIds = initial.practitionerId
+          ? [initial.practitionerId]
+          : await this.availabilityPractitionerIdsForFacility(
+              database,
+              practice,
+              facility.facilityId,
+            );
+        await this.lockPractitionerMutexes(
+          database,
+          practice,
+          affectedPractitionerIds,
+        );
+        await this.loadStoredAvailabilitySlots(
+          database,
+          practice,
+          facility,
+          affectedPractitionerIds,
+          metadata.frozenNow,
+        );
+        const target = await this.findAvailabilityExceptionTarget(
+          database,
+          practice,
+          exceptionId,
+          true,
+        );
+        if (!target) {
+          this.scopedTargetUnavailable(
+            request.principal,
+            practice,
+            metadata.correlationId,
+            'provider_availability_exception',
+            exceptionId,
+            facility.facilityId,
+          );
+        }
+        if (
+          !matchesExpectedTimestamp(
+            target.updatedAt,
+            request.input.expectedUpdatedAt,
+          )
+        ) {
+          throw new WorkforceSchedulingConflictError(
+            'The availability exception changed before this request was applied.',
+          );
+        }
+        if (target.status === 'cancelled') {
+          throw new WorkforceSchedulingConflictError(
+            'The availability exception is already terminally cancelled.',
+          );
+        }
+        const updatedAt = new Date();
+        await database
+          .updateTable('provider_availability_exceptions')
+          .set({ status: 'cancelled', updated_at: updatedAt })
+          .where('id', '=', target.id)
+          .executeTakeFirstOrThrow();
+        const materialization = (
+          await this.reconcileAvailability(
+            database,
+            practice,
+            facility,
+            affectedPractitionerIds,
+            metadata.frozenNow,
+          )
+        ).summary;
+        const response: AvailabilityExceptionMutationResponse = {
+          exception: await this.loadAvailabilityExceptionView(
+            database,
+            practice,
+            target.id,
+          ),
+          materialization,
+        };
+        await this.insertSuccessAudit(database, {
+          principal: request.principal,
+          access,
+          practice,
+          facilityId: facility.facilityId,
+          correlationId: metadata.correlationId,
+          action: 'scheduling.availability_exception_cancelled',
+          targetEntityType: 'provider_availability_exception',
+          targetEntityId: target.id,
+          reason,
+          beforeData: {
+            exceptionId: target.id,
+            status: target.status,
+            updatedAt: target.updatedAt.toISOString(),
+          },
+          afterData: this.availabilityAuditData(materialization, {
+            exceptionId: target.id,
+            status: response.exception.status,
+            updatedAt: response.exception.updatedAt,
+          }),
+        });
+        await this.insertCommand(
+          database,
+          access,
+          practice,
+          metadata,
+          { ...response },
+          'provider_availability_exception',
+          target.id,
+        );
+        return response;
+      },
+    );
+  }
+
+  changeServiceDuration(
+    request: SchedulingMutationRequest<ChangeAppointmentServiceDurationInput>,
+    serviceId: string,
+  ): Promise<AppointmentServiceDurationMutationResponse> {
+    return this.executeMutation(
+      request,
+      'service_duration_update',
+      { serviceId, input: request.input },
+      async (database, metadata) => {
+        const practice = await this.requirePractice(
+          database,
+          request.input.organizationId,
+        );
+        const reason = workforceSchedulingAuditReason(request.input.reasonCode);
+        const initial = await this.findAvailabilityServiceTarget(
+          database,
+          practice,
+          serviceId,
+        );
+        if (!initial) {
+          await this.requireAnySchedulingAuthorization(
+            request.principal,
+            practice,
+            metadata.correlationId,
+            'scheduling.service_duration_changed',
+            'appointment_service',
+            serviceId,
+            reason,
+            database,
+          );
+          this.scopedTargetUnavailable(
+            request.principal,
+            practice,
+            metadata.correlationId,
+            'appointment_service',
+            serviceId,
+          );
+        }
+        const access = await this.requireFacilityAuthorization(
+          request.principal,
+          practice,
+          initial.facility.facilityId,
+          metadata.correlationId,
+          'scheduling.service_duration_changed',
+          'appointment_service',
+          serviceId,
+          reason,
+          database,
+        );
+        const replay =
+          await this.replayCommand<AppointmentServiceDurationMutationResponse>(
+            database,
+            access,
+            practice,
+            metadata,
+          );
+        if (replay) return replay;
+        if (request.input.reasonCode !== 'service-duration-change') {
+          throw new WorkforceSchedulingValidationError(
+            'Service duration changes require the service-duration-change reason.',
+          );
+        }
+        if (
+          !Number.isInteger(request.input.durationMinutes) ||
+          request.input.durationMinutes < 1 ||
+          request.input.durationMinutes > 1440
+        ) {
+          throw new WorkforceSchedulingValidationError(
+            'Appointment service duration must be a whole number from 1 through 1440 minutes.',
+          );
+        }
+
+        const affected = await this.availabilityPractitionersForService(
+          database,
+          practice,
+          serviceId,
+        );
+        await this.lockPractitionerMutexes(
+          database,
+          practice,
+          affected.practitionerIds,
+        );
+        // This command deliberately locks slots before the service row so it
+        // shares booking's slot -> provider-chain order.
+        await this.loadStoredAvailabilitySlots(
+          database,
+          practice,
+          initial.facility,
+          affected.practitionerIds,
+          metadata.frozenNow,
+        );
+        const target = await this.findAvailabilityServiceTarget(
+          database,
+          practice,
+          serviceId,
+          true,
+        );
+        if (!target) {
+          this.scopedTargetUnavailable(
+            request.principal,
+            practice,
+            metadata.correlationId,
+            'appointment_service',
+            serviceId,
+            initial.facility.facilityId,
+          );
+        }
+        if (
+          !matchesExpectedTimestamp(
+            target.updatedAt,
+            request.input.expectedUpdatedAt,
+          )
+        ) {
+          throw new WorkforceSchedulingConflictError(
+            'The appointment service changed before this request was applied.',
+          );
+        }
+        if (target.durationMinutes === request.input.durationMinutes) {
+          throw new WorkforceSchedulingConflictError(
+            'The appointment service already uses that duration.',
+          );
+        }
+        for (const assignmentId of affected.activeAssignmentIds) {
+          const scope = await this.findAvailabilityAssignmentScope(
+            database,
+            practice,
+            assignmentId,
+            'share',
+          );
+          if (!scope) throw new WorkforceSchedulingPersistenceError();
+          this.assertActiveAvailabilityChain(scope);
+        }
+        const updatedAt = new Date();
+        await database
+          .updateTable('appointment_services')
+          .set({
+            duration_minutes: request.input.durationMinutes,
+            updated_at: updatedAt,
+          })
+          .where('id', '=', target.id)
+          .executeTakeFirstOrThrow();
+        const materialization = (
+          await this.reconcileAvailability(
+            database,
+            practice,
+            target.facility,
+            affected.practitionerIds,
+            metadata.frozenNow,
+          )
+        ).summary;
+        const response: AppointmentServiceDurationMutationResponse = {
+          service: await this.loadService(database, practice, target.id),
+          materialization,
+        };
+        await this.insertSuccessAudit(database, {
+          principal: request.principal,
+          access,
+          practice,
+          facilityId: target.facility.facilityId,
+          correlationId: metadata.correlationId,
+          action: 'scheduling.service_duration_changed',
+          targetEntityType: 'appointment_service',
+          targetEntityId: target.id,
+          reason,
+          beforeData: {
+            serviceId: target.id,
+            durationMinutes: target.durationMinutes,
+            updatedAt: target.updatedAt.toISOString(),
+          },
+          afterData: this.availabilityAuditData(materialization, {
+            serviceId: target.id,
+            durationMinutes: response.service.durationMinutes,
+            updatedAt: response.service.updatedAt,
+          }),
+        });
+        await this.insertCommand(
+          database,
+          access,
+          practice,
+          metadata,
+          { ...response },
+          'appointment_service',
+          target.id,
+        );
+        return response;
+      },
+    );
+  }
+
+  private mapAvailabilityTemplateView(template: {
+    id: string;
+    facility_id: string;
+    facility_name: string;
+    practitioner_facility_assignment_id: string;
+    practitioner_service_assignment_id: string;
+    practitioner_id: string;
+    practitioner_display_name: string;
+    appointment_service_id: string;
+    service_name: string;
+    duration_minutes: number;
+    iso_weekday: number;
+    local_start_minute: number;
+    local_end_minute: number;
+    effective_from: string;
+    effective_until: string | null;
+    source_timezone: string;
+    status: WorkforceAvailabilityTemplateView['status'];
+    updated_at: Date;
+  }): WorkforceAvailabilityTemplateView {
+    return {
+      availabilityTemplateId: template.id,
+      facilityId: template.facility_id,
+      facilityName: template.facility_name,
+      practitionerFacilityAssignmentId:
+        template.practitioner_facility_assignment_id,
+      practitionerServiceAssignmentId:
+        template.practitioner_service_assignment_id,
+      practitionerId: template.practitioner_id,
+      practitionerDisplayName: template.practitioner_display_name,
+      appointmentServiceId: template.appointment_service_id,
+      serviceName: template.service_name,
+      durationMinutes: template.duration_minutes,
+      isoWeekday: template.iso_weekday,
+      localStartMinute: template.local_start_minute,
+      localEndMinute: template.local_end_minute,
+      effectiveFrom: template.effective_from,
+      effectiveUntil: template.effective_until,
+      sourceTimezone: template.source_timezone,
+      status: template.status,
+      updatedAt: template.updated_at.toISOString(),
+    };
+  }
+
+  private mapAvailabilityExceptionView(exception: {
+    id: string;
+    facility_id: string;
+    facility_name: string;
+    practitioner_facility_assignment_id: string | null;
+    practitioner_id: string | null;
+    practitioner_display_name: string | null;
+    kind: WorkforceAvailabilityExceptionView['kind'];
+    is_all_day: boolean;
+    local_starts_at: string;
+    local_ends_at: string;
+    starts_at: Date;
+    ends_at: Date;
+    source_timezone: string;
+    status: WorkforceAvailabilityExceptionView['status'];
+    updated_at: Date;
+  }): WorkforceAvailabilityExceptionView {
+    const localStartsAt = exception.local_starts_at.replace(' ', 'T');
+    const localEndsAt = exception.local_ends_at.replace(' ', 'T');
+    parseCanonicalLocalDateTime(localStartsAt);
+    parseCanonicalLocalDateTime(localEndsAt);
+    return {
+      availabilityExceptionId: exception.id,
+      facilityId: exception.facility_id,
+      facilityName: exception.facility_name,
+      practitionerFacilityAssignmentId:
+        exception.practitioner_facility_assignment_id,
+      practitionerId: exception.practitioner_id,
+      practitionerDisplayName: exception.practitioner_display_name,
+      kind: exception.kind,
+      isAllDay: exception.is_all_day,
+      localStartsAt,
+      localEndsAt,
+      startsAt: exception.starts_at.toISOString(),
+      endsAt: exception.ends_at.toISOString(),
+      sourceTimezone: exception.source_timezone,
+      status: exception.status,
+      updatedAt: exception.updated_at.toISOString(),
+    };
+  }
+
+  private async findAvailabilityAssignmentScope(
+    database: DatabaseExecutor,
+    practice: PracticeContext,
+    assignmentId: string,
+    lock: 'share' | false = false,
+  ): Promise<AvailabilityAssignmentScope | null> {
+    let query = database
+      .selectFrom('practitioner_service_assignments as service_assignment')
+      .innerJoin(
+        'practitioner_facility_assignments as facility_assignment',
+        (join) =>
+          join
+            .onRef(
+              'facility_assignment.id',
+              '=',
+              'service_assignment.practitioner_facility_assignment_id',
+            )
+            .onRef(
+              'facility_assignment.tenant_id',
+              '=',
+              'service_assignment.tenant_id',
+            )
+            .onRef(
+              'facility_assignment.organization_id',
+              '=',
+              'service_assignment.organization_id',
+            )
+            .onRef(
+              'facility_assignment.facility_id',
+              '=',
+              'service_assignment.facility_id',
+            )
+            .onRef(
+              'facility_assignment.practitioner_id',
+              '=',
+              'service_assignment.practitioner_id',
+            ),
+      )
+      .innerJoin('practitioners as practitioner', (join) =>
+        join
+          .onRef('practitioner.id', '=', 'service_assignment.practitioner_id')
+          .onRef('practitioner.tenant_id', '=', 'service_assignment.tenant_id'),
+      )
+      .innerJoin('appointment_services as service', (join) =>
+        join
+          .onRef('service.id', '=', 'service_assignment.appointment_service_id')
+          .onRef('service.tenant_id', '=', 'service_assignment.tenant_id')
+          .onRef(
+            'service.organization_id',
+            '=',
+            'service_assignment.organization_id',
+          )
+          .onRef('service.facility_id', '=', 'service_assignment.facility_id'),
+      )
+      .innerJoin('specialties as specialty', (join) =>
+        join
+          .onRef('specialty.id', '=', 'service.specialty_id')
+          .onRef('specialty.tenant_id', '=', 'service.tenant_id')
+          .onRef('specialty.organization_id', '=', 'service.organization_id'),
+      )
+      .innerJoin('facilities as facility', (join) =>
+        join
+          .onRef('facility.id', '=', 'service_assignment.facility_id')
+          .onRef('facility.tenant_id', '=', 'service_assignment.tenant_id')
+          .onRef(
+            'facility.organization_id',
+            '=',
+            'service_assignment.organization_id',
+          ),
+      )
+      .innerJoin('patient_portal_bookable_practices as bookable', (join) =>
+        join
+          .onRef('bookable.tenant_id', '=', 'service_assignment.tenant_id')
+          .onRef(
+            'bookable.organization_id',
+            '=',
+            'service_assignment.organization_id',
+          ),
+      )
+      .select([
+        'bookable.id as bookable_practice_id',
+        'facility.id as facility_id',
+        'facility.name as facility_name',
+        'facility.timezone',
+        'facility_assignment.id as facility_assignment_id',
+        'service_assignment.id as service_assignment_id',
+        'practitioner.id as practitioner_id',
+        'service.id as service_id',
+        'service.duration_minutes',
+        'practitioner.status as practitioner_status',
+        'facility_assignment.status as facility_assignment_status',
+        'service_assignment.status as service_assignment_status',
+        'service.status as service_status',
+        'specialty.status as specialty_status',
+      ])
+      .where('service_assignment.id', '=', assignmentId)
+      .where('service_assignment.tenant_id', '=', practice.tenantId)
+      .where('service_assignment.organization_id', '=', practice.organizationId)
+      .where('service_assignment.is_synthetic', '=', true)
+      .where('facility_assignment.is_synthetic', '=', true)
+      .where('practitioner.is_synthetic', '=', true)
+      .where('service.is_synthetic', '=', true)
+      .where('specialty.is_synthetic', '=', true)
+      .where('facility.is_synthetic', '=', true)
+      .where('bookable.is_synthetic', '=', true)
+      .where('bookable.status', '=', 'active');
+    if (lock === 'share') {
+      query = query.forShare([
+        'service_assignment',
+        'facility_assignment',
+        'practitioner',
+        'service',
+        'specialty',
+        'facility',
+        'bookable',
+      ]);
+    }
+    const row = await query.executeTakeFirst();
+    if (!row) return null;
+    return {
+      bookablePracticeId: row.bookable_practice_id,
+      facility: {
+        facilityId: row.facility_id,
+        facilityName: row.facility_name,
+        timezone: row.timezone,
+      },
+      practitionerFacilityAssignmentId: row.facility_assignment_id,
+      practitionerServiceAssignmentId: row.service_assignment_id,
+      practitionerId: row.practitioner_id,
+      appointmentServiceId: row.service_id,
+      durationMinutes: row.duration_minutes,
+      practitionerStatus: row.practitioner_status,
+      facilityAssignmentStatus: row.facility_assignment_status,
+      serviceAssignmentStatus: row.service_assignment_status,
+      serviceStatus: row.service_status,
+      specialtyStatus: row.specialty_status,
+    };
+  }
+
+  private async findAvailabilityTemplateTarget(
+    database: DatabaseExecutor,
+    practice: PracticeContext,
+    templateId: string,
+    lock = false,
+  ): Promise<AvailabilityTemplateTarget | null> {
+    let query = database
+      .selectFrom('practitioner_availability_templates as template')
+      .select([
+        'template.id',
+        'template.facility_id',
+        'template.practitioner_service_assignment_id',
+        'template.practitioner_id',
+        'template.status',
+        'template.updated_at',
+      ])
+      .where('template.id', '=', templateId)
+      .where('template.tenant_id', '=', practice.tenantId)
+      .where('template.organization_id', '=', practice.organizationId)
+      .where('template.is_synthetic', '=', true);
+    if (lock) query = query.forUpdate();
+    const row = await query.executeTakeFirst();
+    return row
+      ? {
+          id: row.id,
+          facilityId: row.facility_id,
+          practitionerServiceAssignmentId:
+            row.practitioner_service_assignment_id,
+          practitionerId: row.practitioner_id,
+          status: row.status,
+          updatedAt: row.updated_at,
+        }
+      : null;
+  }
+
+  private async findAvailabilityExceptionTarget(
+    database: DatabaseExecutor,
+    practice: PracticeContext,
+    exceptionId: string,
+    lock = false,
+  ): Promise<AvailabilityExceptionTarget | null> {
+    let query = database
+      .selectFrom('provider_availability_exceptions as exception')
+      .select([
+        'exception.id',
+        'exception.facility_id',
+        'exception.practitioner_facility_assignment_id',
+        'exception.practitioner_id',
+        'exception.kind',
+        'exception.status',
+        'exception.updated_at',
+      ])
+      .where('exception.id', '=', exceptionId)
+      .where('exception.tenant_id', '=', practice.tenantId)
+      .where('exception.organization_id', '=', practice.organizationId)
+      .where('exception.is_synthetic', '=', true);
+    if (lock) query = query.forUpdate();
+    const row = await query.executeTakeFirst();
+    return row
+      ? {
+          id: row.id,
+          facilityId: row.facility_id,
+          practitionerFacilityAssignmentId:
+            row.practitioner_facility_assignment_id,
+          practitionerId: row.practitioner_id,
+          kind: row.kind,
+          status: row.status,
+          updatedAt: row.updated_at,
+        }
+      : null;
+  }
+
+  private async findAvailabilityServiceTarget(
+    database: DatabaseExecutor,
+    practice: PracticeContext,
+    serviceId: string,
+    lock = false,
+  ): Promise<AvailabilityServiceTarget | null> {
+    let query = database
+      .selectFrom('appointment_services as service')
+      .innerJoin('facilities as facility', (join) =>
+        join
+          .onRef('facility.id', '=', 'service.facility_id')
+          .onRef('facility.tenant_id', '=', 'service.tenant_id')
+          .onRef('facility.organization_id', '=', 'service.organization_id'),
+      )
+      .innerJoin('specialties as specialty', (join) =>
+        join
+          .onRef('specialty.id', '=', 'service.specialty_id')
+          .onRef('specialty.tenant_id', '=', 'service.tenant_id')
+          .onRef('specialty.organization_id', '=', 'service.organization_id'),
+      )
+      .innerJoin('patient_portal_bookable_practices as bookable', (join) =>
+        join
+          .onRef('bookable.tenant_id', '=', 'service.tenant_id')
+          .onRef('bookable.organization_id', '=', 'service.organization_id'),
+      )
+      .select([
+        'service.id',
+        'facility.id as facility_id',
+        'facility.name as facility_name',
+        'facility.timezone',
+        'service.duration_minutes',
+        'service.status',
+        'specialty.status as specialty_status',
+        'service.updated_at',
+      ])
+      .where('service.id', '=', serviceId)
+      .where('service.tenant_id', '=', practice.tenantId)
+      .where('service.organization_id', '=', practice.organizationId)
+      .where('service.is_synthetic', '=', true)
+      .where('facility.is_synthetic', '=', true)
+      .where('specialty.is_synthetic', '=', true)
+      .where('bookable.is_synthetic', '=', true)
+      .where('bookable.status', '=', 'active');
+    if (lock) query = query.forUpdate('service');
+    const row = await query.executeTakeFirst();
+    return row
+      ? {
+          id: row.id,
+          facility: {
+            facilityId: row.facility_id,
+            facilityName: row.facility_name,
+            timezone: row.timezone,
+          },
+          durationMinutes: row.duration_minutes,
+          status: row.status,
+          specialtyStatus: row.specialty_status,
+          updatedAt: row.updated_at,
+        }
+      : null;
+  }
+
+  private async availabilityPractitionersForService(
+    database: DatabaseExecutor,
+    practice: PracticeContext,
+    serviceId: string,
+  ): Promise<{ practitionerIds: string[]; activeAssignmentIds: string[] }> {
+    const rows = await database
+      .selectFrom('practitioner_service_assignments as assignment')
+      .leftJoin('practitioner_availability_templates as template', (join) =>
+        join
+          .onRef(
+            'template.practitioner_service_assignment_id',
+            '=',
+            'assignment.id',
+          )
+          .on('template.is_synthetic', '=', true),
+      )
+      .select([
+        'assignment.practitioner_id',
+        'assignment.id as practitioner_service_assignment_id',
+        'template.status as template_status',
+      ])
+      .where('assignment.tenant_id', '=', practice.tenantId)
+      .where('assignment.organization_id', '=', practice.organizationId)
+      .where('assignment.appointment_service_id', '=', serviceId)
+      .where('assignment.is_synthetic', '=', true)
+      .orderBy('assignment.practitioner_id', 'asc')
+      .orderBy('assignment.id', 'asc')
+      .execute();
+    return {
+      practitionerIds: [...new Set(rows.map((row) => row.practitioner_id))],
+      activeAssignmentIds: [
+        ...new Set(
+          rows
+            .filter(({ template_status }) => template_status === 'active')
+            .map((row) => row.practitioner_service_assignment_id),
+        ),
+      ],
+    };
+  }
+
+  private async requireActivePractitionerFacilityScope(
+    database: Transaction<DatabaseSchema>,
+    practice: PracticeContext,
+    facilityId: string,
+    assignmentId: string,
+  ): Promise<{ assignmentId: string; practitionerId: string }> {
+    const row = await database
+      .selectFrom('practitioner_facility_assignments as assignment')
+      .innerJoin('practitioners as practitioner', (join) =>
+        join
+          .onRef('practitioner.id', '=', 'assignment.practitioner_id')
+          .onRef('practitioner.tenant_id', '=', 'assignment.tenant_id'),
+      )
+      .select([
+        'assignment.id as assignment_id',
+        'assignment.practitioner_id',
+        'assignment.status as assignment_status',
+        'practitioner.status as practitioner_status',
+      ])
+      .where('assignment.id', '=', assignmentId)
+      .where('assignment.tenant_id', '=', practice.tenantId)
+      .where('assignment.organization_id', '=', practice.organizationId)
+      .where('assignment.facility_id', '=', facilityId)
+      .where('assignment.is_synthetic', '=', true)
+      .where('practitioner.is_synthetic', '=', true)
+      .forShare(['assignment', 'practitioner'])
+      .executeTakeFirst();
+    if (!row) throw new WorkforceSchedulingTargetUnavailableError();
+    if (
+      row.assignment_status !== 'active' ||
+      row.practitioner_status !== 'active'
+    ) {
+      throw new WorkforceSchedulingConflictError(
+        'A practitioner exception requires an active practitioner and facility affiliation.',
+      );
+    }
+    return {
+      assignmentId: row.assignment_id,
+      practitionerId: row.practitioner_id,
+    };
+  }
+
+  private async requireActiveBookablePractice(
+    database: DatabaseExecutor,
+    practice: PracticeContext,
+  ): Promise<string> {
+    const bookable = await database
+      .selectFrom('patient_portal_bookable_practices as bookable')
+      .select('bookable.id')
+      .where('bookable.tenant_id', '=', practice.tenantId)
+      .where('bookable.organization_id', '=', practice.organizationId)
+      .where('bookable.status', '=', 'active')
+      .where('bookable.is_synthetic', '=', true)
+      .executeTakeFirst();
+    if (!bookable) {
+      throw new WorkforceSchedulingConflictError(
+        'Availability changes require an active synthetic bookable practice.',
+      );
+    }
+    return bookable.id;
+  }
+
+  private async availabilityPractitionerIdsForFacility(
+    database: DatabaseExecutor,
+    practice: PracticeContext,
+    facilityId: string,
+  ): Promise<string[]> {
+    const result = await sql<{ practitioner_id: string }>`
+      select distinct candidate.practitioner_id
+      from (
+        select assignment.practitioner_id
+        from practitioner_facility_assignments assignment
+        where assignment.tenant_id = ${practice.tenantId}
+          and assignment.organization_id = ${practice.organizationId}
+          and assignment.facility_id = ${facilityId}
+          and assignment.is_synthetic = true
+        union
+        select template.practitioner_id
+        from practitioner_availability_templates template
+        where template.tenant_id = ${practice.tenantId}
+          and template.organization_id = ${practice.organizationId}
+          and template.facility_id = ${facilityId}
+          and template.is_synthetic = true
+        union
+        select slot.practitioner_id
+        from patient_portal_appointment_slots slot
+        where slot.tenant_id = ${practice.tenantId}
+          and slot.organization_id = ${practice.organizationId}
+          and slot.facility_id = ${facilityId}
+          and slot.practitioner_id is not null
+          and slot.is_synthetic = true
+      ) candidate
+      order by candidate.practitioner_id
+    `.execute(database);
+    return result.rows.map(({ practitioner_id }) => practitioner_id);
+  }
+
+  private assertActiveAvailabilityChain(
+    scope: AvailabilityAssignmentScope,
+  ): void {
+    if (
+      scope.practitionerStatus !== 'active' ||
+      scope.facilityAssignmentStatus !== 'active' ||
+      scope.serviceAssignmentStatus !== 'active' ||
+      scope.serviceStatus !== 'active' ||
+      scope.specialtyStatus !== 'active'
+    ) {
+      throw new WorkforceSchedulingConflictError(
+        'Availability publication requires one complete active practitioner, affiliation, specialty, service, and eligibility chain.',
+      );
+    }
+  }
+
+  private assertTemplateAvailabilityReason(reasonCode: string): void {
+    if (
+      reasonCode !== 'availability-configuration' &&
+      reasonCode !== 'provider-availability-change'
+    ) {
+      throw new WorkforceSchedulingValidationError(
+        'Availability changes require an availability-specific reason code.',
+      );
+    }
+  }
+
+  private validateAvailabilityTemplateDefinition(input: {
+    isoWeekday: number;
+    localStartMinute: number;
+    localEndMinute: number;
+    effectiveFrom: string;
+    effectiveUntil?: string;
+  }): void {
+    parseCanonicalLocalDate(input.effectiveFrom);
+    if (input.effectiveUntil !== undefined) {
+      parseCanonicalLocalDate(input.effectiveUntil);
+    }
+    if (
+      !Number.isInteger(input.isoWeekday) ||
+      input.isoWeekday < 1 ||
+      input.isoWeekday > 7 ||
+      !Number.isInteger(input.localStartMinute) ||
+      input.localStartMinute < 0 ||
+      input.localStartMinute > 1439 ||
+      !Number.isInteger(input.localEndMinute) ||
+      input.localEndMinute < 1 ||
+      input.localEndMinute > 1440 ||
+      input.localEndMinute <= input.localStartMinute ||
+      (input.effectiveUntil !== undefined &&
+        input.effectiveUntil < input.effectiveFrom)
+    ) {
+      throw new WorkforceSchedulingValidationError(
+        'The availability template definition is invalid.',
+      );
+    }
+  }
+
+  private async lockPractitionerMutexes(
+    database: Transaction<DatabaseSchema>,
+    practice: PracticeContext,
+    practitionerIds: readonly string[],
+  ): Promise<void> {
+    const sortedIds = [...new Set(practitionerIds)].sort();
+    for (const practitionerId of sortedIds) {
+      await sql`
+        select pg_advisory_xact_lock(
+          hashtextextended(
+            ${`${practice.tenantId}:${practitionerId}`},
+            0
+          )
+        )
+      `.execute(database);
+    }
+  }
+
+  private emptyAvailabilitySummary(
+    frozenNow: Date,
+    sourceTimezone: string,
+  ): AvailabilityMaterializationSummary {
+    const horizon = captureAvailabilityHorizon(frozenNow, sourceTimezone);
+    return {
+      horizonStartsOn: horizon.localStartDate,
+      horizonEndsBefore: horizon.localEndDateExclusive,
+      sourceTimezone,
+      createdSlotCount: 0,
+      reactivatedSlotCount: 0,
+      withdrawnSlotCount: 0,
+      preservedLiveSlotCount: 0,
+      skippedOverlapCount: 0,
+      affectedAppointmentCount: 0,
+      affectedAppointmentIds: [],
+      affectedAppointmentIdsTruncated: false,
+    };
+  }
+
+  private availabilityAuditData(
+    summary: AvailabilityMaterializationSummary,
+    target: Record<string, unknown>,
+  ): Record<string, unknown> {
+    return {
+      ...target,
+      horizonStartsOn: summary.horizonStartsOn,
+      horizonEndsBefore: summary.horizonEndsBefore,
+      sourceTimezone: summary.sourceTimezone,
+      createdSlotCount: summary.createdSlotCount,
+      reactivatedSlotCount: summary.reactivatedSlotCount,
+      withdrawnSlotCount: summary.withdrawnSlotCount,
+      preservedLiveSlotCount: summary.preservedLiveSlotCount,
+      skippedOverlapCount: summary.skippedOverlapCount,
+      affectedAppointmentCount: summary.affectedAppointmentCount,
+      affectedAppointmentIds: summary.affectedAppointmentIds,
+      affectedAppointmentIdsTruncated: summary.affectedAppointmentIdsTruncated,
+    };
+  }
+
+  private async loadAvailabilityTemplatesForPractitioners(
+    database: Transaction<DatabaseSchema>,
+    practice: PracticeContext,
+    facility: FacilityContext,
+    practitionerIds: readonly string[],
+  ): Promise<AvailabilityTemplateRow[]> {
+    if (practitionerIds.length === 0) return [];
+    const rows = await database
+      .selectFrom('practitioner_availability_templates as template')
+      .innerJoin(
+        'practitioner_service_assignments as service_assignment',
+        (join) =>
+          join
+            .onRef(
+              'service_assignment.id',
+              '=',
+              'template.practitioner_service_assignment_id',
+            )
+            .onRef('service_assignment.tenant_id', '=', 'template.tenant_id')
+            .onRef(
+              'service_assignment.organization_id',
+              '=',
+              'template.organization_id',
+            )
+            .onRef(
+              'service_assignment.facility_id',
+              '=',
+              'template.facility_id',
+            ),
+      )
+      .innerJoin(
+        'practitioner_facility_assignments as facility_assignment',
+        (join) =>
+          join
+            .onRef(
+              'facility_assignment.id',
+              '=',
+              'template.practitioner_facility_assignment_id',
+            )
+            .onRef('facility_assignment.tenant_id', '=', 'template.tenant_id')
+            .onRef(
+              'facility_assignment.organization_id',
+              '=',
+              'template.organization_id',
+            )
+            .onRef(
+              'facility_assignment.facility_id',
+              '=',
+              'template.facility_id',
+            ),
+      )
+      .innerJoin('practitioners as practitioner', (join) =>
+        join
+          .onRef('practitioner.id', '=', 'template.practitioner_id')
+          .onRef('practitioner.tenant_id', '=', 'template.tenant_id'),
+      )
+      .innerJoin('appointment_services as service', (join) =>
+        join
+          .onRef('service.id', '=', 'template.appointment_service_id')
+          .onRef('service.tenant_id', '=', 'template.tenant_id')
+          .onRef('service.organization_id', '=', 'template.organization_id')
+          .onRef('service.facility_id', '=', 'template.facility_id'),
+      )
+      .innerJoin('specialties as specialty', (join) =>
+        join
+          .onRef('specialty.id', '=', 'service.specialty_id')
+          .onRef('specialty.tenant_id', '=', 'service.tenant_id')
+          .onRef('specialty.organization_id', '=', 'service.organization_id'),
+      )
+      .innerJoin('patient_portal_bookable_practices as bookable', (join) =>
+        join
+          .onRef('bookable.tenant_id', '=', 'template.tenant_id')
+          .onRef('bookable.organization_id', '=', 'template.organization_id'),
+      )
+      .select([
+        'template.id',
+        'bookable.id as bookable_practice_id',
+        'template.tenant_id',
+        'template.organization_id',
+        'template.facility_id',
+        'template.practitioner_facility_assignment_id',
+        'template.practitioner_service_assignment_id',
+        'template.practitioner_id',
+        'template.appointment_service_id',
+        'template.iso_weekday',
+        'template.local_start_minute',
+        'template.local_end_minute',
+        'template.effective_from',
+        'template.effective_until',
+        'template.source_timezone',
+        'template.status',
+        'template.updated_at',
+        'service.duration_minutes',
+        'service.status as service_status',
+        'service_assignment.status as service_assignment_status',
+        'facility_assignment.status as facility_assignment_status',
+        'practitioner.status as practitioner_status',
+        'specialty.status as specialty_status',
+      ])
+      .where('template.tenant_id', '=', practice.tenantId)
+      .where('template.organization_id', '=', practice.organizationId)
+      .where('template.facility_id', '=', facility.facilityId)
+      .where('template.practitioner_id', 'in', [...practitionerIds])
+      .where('template.is_synthetic', '=', true)
+      .where('service_assignment.is_synthetic', '=', true)
+      .where('facility_assignment.is_synthetic', '=', true)
+      .where('practitioner.is_synthetic', '=', true)
+      .where('service.is_synthetic', '=', true)
+      .where('specialty.is_synthetic', '=', true)
+      .where('bookable.is_synthetic', '=', true)
+      .where('bookable.status', '=', 'active')
+      .orderBy('template.id', 'asc')
+      .forShare([
+        'template',
+        'service_assignment',
+        'facility_assignment',
+        'practitioner',
+        'service',
+        'specialty',
+        'bookable',
+      ])
+      .execute();
+
+    return rows.map((row) => {
+      const chainIsActive =
+        row.service_status === 'active' &&
+        row.service_assignment_status === 'active' &&
+        row.facility_assignment_status === 'active' &&
+        row.practitioner_status === 'active' &&
+        row.specialty_status === 'active';
+      return {
+        id: row.id,
+        bookablePracticeId: row.bookable_practice_id,
+        tenantId: row.tenant_id,
+        organizationId: row.organization_id,
+        facilityId: row.facility_id,
+        practitionerFacilityAssignmentId:
+          row.practitioner_facility_assignment_id,
+        practitionerServiceAssignmentId: row.practitioner_service_assignment_id,
+        practitionerId: row.practitioner_id,
+        appointmentServiceId: row.appointment_service_id,
+        isoWeekday: row.iso_weekday,
+        localStartMinute: row.local_start_minute,
+        localEndMinute: row.local_end_minute,
+        effectiveFrom: row.effective_from,
+        effectiveUntil: row.effective_until,
+        sourceTimezone: row.source_timezone,
+        durationMinutes: row.duration_minutes,
+        // Catalogue deactivation preserves immutable template evidence but
+        // immediately removes its publication authority.
+        status:
+          row.status === 'active' && chainIsActive ? 'active' : 'inactive',
+        updatedAt: row.updated_at,
+      };
+    });
+  }
+
+  private async loadAvailabilityExceptions(
+    database: Transaction<DatabaseSchema>,
+    practice: PracticeContext,
+    facility: FacilityContext,
+  ): Promise<AvailabilityExceptionRow[]> {
+    const rows = await database
+      .selectFrom('provider_availability_exceptions as exception')
+      .selectAll('exception')
+      .where('exception.tenant_id', '=', practice.tenantId)
+      .where('exception.organization_id', '=', practice.organizationId)
+      .where('exception.facility_id', '=', facility.facilityId)
+      .where('exception.is_synthetic', '=', true)
+      .orderBy('exception.starts_at', 'asc')
+      .orderBy('exception.id', 'asc')
+      .forUpdate()
+      .execute();
+    return rows.map((row) => ({
+      id: row.id,
+      facilityId: row.facility_id,
+      practitionerFacilityAssignmentId: row.practitioner_facility_assignment_id,
+      practitionerId: row.practitioner_id,
+      kind: row.kind,
+      startsAt: row.starts_at,
+      endsAt: row.ends_at,
+      sourceTimezone: row.source_timezone,
+      status: row.status,
+      localStartsAt: row.local_starts_at,
+      localEndsAt: row.local_ends_at,
+      isAllDay: row.is_all_day,
+      updatedAt: row.updated_at,
+    }));
+  }
+
+  private async loadStoredAvailabilitySlots(
+    database: Transaction<DatabaseSchema>,
+    practice: PracticeContext,
+    facility: FacilityContext,
+    practitionerIds: readonly string[],
+    frozenNow: Date,
+  ): Promise<ProviderAvailabilityStoredSlot[]> {
+    if (practitionerIds.length === 0) return [];
+    const horizon = captureAvailabilityHorizon(frozenNow, facility.timezone);
+    const horizonEnd = resolveLocalMinuteBoundary(
+      horizon.localEndDateExclusive,
+      0,
+      facility.timezone,
+    ).instant;
+    const rows = await database
+      .selectFrom('patient_portal_appointment_slots as slot')
+      .select([
+        'slot.id',
+        'slot.bookable_practice_id',
+        'slot.tenant_id',
+        'slot.organization_id',
+        'slot.facility_id',
+        'slot.practitioner_facility_assignment_id',
+        'slot.practitioner_service_assignment_id',
+        'slot.practitioner_id',
+        'slot.appointment_service_id',
+        'slot.availability_template_id',
+        'slot.generation_key_hash',
+        'slot.source_local_date',
+        'slot.source_timezone',
+        'slot.starts_at',
+        'slot.ends_at',
+        'slot.status',
+        'slot.withdrawal_pending',
+      ])
+      .where('slot.tenant_id', '=', practice.tenantId)
+      .where('slot.organization_id', '=', practice.organizationId)
+      .where('slot.facility_id', '=', facility.facilityId)
+      .where('slot.practitioner_id', 'in', [...practitionerIds])
+      .where('slot.starts_at', '>', frozenNow)
+      .where('slot.starts_at', '<', horizonEnd)
+      .where('slot.is_synthetic', '=', true)
+      .where('slot.practitioner_service_assignment_id', 'is not', null)
+      .orderBy('slot.starts_at', 'asc')
+      .orderBy('slot.id', 'asc')
+      .forUpdate()
+      .execute();
+    const slotIds = rows.map(({ id }) => id);
+    const liveRows =
+      slotIds.length === 0
+        ? []
+        : (
+            await sql<{ appointment_slot_id: string; id: string }>`
+            select appointment.appointment_slot_id, appointment.id
+            from patient_portal_appointments appointment
+            where appointment.appointment_slot_id in (${sql.join(slotIds)})
+              and appointment.status in ('requested', 'confirmed')
+            order by appointment.appointment_slot_id, appointment.id
+            for update
+          `.execute(database)
+          ).rows;
+    const liveBySlot = new Map(
+      liveRows.map((row) => [row.appointment_slot_id, row.id]),
+    );
+    return rows.map((row) => {
+      if (
+        row.facility_id === null ||
+        row.practitioner_facility_assignment_id === null ||
+        row.practitioner_service_assignment_id === null ||
+        row.practitioner_id === null ||
+        row.appointment_service_id === null ||
+        row.availability_template_id === null ||
+        row.generation_key_hash === null ||
+        row.source_local_date === null ||
+        row.source_timezone === null
+      ) {
+        throw new WorkforceSchedulingPersistenceError();
+      }
+      return {
+        id: row.id,
+        bookablePracticeId: row.bookable_practice_id,
+        tenantId: row.tenant_id,
+        organizationId: row.organization_id,
+        facilityId: row.facility_id,
+        practitionerFacilityAssignmentId:
+          row.practitioner_facility_assignment_id,
+        practitionerServiceAssignmentId: row.practitioner_service_assignment_id,
+        practitionerId: row.practitioner_id,
+        appointmentServiceId: row.appointment_service_id,
+        availabilityTemplateId: row.availability_template_id,
+        generationKeyHash: row.generation_key_hash,
+        sourceLocalDate: row.source_local_date,
+        sourceTimezone: row.source_timezone,
+        startsAt: row.starts_at,
+        endsAt: row.ends_at,
+        status: row.status,
+        withdrawalPending: row.withdrawal_pending,
+        liveAppointmentId: liveBySlot.get(row.id) ?? null,
+      };
+    });
+  }
+
+  private async loadExternalAvailabilityBlockers(
+    database: Transaction<DatabaseSchema>,
+    practice: PracticeContext,
+    facility: FacilityContext,
+    practitionerIds: readonly string[],
+    frozenNow: Date,
+  ): Promise<ProviderAvailabilityStoredSlot[]> {
+    if (practitionerIds.length === 0) return [];
+    const horizon = captureAvailabilityHorizon(frozenNow, facility.timezone);
+    const horizonEnd = resolveLocalMinuteBoundary(
+      horizon.localEndDateExclusive,
+      0,
+      facility.timezone,
+    ).instant;
+    const result = await sql<{
+      id: string;
+      bookable_practice_id: string;
+      tenant_id: string;
+      organization_id: string;
+      facility_id: string;
+      practitioner_facility_assignment_id: string;
+      practitioner_service_assignment_id: string;
+      practitioner_id: string;
+      appointment_service_id: string;
+      availability_template_id: string;
+      generation_key_hash: string;
+      source_local_date: string;
+      source_timezone: string;
+      starts_at: Date;
+      ends_at: Date;
+      status: 'available';
+      withdrawal_pending: boolean;
+    }>`
+      select
+        slot.id,
+        slot.bookable_practice_id,
+        slot.tenant_id,
+        slot.organization_id,
+        slot.facility_id,
+        slot.practitioner_facility_assignment_id,
+        slot.practitioner_service_assignment_id,
+        slot.practitioner_id,
+        slot.appointment_service_id,
+        slot.availability_template_id,
+        slot.generation_key_hash,
+        slot.source_local_date::text,
+        slot.source_timezone,
+        slot.starts_at,
+        slot.ends_at,
+        slot.status,
+        slot.withdrawal_pending
+      from patient_portal_appointment_slots slot
+      where slot.tenant_id = ${practice.tenantId}
+        and slot.practitioner_id in (${sql.join([...practitionerIds])})
+        and (
+          slot.organization_id <> ${practice.organizationId}
+          or slot.facility_id <> ${facility.facilityId}
+        )
+        and slot.ends_at > ${frozenNow}
+        and slot.starts_at < ${horizonEnd}
+        and slot.status = 'available'
+        and slot.is_synthetic = true
+        and slot.practitioner_service_assignment_id is not null
+        and (
+          slot.starts_at <= ${frozenNow}
+          or slot.withdrawal_pending = true
+          or exists (
+            select 1
+            from patient_portal_appointments appointment
+            where appointment.appointment_slot_id = slot.id
+              and appointment.status in ('requested', 'confirmed')
+          )
+        )
+      order by slot.starts_at, slot.id
+    `.execute(database);
+    return result.rows.map((row) => ({
+      id: row.id,
+      bookablePracticeId: row.bookable_practice_id,
+      tenantId: row.tenant_id,
+      organizationId: row.organization_id,
+      facilityId: row.facility_id,
+      practitionerFacilityAssignmentId: row.practitioner_facility_assignment_id,
+      practitionerServiceAssignmentId: row.practitioner_service_assignment_id,
+      practitionerId: row.practitioner_id,
+      appointmentServiceId: row.appointment_service_id,
+      availabilityTemplateId: row.availability_template_id,
+      generationKeyHash: row.generation_key_hash,
+      sourceLocalDate: row.source_local_date,
+      sourceTimezone: row.source_timezone,
+      startsAt: row.starts_at,
+      endsAt: row.ends_at,
+      status: row.status,
+      withdrawalPending: row.withdrawal_pending,
+      liveAppointmentId: 'private-scope-blocker',
+    }));
+  }
+
+  private async loadStartedLocalAvailabilityBlockers(
+    database: Transaction<DatabaseSchema>,
+    practice: PracticeContext,
+    facility: FacilityContext,
+    practitionerIds: readonly string[],
+    frozenNow: Date,
+  ): Promise<ProviderAvailabilityStoredSlot[]> {
+    if (practitionerIds.length === 0) return [];
+    const result = await sql<{
+      id: string;
+      bookable_practice_id: string;
+      tenant_id: string;
+      organization_id: string;
+      facility_id: string;
+      practitioner_facility_assignment_id: string;
+      practitioner_service_assignment_id: string;
+      practitioner_id: string;
+      appointment_service_id: string;
+      availability_template_id: string;
+      generation_key_hash: string;
+      source_local_date: string;
+      source_timezone: string;
+      starts_at: Date;
+      ends_at: Date;
+      status: 'available';
+      withdrawal_pending: boolean;
+      live_appointment_id: string | null;
+    }>`
+      select
+        slot.id,
+        slot.bookable_practice_id,
+        slot.tenant_id,
+        slot.organization_id,
+        slot.facility_id,
+        slot.practitioner_facility_assignment_id,
+        slot.practitioner_service_assignment_id,
+        slot.practitioner_id,
+        slot.appointment_service_id,
+        slot.availability_template_id,
+        slot.generation_key_hash,
+        slot.source_local_date::text,
+        slot.source_timezone,
+        slot.starts_at,
+        slot.ends_at,
+        slot.status,
+        slot.withdrawal_pending,
+        (
+          select appointment.id
+          from patient_portal_appointments appointment
+          where appointment.appointment_slot_id = slot.id
+            and appointment.status in ('requested', 'confirmed')
+          order by appointment.id
+          limit 1
+        ) as live_appointment_id
+      from patient_portal_appointment_slots slot
+      where slot.tenant_id = ${practice.tenantId}
+        and slot.organization_id = ${practice.organizationId}
+        and slot.facility_id = ${facility.facilityId}
+        and slot.practitioner_id in (${sql.join([...practitionerIds])})
+        and slot.starts_at <= ${frozenNow}
+        and slot.ends_at > ${frozenNow}
+        and slot.status = 'available'
+        and slot.is_synthetic = true
+        and slot.practitioner_service_assignment_id is not null
+      order by slot.starts_at, slot.id
+    `.execute(database);
+    return result.rows.map((row) => ({
+      id: row.id,
+      bookablePracticeId: row.bookable_practice_id,
+      tenantId: row.tenant_id,
+      organizationId: row.organization_id,
+      facilityId: row.facility_id,
+      practitionerFacilityAssignmentId: row.practitioner_facility_assignment_id,
+      practitionerServiceAssignmentId: row.practitioner_service_assignment_id,
+      practitionerId: row.practitioner_id,
+      appointmentServiceId: row.appointment_service_id,
+      availabilityTemplateId: row.availability_template_id,
+      generationKeyHash: row.generation_key_hash,
+      sourceLocalDate: row.source_local_date,
+      sourceTimezone: row.source_timezone,
+      startsAt: row.starts_at,
+      endsAt: row.ends_at,
+      status: row.status,
+      withdrawalPending: row.withdrawal_pending,
+      liveAppointmentId: row.live_appointment_id ?? 'current-started-blocker',
+    }));
+  }
+
+  private async reconcileAvailability(
+    database: Transaction<DatabaseSchema>,
+    practice: PracticeContext,
+    facility: FacilityContext,
+    practitionerIds: readonly string[],
+    frozenNow: Date,
+  ): Promise<AvailabilityReconciliationResult> {
+    const uniquePractitionerIds = [...new Set(practitionerIds)].sort();
+    // Appointment commands lock a slot before reading provider-chain rows.
+    // Follow that order here, after the workforce-only advisory mutex.
+    const existingSlots = await this.loadStoredAvailabilitySlots(
+      database,
+      practice,
+      facility,
+      uniquePractitionerIds,
+      frozenNow,
+    );
+    const templates = await this.loadAvailabilityTemplatesForPractitioners(
+      database,
+      practice,
+      facility,
+      uniquePractitionerIds,
+    );
+    const exceptions = await this.loadAvailabilityExceptions(
+      database,
+      practice,
+      facility,
+    );
+    const generated = materializeProviderAvailability({
+      frozenNow,
+      sourceTimezone: facility.timezone,
+      templates,
+      exceptions,
+    });
+    const externalBlockers = await this.loadExternalAvailabilityBlockers(
+      database,
+      practice,
+      facility,
+      uniquePractitionerIds,
+      frozenNow,
+    );
+    const startedLocalBlockers =
+      await this.loadStartedLocalAvailabilityBlockers(
+        database,
+        practice,
+        facility,
+        uniquePractitionerIds,
+        frozenNow,
+      );
+    const plan = planProviderAvailabilityReconciliation({
+      desiredOccurrences: generated.occurrences,
+      existingSlots: [
+        ...existingSlots,
+        ...startedLocalBlockers,
+        ...externalBlockers,
+      ],
+    });
+    const mutableLocalSlotIds = new Set(existingSlots.map(({ id }) => id));
+    // Immediate GiST exclusion means obsolete available rows must leave the
+    // overlap set before replacement rows can be reactivated or inserted.
+    // Live rows stay available+pending and already caused overlapping desired
+    // occurrences to be skipped above.
+    await this.updateSlotLifecycle(
+      database,
+      plan.preservedLive
+        .map(({ id }) => id)
+        .filter((id) => mutableLocalSlotIds.has(id)),
+      'available',
+      true,
+    );
+    await this.updateSlotLifecycle(
+      database,
+      plan.withdrawn
+        .map(({ id }) => id)
+        .filter((id) => mutableLocalSlotIds.has(id)),
+      'withdrawn',
+      false,
+    );
+    await this.updateSlotLifecycle(
+      database,
+      plan.reactivated
+        .map(({ slot }) => slot.id)
+        .filter((id) => mutableLocalSlotIds.has(id)),
+      'available',
+      false,
+    );
+    await this.updateSlotLifecycle(
+      database,
+      plan.clearedWithdrawalPending
+        .map(({ id }) => id)
+        .filter((id) => mutableLocalSlotIds.has(id)),
+      'available',
+      false,
+    );
+    for (let index = 0; index < plan.created.length; index += 400) {
+      const batch = plan.created.slice(index, index + 400);
+      await database
+        .insertInto('patient_portal_appointment_slots')
+        .values(
+          batch.map((occurrence) => ({
+            bookable_practice_id: occurrence.bookablePracticeId,
+            tenant_id: occurrence.tenantId,
+            organization_id: occurrence.organizationId,
+            starts_at: occurrence.startsAt,
+            ends_at: occurrence.endsAt,
+            facility_id: occurrence.facilityId,
+            practitioner_facility_assignment_id:
+              occurrence.practitionerFacilityAssignmentId,
+            practitioner_service_assignment_id:
+              occurrence.practitionerServiceAssignmentId,
+            practitioner_id: occurrence.practitionerId,
+            appointment_service_id: occurrence.appointmentServiceId,
+            availability_template_id: occurrence.availabilityTemplateId,
+            generation_key_hash: occurrence.generationKeyHash,
+            source_local_date: occurrence.sourceLocalDate,
+            source_timezone: occurrence.sourceTimezone,
+            status: 'available' as const,
+            withdrawal_pending: false,
+            is_synthetic: true,
+          })),
+        )
+        .execute();
+    }
+
+    const affectedIds = [
+      ...plan.preservedLive
+        .filter(({ id }) => mutableLocalSlotIds.has(id))
+        .map(({ liveAppointmentId }) => liveAppointmentId),
+      ...plan.skippedLive.map(({ liveAppointmentId }) => liveAppointmentId),
+    ]
+      .filter(
+        (id): id is string =>
+          id !== null &&
+          id !== 'private-scope-blocker' &&
+          id !== 'current-started-blocker',
+      )
+      .filter((id, index, ids) => ids.indexOf(id) === index)
+      .sort();
+    return {
+      summary: {
+        horizonStartsOn: generated.horizon.localStartDate,
+        horizonEndsBefore: generated.horizon.localEndDateExclusive,
+        sourceTimezone: generated.horizon.sourceTimezone,
+        createdSlotCount: plan.created.length,
+        reactivatedSlotCount: plan.reactivated.length,
+        withdrawnSlotCount: plan.withdrawn.length,
+        preservedLiveSlotCount: plan.preservedLive.filter(({ id }) =>
+          mutableLocalSlotIds.has(id),
+        ).length,
+        skippedOverlapCount: plan.skippedLive.length,
+        affectedAppointmentCount: affectedIds.length,
+        affectedAppointmentIds: affectedIds.slice(0, 100),
+        affectedAppointmentIdsTruncated: affectedIds.length > 100,
+      },
+    };
+  }
+
+  private async updateSlotLifecycle(
+    database: Transaction<DatabaseSchema>,
+    slotIds: readonly string[],
+    status: 'available' | 'withdrawn',
+    withdrawalPending: boolean,
+  ): Promise<void> {
+    if (slotIds.length === 0) return;
+    await database
+      .updateTable('patient_portal_appointment_slots')
+      .set({
+        status,
+        withdrawal_pending: withdrawalPending,
+        updated_at: new Date(),
+      })
+      .where('id', 'in', [...slotIds])
+      .execute();
+  }
+
+  private async loadAvailabilityTemplateView(
+    database: DatabaseExecutor,
+    practice: PracticeContext,
+    templateId: string,
+  ): Promise<WorkforceAvailabilityTemplateView> {
+    const row = await database
+      .selectFrom('practitioner_availability_templates as template')
+      .innerJoin('facilities as facility', (join) =>
+        join
+          .onRef('facility.id', '=', 'template.facility_id')
+          .onRef('facility.tenant_id', '=', 'template.tenant_id')
+          .onRef('facility.organization_id', '=', 'template.organization_id'),
+      )
+      .innerJoin('practitioners as practitioner', (join) =>
+        join
+          .onRef('practitioner.id', '=', 'template.practitioner_id')
+          .onRef('practitioner.tenant_id', '=', 'template.tenant_id'),
+      )
+      .innerJoin('appointment_services as service', (join) =>
+        join
+          .onRef('service.id', '=', 'template.appointment_service_id')
+          .onRef('service.tenant_id', '=', 'template.tenant_id')
+          .onRef('service.organization_id', '=', 'template.organization_id')
+          .onRef('service.facility_id', '=', 'template.facility_id'),
+      )
+      .select([
+        'template.id',
+        'template.facility_id',
+        'facility.name as facility_name',
+        'template.practitioner_facility_assignment_id',
+        'template.practitioner_service_assignment_id',
+        'template.practitioner_id',
+        'practitioner.display_name as practitioner_display_name',
+        'template.appointment_service_id',
+        'service.patient_facing_name as service_name',
+        'service.duration_minutes',
+        'template.iso_weekday',
+        'template.local_start_minute',
+        'template.local_end_minute',
+        'template.effective_from',
+        'template.effective_until',
+        'template.source_timezone',
+        'template.status',
+        'template.updated_at',
+      ])
+      .where('template.id', '=', templateId)
+      .where('template.tenant_id', '=', practice.tenantId)
+      .where('template.organization_id', '=', practice.organizationId)
+      .where('template.is_synthetic', '=', true)
+      .executeTakeFirst();
+    if (!row) throw new WorkforceSchedulingPersistenceError();
+    return this.mapAvailabilityTemplateView(row);
+  }
+
+  private async loadAvailabilityExceptionView(
+    database: DatabaseExecutor,
+    practice: PracticeContext,
+    exceptionId: string,
+  ): Promise<WorkforceAvailabilityExceptionView> {
+    const row = await database
+      .selectFrom('provider_availability_exceptions as exception')
+      .innerJoin('facilities as facility', (join) =>
+        join
+          .onRef('facility.id', '=', 'exception.facility_id')
+          .onRef('facility.tenant_id', '=', 'exception.tenant_id')
+          .onRef('facility.organization_id', '=', 'exception.organization_id'),
+      )
+      .leftJoin('practitioners as practitioner', (join) =>
+        join
+          .onRef('practitioner.id', '=', 'exception.practitioner_id')
+          .onRef('practitioner.tenant_id', '=', 'exception.tenant_id'),
+      )
+      .select([
+        'exception.id',
+        'exception.facility_id',
+        'facility.name as facility_name',
+        'exception.practitioner_facility_assignment_id',
+        'exception.practitioner_id',
+        'practitioner.display_name as practitioner_display_name',
+        'exception.kind',
+        'exception.is_all_day',
+        'exception.local_starts_at',
+        'exception.local_ends_at',
+        'exception.starts_at',
+        'exception.ends_at',
+        'exception.source_timezone',
+        'exception.status',
+        'exception.updated_at',
+      ])
+      .where('exception.id', '=', exceptionId)
+      .where('exception.tenant_id', '=', practice.tenantId)
+      .where('exception.organization_id', '=', practice.organizationId)
+      .where('exception.is_synthetic', '=', true)
+      .executeTakeFirst();
+    if (!row) throw new WorkforceSchedulingPersistenceError();
+    return this.mapAvailabilityExceptionView(row);
+  }
+
   private async requirePractice(
     database: DatabaseExecutor,
     organizationId: string,
@@ -2920,6 +6081,7 @@ export class WorkforceSchedulingRepository {
   ): Promise<TResponse> {
     const metadata: MutationMetadata = {
       correlationId: randomUUID(),
+      frozenNow: new Date(),
       idempotencyKeyHash: sha256(request.idempotencyKey),
       requestHash: sha256(stableJson({ operation, ...fingerprint })),
       operation,
@@ -2954,9 +6116,19 @@ export class WorkforceSchedulingRepository {
           error instanceof WorkforceSchedulingAuthorizationLostError ||
           error instanceof WorkforceSchedulingTargetUnavailableError ||
           error instanceof WorkforceSchedulingConflictError ||
-          error instanceof WorkforceSchedulingPersistenceError
+          error instanceof WorkforceSchedulingPersistenceError ||
+          error instanceof WorkforceSchedulingValidationError
         ) {
           throw error;
+        }
+        if (error instanceof AvailabilityMaterializationError) {
+          if (
+            error.code === 'OVERLAPPING_DESIRED_OCCURRENCES' ||
+            error.code === 'GENERATION_KEY_CONFLICT'
+          ) {
+            throw new WorkforceSchedulingConflictError(error.message);
+          }
+          throw new WorkforceSchedulingValidationError(error.message);
         }
         if (isRetryableTransactionError(error)) {
           if (transactionRetryCount < 3) {

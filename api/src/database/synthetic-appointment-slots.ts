@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { buildProviderSlotGenerationKeyHash } from '../workforce-scheduling/provider-slot-generation-key.js';
 
 const MINUTE_MS = 60_000;
 const DAY_MS = 24 * 60 * MINUTE_MS;
@@ -6,7 +7,6 @@ const DEFAULT_SYNTHETIC_APPOINTMENT_DURATION_MINUTES = 30;
 const SYNTHETIC_TEMPLATE_EFFECTIVE_FROM = '2020-01-01';
 const SYNTHETIC_PROVIDER_NAMESPACE =
   'uae-health:synthetic-provider-scheduling:v1';
-const SYNTHETIC_SLOT_NAMESPACE = 'uae-health:synthetic-provider-slot:v1';
 
 export type SyntheticProviderFixtureKind =
   | 'facility'
@@ -385,14 +385,6 @@ export function buildSyntheticAppointmentFixtures(input: {
         is_synthetic: true,
       });
 
-      const generationKey = [
-        SYNTHETIC_SLOT_NAMESPACE,
-        availabilityTemplateId,
-        localStart.date,
-        Math.trunc(startsAt.getTime() / 1000),
-        Math.trunc(endsAt.getTime() / 1000),
-      ].join('|');
-
       slots.push({
         bookable_practice_id: template.bookablePracticeId,
         tenant_id: input.tenantId,
@@ -407,9 +399,12 @@ export function buildSyntheticAppointmentFixtures(input: {
         practitioner_id: template.practitionerId,
         appointment_service_id: template.appointmentServiceId,
         availability_template_id: availabilityTemplateId,
-        generation_key_hash: createHash('sha256')
-          .update(generationKey)
-          .digest('hex'),
+        generation_key_hash: buildProviderSlotGenerationKeyHash({
+          availabilityTemplateId,
+          sourceLocalDate: localStart.date,
+          startsAt,
+          endsAt,
+        }),
         source_local_date: localStart.date,
         source_timezone: template.sourceTimezone,
         status: 'available',

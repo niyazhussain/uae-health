@@ -1,9 +1,13 @@
 import type { AuthenticatedPrincipal } from '../auth/auth.types.js';
 import type {
   AppointmentServiceStatus,
+  PatientPortalAppointmentSlotStatus,
   PractitionerFacilityAssignmentStatus,
+  PractitionerAvailabilityTemplateStatus,
   PractitionerServiceAssignmentStatus,
   PractitionerStatus,
+  ProviderAvailabilityExceptionKind,
+  ProviderAvailabilityExceptionStatus,
   SpecialtyStatus,
 } from '../database/database.types.js';
 import type { WorkforceSchedulingReasonCode } from './workforce-scheduling-reasons.js';
@@ -42,6 +46,41 @@ export interface WorkforceSchedulingListQuery {
   pageSize: number;
   search?: string;
   status?: string;
+}
+
+export interface WorkforceAvailabilityTemplateListQuery {
+  organizationId: string;
+  page: number;
+  pageSize: number;
+  facilityId?: string;
+  practitionerFacilityAssignmentId?: string;
+  practitionerServiceAssignmentId?: string;
+  appointmentServiceId?: string;
+  status?: PractitionerAvailabilityTemplateStatus;
+}
+
+export interface WorkforceAvailabilityExceptionListQuery {
+  organizationId: string;
+  page: number;
+  pageSize: number;
+  facilityId?: string;
+  practitionerFacilityAssignmentId?: string;
+  kind?: ProviderAvailabilityExceptionKind;
+  status?: ProviderAvailabilityExceptionStatus;
+  startsBefore?: string;
+  endsAfter?: string;
+}
+
+export interface WorkforceAvailabilitySlotListQuery {
+  organizationId: string;
+  facilityId: string;
+  startsAt: string;
+  endsAt: string;
+  page: number;
+  pageSize: number;
+  appointmentServiceId?: string;
+  practitionerId?: string;
+  status?: PatientPortalAppointmentSlotStatus;
 }
 
 export interface PractitionerFacilityAssignmentView {
@@ -96,6 +135,63 @@ export interface WorkforceAppointmentServiceView {
   activePractitionerCount: number;
   updatedAt: string;
   practitionerAssignments: PractitionerServiceAssignmentView[];
+}
+
+export interface WorkforceAvailabilityTemplateView {
+  availabilityTemplateId: string;
+  facilityId: string;
+  facilityName: string;
+  practitionerFacilityAssignmentId: string;
+  practitionerServiceAssignmentId: string;
+  practitionerId: string;
+  practitionerDisplayName: string;
+  appointmentServiceId: string;
+  serviceName: string;
+  durationMinutes: number;
+  isoWeekday: number;
+  localStartMinute: number;
+  localEndMinute: number;
+  effectiveFrom: string;
+  effectiveUntil: string | null;
+  sourceTimezone: string;
+  status: PractitionerAvailabilityTemplateStatus;
+  updatedAt: string;
+}
+
+export interface WorkforceAvailabilityExceptionView {
+  availabilityExceptionId: string;
+  facilityId: string;
+  facilityName: string;
+  practitionerFacilityAssignmentId: string | null;
+  practitionerId: string | null;
+  practitionerDisplayName: string | null;
+  kind: ProviderAvailabilityExceptionKind;
+  isAllDay: boolean;
+  localStartsAt: string;
+  localEndsAt: string;
+  startsAt: string;
+  endsAt: string;
+  sourceTimezone: string;
+  status: ProviderAvailabilityExceptionStatus;
+  updatedAt: string;
+}
+
+export interface WorkforceAvailabilitySlotView {
+  appointmentSlotId: string;
+  availabilityTemplateId: string;
+  facilityId: string;
+  practitionerFacilityAssignmentId: string;
+  practitionerServiceAssignmentId: string;
+  practitionerId: string;
+  appointmentServiceId: string;
+  sourceLocalDate: string;
+  sourceTimezone: string;
+  startsAt: string;
+  endsAt: string;
+  status: PatientPortalAppointmentSlotStatus;
+  withdrawalPending: boolean;
+  hasLiveAppointment: boolean;
+  updatedAt: string;
 }
 
 export interface SchedulingMutationInput {
@@ -159,6 +255,51 @@ export interface ChangePractitionerServiceAssignmentStatusInput extends Scheduli
   expectedUpdatedAt: string;
 }
 
+export interface AvailabilityTemplateDefinitionInput extends SchedulingMutationInput {
+  practitionerServiceAssignmentId: string;
+  isoWeekday: number;
+  localStartMinute: number;
+  localEndMinute: number;
+  effectiveFrom: string;
+  effectiveUntil?: string;
+  status: PractitionerAvailabilityTemplateStatus;
+}
+
+export type CreateAvailabilityTemplateInput =
+  AvailabilityTemplateDefinitionInput;
+
+export interface ReplaceAvailabilityTemplateInput extends AvailabilityTemplateDefinitionInput {
+  expectedUpdatedAt: string;
+}
+
+export interface ChangeAvailabilityTemplateStatusInput extends SchedulingMutationInput {
+  status: PractitionerAvailabilityTemplateStatus;
+  expectedUpdatedAt: string;
+}
+
+export interface MaterializeAvailabilityTemplateInput extends SchedulingMutationInput {
+  expectedUpdatedAt: string;
+}
+
+export interface CreateAvailabilityExceptionInput extends SchedulingMutationInput {
+  facilityId: string;
+  practitionerFacilityAssignmentId?: string;
+  kind: ProviderAvailabilityExceptionKind;
+  isAllDay: boolean;
+  localStartsAt: string;
+  localEndsAt: string;
+}
+
+export interface CancelAvailabilityExceptionInput extends SchedulingMutationInput {
+  status: 'cancelled';
+  expectedUpdatedAt: string;
+}
+
+export interface ChangeAppointmentServiceDurationInput extends SchedulingMutationInput {
+  durationMinutes: number;
+  expectedUpdatedAt: string;
+}
+
 export interface PractitionerMutationResponse {
   practitioner: WorkforcePractitionerView;
 }
@@ -188,6 +329,36 @@ export interface PractitionerServiceAssignmentMutationResponse {
   affectedAppointmentIdsTruncated: boolean;
 }
 
+export interface AvailabilityMaterializationSummary {
+  horizonStartsOn: string;
+  horizonEndsBefore: string;
+  sourceTimezone: string;
+  createdSlotCount: number;
+  reactivatedSlotCount: number;
+  withdrawnSlotCount: number;
+  preservedLiveSlotCount: number;
+  skippedOverlapCount: number;
+  affectedAppointmentCount: number;
+  affectedAppointmentIds: string[];
+  affectedAppointmentIdsTruncated: boolean;
+}
+
+export interface AvailabilityTemplateMutationResponse {
+  template: WorkforceAvailabilityTemplateView;
+  replacedTemplateId: string | null;
+  materialization: AvailabilityMaterializationSummary;
+}
+
+export interface AvailabilityExceptionMutationResponse {
+  exception: WorkforceAvailabilityExceptionView;
+  materialization: AvailabilityMaterializationSummary;
+}
+
+export interface AppointmentServiceDurationMutationResponse {
+  service: WorkforceAppointmentServiceView;
+  materialization: AvailabilityMaterializationSummary;
+}
+
 export interface SchedulingMutationRequest<TInput> {
   principal: AuthenticatedPrincipal;
   idempotencyKey: string;
@@ -215,5 +386,11 @@ export class WorkforceSchedulingConflictError extends Error {
 export class WorkforceSchedulingPersistenceError extends Error {
   constructor() {
     super('The scheduling catalogue is temporarily unavailable.');
+  }
+}
+
+export class WorkforceSchedulingValidationError extends Error {
+  constructor(message = 'The scheduling availability input is invalid.') {
+    super(message);
   }
 }

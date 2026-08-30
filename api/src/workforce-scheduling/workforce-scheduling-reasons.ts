@@ -3,6 +3,10 @@ export const workforceSchedulingReasonCodes = [
   'staffing-change',
   'service-configuration',
   'service-retirement',
+  'availability-configuration',
+  'provider-availability-change',
+  'facility-availability-change',
+  'service-duration-change',
 ] as const;
 
 export type WorkforceSchedulingReasonCode =
@@ -15,6 +19,14 @@ const auditReasons: Record<WorkforceSchedulingReasonCode, string> = {
     'Apply an approved synthetic appointment-service configuration.',
   'service-retirement':
     'Retire approved synthetic scheduling catalogue configuration.',
+  'availability-configuration':
+    'Apply an approved synthetic practitioner-availability configuration.',
+  'provider-availability-change':
+    'Apply an approved synthetic practitioner-availability exception.',
+  'facility-availability-change':
+    'Apply an approved synthetic facility-availability exception.',
+  'service-duration-change':
+    'Apply an approved synthetic appointment-service duration change.',
 };
 
 export function workforceSchedulingAuditReason(

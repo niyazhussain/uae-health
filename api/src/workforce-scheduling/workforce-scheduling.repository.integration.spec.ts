@@ -20,6 +20,7 @@ import * as createProviderSchedulingCatalogue from '../database/migrations/2026-
 import * as createProviderAvailability from '../database/migrations/2026-08-27T040000_create_provider_availability.js';
 import * as backfillSyntheticProviderAppointments from '../database/migrations/2026-08-27T050000_backfill_synthetic_provider_appointments.js';
 import * as createWorkforceSchedulingCommands from '../database/migrations/2026-08-27T060000_create_workforce_scheduling_commands.js';
+import * as addDeferredSlotWithdrawal from '../database/migrations/2026-08-27T070000_add_deferred_slot_withdrawal.js';
 import type { WorkforceIdentityProviderPort } from '../identity-provider/identity-provider.types.js';
 import { PatientAppointmentsService } from '../patient-appointments/patient-appointments.service.js';
 import type { PatientPortalSessionContext } from '../patient-portal-auth/patient-portal-auth.types.js';
@@ -146,6 +147,7 @@ async function migrateDatabase(
       backfillSyntheticProviderAppointments.up(transaction),
     );
   await createWorkforceSchedulingCommands.up(database);
+  await addDeferredSlotWithdrawal.up(database);
 }
 
 async function insertAuthorizationFixture(

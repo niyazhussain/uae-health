@@ -44,13 +44,18 @@ service SHALL require a concrete practitioner when booked.
 
 The system SHALL convert active weekly practitioner availability and dated
 exceptions from the assigned facility's IANA timezone into deterministic UTC
-slots for a bounded eight-week horizon. Regeneration SHALL be idempotent, SHALL
+slots for the server-owned facility-local half-open range `[today, today + 56
+calendar days)`, emitting only starts after one captured command instant.
+Regeneration SHALL be idempotent, SHALL
 preserve booked slots, and SHALL withdraw obsolete unbooked slots instead of
 deleting historical scheduling evidence. Template windows SHALL use ISO
 weekdays, minute resolution, and same-local-day boundaries. Dated exceptions
 SHALL apply to either one exact practice facility or one exact
 practitioner-facility affiliation using `[start, end)` intervals and approved
 exception kinds without free text.
+One reconciliation SHALL fail atomically before exceeding 10,000 desired
+occurrences. Every generated boundary SHALL reject ambiguous and nonexistent
+local instants and SHALL preserve the configured elapsed service duration.
 
 #### Scenario: Generate future doctor slots
 
@@ -62,6 +67,18 @@ exception kinds without free text.
 - **WHEN** an authorized scheduler adds a dated leave exception
 - **THEN** the system withdraws affected unbooked slots and preserves any already booked slot for explicit staff resolution
 
+#### Scenario: Defer withdrawal of a live invalidated slot
+
+- **GIVEN** a requested or confirmed appointment references a slot invalidated by a template, exception, or duration change
+- **WHEN** the scheduler reconciles availability
+- **THEN** the system retains the immutable slot and overlap reservation, marks it unavailable for discovery and new booking, and returns its opaque appointment identifier for resolution
+
+#### Scenario: Release a deferred withdrawal
+
+- **GIVEN** a live appointment's slot is marked for deferred withdrawal
+- **WHEN** cancellation, rescheduling, or a workforce decision releases that appointment
+- **THEN** the same transaction re-evaluates current templates and active exceptions and either withdraws the invalid slot or clears the marker only when the occurrence is valid again
+
 #### Scenario: Regenerate the same horizon
 
 - **WHEN** slot materialization is retried with unchanged templates and exceptions
@@ -72,10 +89,37 @@ exception kinds without free text.
 - **WHEN** a weekly template or dated exception resolves to an ambiguous or nonexistent local boundary in the assigned facility timezone
 - **THEN** publication is rejected without silently choosing or shifting a UTC instant
 
+#### Scenario: Reject an invalid interior slot boundary
+
+- **WHEN** a template endpoint is valid but a duration-derived interior boundary is ambiguous, nonexistent, or changes the configured elapsed duration
+- **THEN** the complete publication command rolls back without partial slots or audit success evidence
+
 #### Scenario: Apply a facility closure
 
 - **WHEN** an authorized scheduler publishes an active closure for one exact practice facility
 - **THEN** generated availability inside that interval is withdrawn for that facility only and sibling practices remain unchanged
+
+#### Scenario: Cancel one overlapping exception
+
+- **GIVEN** two active exceptions cover the same occurrence
+- **WHEN** an authorized scheduler cancels one exception
+- **THEN** the occurrence remains unavailable until no active exception covers it
+
+#### Scenario: Change a service duration
+
+- **WHEN** an authorized scheduler changes a service duration with the current optimistic version
+- **THEN** obsolete unbooked occurrences are withdrawn, deterministic replacement occurrences are created, and live referenced slots retain their original identifiers, times, and provider scope
+
+#### Scenario: Bound a publication command
+
+- **WHEN** a requested publication would extend beyond 56 facility-local calendar dates or consider more than 10,000 desired occurrences
+- **THEN** the command fails atomically without extending the horizon or persisting partial slot state
+
+#### Scenario: Preserve a shared doctor's sibling-practice booking privately
+
+- **GIVEN** the same tenant practitioner has a live overlapping appointment in a sibling practice
+- **WHEN** an authorized scheduler reconciles availability in the current practice
+- **THEN** the conflicting occurrence is skipped, the sibling appointment remains unchanged, and only a generic skipped count is returned without its appointment identifier or practice details
 
 #### Scenario: Reject overlapping doctor availability
 

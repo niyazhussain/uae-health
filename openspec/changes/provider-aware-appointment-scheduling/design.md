@@ -100,11 +100,25 @@ publication rather than deleting scheduling evidence.
 Authorized schedulers manage weekly availability templates in the assigned
 facility's IANA timezone plus dated exceptions for leave or closures. A
 deterministic, idempotent materializer creates UTC slots for a bounded
-eight-week horizon. Templates use ISO weekdays and minute-resolution,
+eight-week horizon. Each command captures one server time and reconciles the
+facility-local half-open date range `[today, today + 56 calendar days)`. It
+emits only slot starts strictly after that captured instant; clients cannot
+choose or extend the publication horizon. One reconciliation may consider at
+most 10,000 desired occurrences and otherwise fails atomically. Templates use
+ISO weekdays and minute-resolution,
 same-local-day windows; an overnight schedule is represented as two templates.
 The facility timezone is copied onto each immutable template as source
 evidence. An edit deactivates and replaces a template rather than retargeting
 the generation source.
+
+The API uses a pinned Temporal implementation to construct every local
+boundary in the locked facility IANA timezone with rejection semantics. It
+rejects a gap or fold, verifies the exact local round trip, and verifies that
+the elapsed UTC minutes equal the service duration for every candidate
+boundary, including interior boundaries and minute `1440`. Calendar dates are
+iterated as local dates rather than fixed elapsed 24-hour increments. Canonical
+local exception evidence remains a minute-precision timezone-less string; it
+is never parsed through the host process timezone.
 
 The materializer divides a window into contiguous slots using the appointment
 service's current `duration_minutes` and discards a trailing remainder shorter
@@ -112,7 +126,9 @@ than one service duration. It rejects ambiguous or nonexistent local-time
 boundaries at an offset transition instead of silently choosing or shifting an
 instant. A later service-duration change withdraws obsolete unbooked slots and
 creates a new deterministic generation, while referenced slots retain their
-original times.
+original times. Duration changes lock affected slot rows before the service row
+and reconcile every active template for that service in the same serializable
+command.
 
 Dated exceptions use immutable `[start, end)` boundaries and retain both the
 validated local timestamp evidence and resolved UTC instants with the source
@@ -122,13 +138,20 @@ practitioner-facility affiliation and all services delivered there. Full-day
 exceptions use local midnight to the following local midnight. Overlapping
 active exceptions may coexist because their effective unavailability is the
 union of those intervals; cancellation changes lifecycle state without deleting
-evidence. No free-text or clinical reason is stored.
+evidence. An exception may cover only the current facility-local publication
+horizon, although its start may be earlier on the current local date so an
+emergency same-day closure can remove remaining future capacity. No free-text
+or clinical reason is stored.
 
 Templates are not queried dynamically during booking. Each materialized slot
 pins its practitioner facility assignment, service eligibility, service,
 facility, source template, source local date and timezone, UTC start/end,
-status, and deterministic SHA-256 generation key. Exact retries reuse the same
-key. PostgreSQL exclusion constraints reject overlapping available slots for
+status, deferred-withdrawal state, and deterministic SHA-256 generation key.
+The generation key remains exactly
+`sha256("uae-health:synthetic-provider-slot:v1|<template-id>|<local-date>|<start-epoch-seconds>|<end-epoch-seconds>")`
+so migrated, seeded, and API-generated occurrences converge. Exact retries
+reuse the same row only after every immutable scope and time field matches.
+PostgreSQL exclusion constraints reject overlapping available slots for
 the same tenant-owned practitioner across services, facilities, and practices,
 while allowing different practitioners to work simultaneously. Adjacent
 `[start, end)` intervals do not overlap.
@@ -150,6 +173,40 @@ An `active` template is not publication authority by itself. Task 3.2 SHALL
 validate IANA timezone inputs, the complete active catalogue chain, exceptions,
 the eight-week bound, and materialized slots in one serializable transaction.
 If overlap or materialization fails, template activation rolls back.
+
+Template creation defaults to inactive. Activation and explicit reconciliation
+materialize atomically. Editing an immutable definition is one command that
+deactivates the old template and creates a replacement; an identical definition
+reuses the existing row instead of creating a duplicate. Exception creation is
+active and reconciles immediately. Cancelling an exception is terminal and
+reconciles the union of all remaining active exceptions, so cancelling one of
+several overlapping exceptions does not restore capacity.
+
+An obsolete unbooked occurrence is retained and marked `withdrawn`. If it is
+desired again by the same active immutable template, has no live appointment,
+and no active exception covers it, reconciliation may reactivate that exact
+row. An obsolete slot with a requested or confirmed appointment remains
+`available` to preserve the practitioner overlap reservation but is marked
+`withdrawal_pending`; patient discovery and new booking exclude pending slots.
+When cancellation, rescheduling, or a later workforce decision releases the
+live appointment, the same transaction re-evaluates the current template and
+exception union and either clears the pending marker when the occurrence is
+valid again or moves the slot to `withdrawn`. New generated intervals that
+overlap a preserved live or pending slot are skipped and reported for explicit
+staff resolution.
+
+Task 3.2 availability mutations use the task 3.1 exact-practice/facility
+authorization, durable command, optimistic concurrency, approved reason, and
+audit machinery. They acquire transaction-scoped scheduling mutexes keyed by
+tenant and practitioner, without a practice component, in stable practitioner
+order so a shared doctor serializes across sibling practices. They reauthorize
+before replay on every bounded serializable
+attempt, lock slots deterministically, and commit catalogue state, slot state,
+safe audit evidence, and the command result together. Responses report created,
+reactivated, withdrawn, and preserved-live counts plus at most 100 opaque live
+appointment identifiers from the authorized practice and an explicit
+truncation flag. A live blocker in a sibling practice may increase only a
+generic skipped count; its appointment identifier is never disclosed.
 
 Materialized slots make availability queries bounded and allow PostgreSQL
 constraints and row locks to prevent double-booking. Storing only UTC timestamps

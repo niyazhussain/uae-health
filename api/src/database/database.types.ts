@@ -38,7 +38,14 @@ export type WorkforceSchedulingCommandOperation =
   | 'service_create'
   | 'service_update'
   | 'practitioner_service_assignment_create'
-  | 'practitioner_service_assignment_status';
+  | 'practitioner_service_assignment_status'
+  | 'availability_template_create'
+  | 'availability_template_replace'
+  | 'availability_template_status'
+  | 'availability_exception_create'
+  | 'availability_exception_cancel'
+  | 'availability_template_materialize'
+  | 'service_duration_update';
 export type PatientPortalRegistrationRequestStatus =
   'pending_provider' | 'pending_binding' | 'accepted' | 'rate_limited';
 export type PatientPortalInvitationStatus =
@@ -206,8 +213,8 @@ export interface ProviderAvailabilityExceptionTable {
   practitioner_facility_assignment_id: string | null;
   practitioner_id: string | null;
   kind: ProviderAvailabilityExceptionKind;
-  local_starts_at: Date;
-  local_ends_at: Date;
+  local_starts_at: string;
+  local_ends_at: string;
   starts_at: Date;
   ends_at: Date;
   source_timezone: string;
@@ -523,6 +530,7 @@ export interface PatientPortalAppointmentSlotTable {
   source_local_date: Generated<string | null>;
   source_timezone: Generated<string | null>;
   status: Generated<PatientPortalAppointmentSlotStatus>;
+  withdrawal_pending: Generated<boolean>;
   is_synthetic: Generated<boolean>;
   created_at: Generated<Date>;
   updated_at: Generated<Date>;

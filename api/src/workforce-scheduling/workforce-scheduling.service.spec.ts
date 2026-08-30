@@ -14,6 +14,7 @@ import {
   WorkforceSchedulingConflictError,
   WorkforceSchedulingPersistenceError,
   WorkforceSchedulingTargetUnavailableError,
+  WorkforceSchedulingValidationError,
 } from './workforce-scheduling.types.js';
 
 const principal: AuthenticatedPrincipal = {
@@ -28,6 +29,10 @@ function createFixture() {
   });
   const updateSpecialty = jest.fn();
   const updateService = jest.fn();
+  const createAvailabilityTemplate = jest.fn().mockResolvedValue({});
+  const replaceAvailabilityTemplate = jest.fn();
+  const createAvailabilityException = jest.fn().mockResolvedValue({});
+  const changeServiceDuration = jest.fn().mockResolvedValue({});
   const repository = {
     listContexts,
     listPractitioners: jest.fn(),
@@ -43,6 +48,16 @@ function createFixture() {
     updateService,
     createPractitionerServiceAssignment: jest.fn(),
     changePractitionerServiceAssignmentStatus: jest.fn(),
+    listAvailabilityTemplates: jest.fn(),
+    listAvailabilityExceptions: jest.fn(),
+    listAvailabilitySlots: jest.fn(),
+    createAvailabilityTemplate,
+    replaceAvailabilityTemplate,
+    changeAvailabilityTemplateStatus: jest.fn(),
+    materializeAvailabilityTemplate: jest.fn(),
+    createAvailabilityException,
+    cancelAvailabilityException: jest.fn(),
+    changeServiceDuration,
   } as unknown as jest.Mocked<WorkforceSchedulingRepository>;
 
   return {
@@ -52,6 +67,10 @@ function createFixture() {
     createPractitioner,
     updateSpecialty,
     updateService,
+    createAvailabilityTemplate,
+    replaceAvailabilityTemplate,
+    createAvailabilityException,
+    changeServiceDuration,
   };
 }
 
@@ -143,6 +162,145 @@ describe('WorkforceSchedulingService', () => {
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(updateSpecialty).not.toHaveBeenCalled();
     expect(updateService).not.toHaveBeenCalled();
+  });
+
+  it('normalizes an omitted template status to inactive before fingerprinting', async () => {
+    const { service, createAvailabilityTemplate } = createFixture();
+    const input = {
+      organizationId: '20000000-0000-4000-8000-000000000001',
+      practitionerServiceAssignmentId: '35000000-0000-4000-8000-000000000001',
+      isoWeekday: 1,
+      localStartMinute: 540,
+      localEndMinute: 1020,
+      effectiveFrom: '2026-08-31',
+      reasonCode: 'availability-configuration' as const,
+    };
+
+    await service.createAvailabilityTemplate(
+      principal,
+      '12345678-1234-4234-8234-123456789012',
+      input,
+    );
+
+    expect(createAvailabilityTemplate).toHaveBeenCalledWith({
+      principal,
+      idempotencyKey: '12345678-1234-4234-8234-123456789012',
+      input: { ...input, status: 'inactive' },
+    });
+  });
+
+  it('rejects invalid canonical dates and unrelated template reasons', () => {
+    const { service, createAvailabilityTemplate } = createFixture();
+    const base = {
+      organizationId: '20000000-0000-4000-8000-000000000001',
+      practitionerServiceAssignmentId: '35000000-0000-4000-8000-000000000001',
+      isoWeekday: 1,
+      localStartMinute: 540,
+      localEndMinute: 1020,
+      effectiveFrom: '2026-99-99',
+      reasonCode: 'availability-configuration' as const,
+    };
+
+    expect(() =>
+      service.createAvailabilityTemplate(
+        principal,
+        '12345678-1234-4234-8234-123456789012',
+        base,
+      ),
+    ).toThrow(BadRequestException);
+    expect(() =>
+      service.createAvailabilityTemplate(
+        principal,
+        '12345678-1234-4234-8234-123456789012',
+        {
+          ...base,
+          effectiveFrom: '2026-08-31',
+          reasonCode: 'catalogue-setup',
+        },
+      ),
+    ).toThrow(BadRequestException);
+    expect(createAvailabilityTemplate).not.toHaveBeenCalled();
+  });
+
+  it('rejects a replacement whose inherited DTO omitted status', () => {
+    const { service, replaceAvailabilityTemplate } = createFixture();
+
+    expect(() =>
+      service.replaceAvailabilityTemplate(
+        principal,
+        '12345678-1234-4234-8234-123456789012',
+        '36000000-0000-4000-8000-000000000001',
+        {
+          organizationId: '20000000-0000-4000-8000-000000000001',
+          practitionerServiceAssignmentId:
+            '35000000-0000-4000-8000-000000000001',
+          isoWeekday: 1,
+          localStartMinute: 540,
+          localEndMinute: 1020,
+          effectiveFrom: '2026-08-31',
+          expectedUpdatedAt: '2026-08-29T00:00:00.000Z',
+          reasonCode: 'availability-configuration',
+        } as Parameters<
+          WorkforceSchedulingService['replaceAvailabilityTemplate']
+        >[3],
+      ),
+    ).toThrow(BadRequestException);
+    expect(replaceAvailabilityTemplate).not.toHaveBeenCalled();
+  });
+
+  it('enforces closed exception scope and reason semantics', () => {
+    const { service, createAvailabilityException } = createFixture();
+    const base = {
+      organizationId: '20000000-0000-4000-8000-000000000001',
+      facilityId: '21000000-0000-4000-8000-000000000001',
+      kind: 'facility_closed' as const,
+      isAllDay: true,
+      localStartsAt: '2026-09-01T00:00:00',
+      localEndsAt: '2026-09-02T00:00:00',
+      reasonCode: 'provider-availability-change' as const,
+    };
+
+    expect(() =>
+      service.createAvailabilityException(
+        principal,
+        '12345678-1234-4234-8234-123456789012',
+        base,
+      ),
+    ).toThrow(BadRequestException);
+    expect(() =>
+      service.createAvailabilityException(
+        principal,
+        '12345678-1234-4234-8234-123456789012',
+        {
+          ...base,
+          reasonCode: 'facility-availability-change',
+          practitionerFacilityAssignmentId:
+            '34000000-0000-4000-8000-000000000001',
+        },
+      ),
+    ).toThrow(BadRequestException);
+    expect(createAvailabilityException).not.toHaveBeenCalled();
+  });
+
+  it('maps repository availability validation to a safe bad request', async () => {
+    const { service, changeServiceDuration } = createFixture();
+    changeServiceDuration.mockRejectedValue(
+      new WorkforceSchedulingValidationError(),
+    );
+
+    await expect(
+      service.changeServiceDuration(
+        principal,
+        '12345678-1234-4234-8234-123456789012',
+        '32000000-0000-4000-8000-000000000001',
+        {
+          organizationId: '20000000-0000-4000-8000-000000000001',
+          durationMinutes: 45,
+          expectedUpdatedAt: '2026-08-29T00:00:00.000Z',
+          reasonCode: 'service-duration-change',
+        },
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
   });
 
   it.each([

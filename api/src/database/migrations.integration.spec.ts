@@ -25,6 +25,7 @@ import * as createProviderSchedulingCatalogue from './migrations/2026-08-27T0300
 import * as createProviderAvailability from './migrations/2026-08-27T040000_create_provider_availability.js';
 import * as backfillSyntheticProviderAppointments from './migrations/2026-08-27T050000_backfill_synthetic_provider_appointments.js';
 import * as createWorkforceSchedulingCommands from './migrations/2026-08-27T060000_create_workforce_scheduling_commands.js';
+import * as addDeferredSlotWithdrawal from './migrations/2026-08-27T070000_add_deferred_slot_withdrawal.js';
 import { PatientPortalProfileLinkService } from '../patient-portal-auth/patient-portal-profile-link.service.js';
 import { PatientPortalRegistrationService } from '../patient-portal-auth/patient-portal-registration.service.js';
 import { PatientPortalSessionService } from '../patient-portal-auth/patient-portal-session.service.js';
@@ -433,9 +434,13 @@ async function insertSyntheticProviderTestScope(
     tenantId: string;
     organizationId: string;
     suffix: string;
+    isoWeekday?: number;
+    localStartMinute?: number;
+    effectiveFrom?: string;
   },
 ): Promise<SyntheticProviderTestScope> {
   const sourceTimezone = 'Asia/Dubai';
+  const localStartMinute = input.localStartMinute ?? 540;
   const facility = await database
     .insertInto('facilities')
     .values({
@@ -524,10 +529,10 @@ async function insertSyntheticProviderTestScope(
       practitioner_service_assignment_id: serviceAssignment.id,
       practitioner_id: practitioner.id,
       appointment_service_id: service.id,
-      iso_weekday: 4,
-      local_start_minute: 540,
-      local_end_minute: 570,
-      effective_from: '2035-01-01',
+      iso_weekday: input.isoWeekday ?? 4,
+      local_start_minute: localStartMinute,
+      local_end_minute: localStartMinute + 30,
+      effective_from: input.effectiveFrom ?? '2035-01-01',
       effective_until: null,
       source_timezone: sourceTimezone,
       status: 'active',
@@ -685,20 +690,52 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
 
     await createProviderAvailability.up(database);
     await createWorkforceSchedulingCommands.up(database);
+    await addDeferredSlotWithdrawal.up(database);
   });
 
   afterAll(async () => {
     if (database) {
+      await database
+        .deleteFrom('workforce_scheduling_commands')
+        .where('operation', 'in', [
+          'availability_template_create',
+          'availability_template_replace',
+          'availability_template_status',
+          'availability_exception_create',
+          'availability_exception_cancel',
+          'availability_template_materialize',
+          'service_duration_update',
+        ])
+        .execute();
+      await database
+        .updateTable('patient_portal_appointment_slots')
+        .set({ withdrawal_pending: false })
+        .where('withdrawal_pending', '=', true)
+        .execute();
+      await addDeferredSlotWithdrawal.down(database);
+
+      const rolledBackDeferredWithdrawalColumns = await sql<{
+        count: number;
+      }>`
+        select count(*)::integer as count
+        from information_schema.columns
+        where table_schema = current_schema()
+          and table_name = 'patient_portal_appointment_slots'
+          and column_name = 'withdrawal_pending'
+      `.execute(database);
+      expect(rolledBackDeferredWithdrawalColumns.rows[0]?.count).toBe(0);
+
       await createWorkforceSchedulingCommands.down(database);
 
       const rolledBackWorkforceSchedulingCommands = await sql<{
-        table_name: string | null;
+        count: number;
       }>`
-        select to_regclass('workforce_scheduling_commands')::text as table_name
+        select count(*)::integer as count
+        from pg_class
+        where relnamespace = current_schema()::regnamespace
+          and relname = 'workforce_scheduling_commands'
       `.execute(database);
-      expect(
-        rolledBackWorkforceSchedulingCommands.rows[0]?.table_name,
-      ).toBeNull();
+      expect(rolledBackWorkforceSchedulingCommands.rows[0]?.count).toBe(0);
 
       await sql`
         delete from patient_portal_appointment_commands command
@@ -2027,6 +2064,13 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
         'practitioner_service_assignment_status',
         'practitioner_service_assignment',
       ],
+      ['availability_template_create', 'availability_template'],
+      ['availability_template_replace', 'availability_template'],
+      ['availability_template_status', 'availability_template'],
+      ['availability_exception_create', 'availability_exception'],
+      ['availability_exception_cancel', 'availability_exception'],
+      ['availability_template_materialize', 'availability_template'],
+      ['service_duration_update', 'appointment_service'],
     ] as const;
     const hashFor = (value: string): string =>
       createHash('sha256').update(value).digest('hex');
@@ -2359,6 +2403,22 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
         'workforce_scheduling_commands_target_idx',
       ]),
     );
+
+    await expect(addDeferredSlotWithdrawal.down(database)).rejects.toThrow(
+      /forward-only.*availability command evidence/i,
+    );
+    await database
+      .deleteFrom('workforce_scheduling_commands')
+      .where('operation', 'in', [
+        'availability_template_create',
+        'availability_template_replace',
+        'availability_template_status',
+        'availability_exception_create',
+        'availability_exception_cancel',
+        'availability_template_materialize',
+        'service_duration_update',
+      ])
+      .execute();
   });
 
   it('preserves legacy appointment rows with no inferred provider scope', async () => {
@@ -2375,6 +2435,7 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
         'generation_key_hash',
         'source_local_date',
         'source_timezone',
+        'withdrawal_pending',
       ])
       .where('id', '=', legacyAvailabilityFixture.slotId)
       .executeTakeFirstOrThrow();
@@ -2402,6 +2463,7 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
       generation_key_hash: null,
       source_local_date: null,
       source_timezone: null,
+      withdrawal_pending: false,
     });
     expect(legacyAppointment).toEqual({
       id: legacyAvailabilityFixture.appointmentId,
@@ -2884,16 +2946,20 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
         practitioner_id: null,
         kind: 'facility_closed',
         is_all_day: true,
-        local_starts_at: sql<Date>`timestamp '2035-01-08 00:00:00'`,
-        local_ends_at: sql<Date>`timestamp '2035-01-09 00:00:00'`,
+        local_starts_at: sql<string>`timestamp '2035-01-08 00:00:00'`,
+        local_ends_at: sql<string>`timestamp '2035-01-09 00:00:00'`,
         starts_at: new Date('2035-01-07T20:00:00.000Z'),
         ends_at: new Date('2035-01-08T20:00:00.000Z'),
         source_timezone: 'Asia/Dubai',
         status: 'active',
         is_synthetic: true,
       })
-      .returning('id')
+      .returning(['id', 'local_starts_at', 'local_ends_at'])
       .executeTakeFirstOrThrow();
+    expect(facilityClosure).toMatchObject({
+      local_starts_at: '2035-01-08 00:00:00',
+      local_ends_at: '2035-01-09 00:00:00',
+    });
     const practitionerException = await database
       .insertInto('provider_availability_exceptions')
       .values({
@@ -2904,8 +2970,8 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
         practitioner_id: fixture.practitionerA,
         kind: 'practitioner_unavailable',
         is_all_day: false,
-        local_starts_at: sql<Date>`timestamp '2035-01-10 13:00:00'`,
-        local_ends_at: sql<Date>`timestamp '2035-01-10 14:00:00'`,
+        local_starts_at: sql<string>`timestamp '2035-01-10 13:00:00'`,
+        local_ends_at: sql<string>`timestamp '2035-01-10 14:00:00'`,
         starts_at: new Date('2035-01-10T09:00:00.000Z'),
         ends_at: new Date('2035-01-10T10:00:00.000Z'),
         source_timezone: 'Asia/Dubai',
@@ -2926,8 +2992,8 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
           practitioner_id: null,
           kind: 'facility_closed',
           is_all_day: true,
-          local_starts_at: sql<Date>`timestamp '2035-01-11 01:00:00'`,
-          local_ends_at: sql<Date>`timestamp '2035-01-12 00:00:00'`,
+          local_starts_at: sql<string>`timestamp '2035-01-11 01:00:00'`,
+          local_ends_at: sql<string>`timestamp '2035-01-12 00:00:00'`,
           starts_at: new Date('2035-01-10T21:00:00.000Z'),
           ends_at: new Date('2035-01-11T20:00:00.000Z'),
           source_timezone: 'Asia/Dubai',
@@ -2950,8 +3016,8 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
           practitioner_id: null,
           kind: 'facility_closed',
           is_all_day: true,
-          local_starts_at: sql<Date>`timestamp '2035-01-14 00:00:00'`,
-          local_ends_at: sql<Date>`timestamp '2035-01-16 00:00:00'`,
+          local_starts_at: sql<string>`timestamp '2035-01-14 00:00:00'`,
+          local_ends_at: sql<string>`timestamp '2035-01-16 00:00:00'`,
           starts_at: new Date('2035-01-13T20:00:00.000Z'),
           ends_at: new Date('2035-01-15T20:00:00.000Z'),
           source_timezone: 'Asia/Dubai',
@@ -2974,8 +3040,8 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
           practitioner_id: fixture.practitionerA,
           kind: 'practitioner_unavailable',
           is_all_day: false,
-          local_starts_at: sql<Date>`timestamp '2035-01-12 13:00:00'`,
-          local_ends_at: sql<Date>`timestamp '2035-01-12 14:00:00'`,
+          local_starts_at: sql<string>`timestamp '2035-01-12 13:00:00'`,
+          local_ends_at: sql<string>`timestamp '2035-01-12 14:00:00'`,
           starts_at: new Date('2035-01-12T09:00:00.000Z'),
           ends_at: new Date('2035-01-12T10:00:00.000Z'),
           source_timezone: 'Asia/Dubai',
@@ -2998,8 +3064,8 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
           practitioner_id: fixture.practitionerA,
           kind: 'practitioner_unavailable',
           is_all_day: false,
-          local_starts_at: sql<Date>`timestamp '2035-01-13 13:00:00'`,
-          local_ends_at: sql<Date>`timestamp '2035-01-13 14:00:00'`,
+          local_starts_at: sql<string>`timestamp '2035-01-13 13:00:00'`,
+          local_ends_at: sql<string>`timestamp '2035-01-13 14:00:00'`,
           starts_at: new Date('2035-01-13T09:00:00.000Z'),
           ends_at: new Date('2035-01-13T10:00:00.000Z'),
           source_timezone: 'Asia/Dubai',
@@ -3283,6 +3349,52 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
         .where('id', '=', fixture.slotBooked)
         .execute(),
     ).rejects.toThrow('A slot with a live appointment cannot be withdrawn.');
+
+    await database
+      .updateTable('patient_portal_appointment_slots')
+      .set({ withdrawal_pending: true })
+      .where('id', '=', fixture.slotBooked)
+      .execute();
+    await expect(
+      database
+        .selectFrom('patient_portal_appointment_slots')
+        .select(['status', 'withdrawal_pending'])
+        .where('id', '=', fixture.slotBooked)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({
+      status: 'available',
+      withdrawal_pending: true,
+    });
+    await expect(addDeferredSlotWithdrawal.down(database)).rejects.toThrow(
+      /forward-only.*withdrawals remain pending/i,
+    );
+    await expect(
+      database
+        .updateTable('patient_portal_appointment_slots')
+        .set({ status: 'withdrawn', withdrawal_pending: true })
+        .where('id', '=', fixture.slotAdjacent)
+        .execute(),
+    ).rejects.toMatchObject({
+      code: '23514',
+      constraint: 'pp_appointment_slots_withdrawal_pending_check',
+    });
+    await database
+      .updateTable('patient_portal_appointment_slots')
+      .set({ withdrawal_pending: false })
+      .where('id', '=', fixture.slotBooked)
+      .execute();
+
+    const providerDiscoveryIndex = await sql<{ indexdef: string }>`
+      select indexdef
+      from pg_indexes
+      where schemaname = current_schema()
+        and tablename = 'patient_portal_appointment_slots'
+        and indexname = 'pp_appointment_slots_provider_discovery_idx'
+    `.execute(database);
+    expect(providerDiscoveryIndex.rows[0]?.indexdef).toMatch(
+      /withdrawal_pending\s*=\s*false/i,
+    );
+
     await database
       .updateTable('patient_portal_appointment_slots')
       .set({ status: 'withdrawn' })
@@ -3791,12 +3903,19 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
       ])
       .returning('id')
       .execute();
+    const localDateSeed = new Date();
+    localDateSeed.setUTCDate(localDateSeed.getUTCDate() + 14);
+    const sourceLocalDate = localDateSeed.toISOString().slice(0, 10);
+    const isoWeekday = ((localDateSeed.getUTCDay() + 6) % 7) + 1;
     const firstProviderScope = await insertSyntheticProviderTestScope(
       database,
       {
         tenantId: tenant.id,
         organizationId: firstPractice.id,
         suffix: 'A',
+        isoWeekday,
+        localStartMinute: 540,
+        effectiveFrom: sourceLocalDate,
       },
     );
     const rescheduleProviderScope = await insertSyntheticProviderTestScope(
@@ -3805,6 +3924,9 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
         tenantId: tenant.id,
         organizationId: firstPractice.id,
         suffix: 'A2',
+        isoWeekday,
+        localStartMinute: 600,
+        effectiveFrom: sourceLocalDate,
       },
     );
     const secondProviderScope = await insertSyntheticProviderTestScope(
@@ -3813,11 +3935,15 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
         tenantId: tenant.id,
         organizationId: secondPractice.id,
         suffix: 'B',
+        isoWeekday,
+        localStartMinute: 660,
+        effectiveFrom: sourceLocalDate,
       },
     );
     const providerSlotBundle = (
       provider: SyntheticProviderTestScope,
-      generationIdentity: string,
+      startsAt: Date,
+      endsAt: Date,
     ) => ({
       facility_id: provider.facilityId,
       practitioner_facility_assignment_id:
@@ -3828,12 +3954,19 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
       appointment_service_id: provider.appointmentServiceId,
       availability_template_id: provider.availabilityTemplateId,
       generation_key_hash: createHash('sha256')
-        .update(generationIdentity)
+        .update(
+          `uae-health:synthetic-provider-slot:v1|${provider.availabilityTemplateId}|${sourceLocalDate}|${Math.floor(startsAt.getTime() / 1000)}|${Math.floor(endsAt.getTime() / 1000)}`,
+        )
         .digest('hex'),
-      source_local_date: '2035-02-01',
+      source_local_date: sourceLocalDate,
       source_timezone: provider.sourceTimezone,
     });
-    const slotStart = new Date('2035-02-01T05:00:00.000Z');
+    const slotStart = new Date(`${sourceLocalDate}T05:00:00.000Z`);
+    const firstSlotEnd = new Date(slotStart.getTime() + 30 * 60_000);
+    const rescheduleSlotStart = new Date(slotStart.getTime() + 60 * 60_000);
+    const rescheduleSlotEnd = new Date(
+      rescheduleSlotStart.getTime() + 30 * 60_000,
+    );
     const [firstSlot, rescheduleSlot] = await database
       .insertInto('patient_portal_appointment_slots')
       .values([
@@ -3841,12 +3974,9 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
           bookable_practice_id: firstBookablePractice.id,
           tenant_id: tenant.id,
           organization_id: firstPractice.id,
-          ...providerSlotBundle(
-            firstProviderScope,
-            'appointment-provider-slot-a',
-          ),
+          ...providerSlotBundle(firstProviderScope, slotStart, firstSlotEnd),
           starts_at: slotStart,
-          ends_at: new Date(slotStart.getTime() + 30 * 60_000),
+          ends_at: firstSlotEnd,
           status: 'available',
           is_synthetic: true,
         },
@@ -3856,10 +3986,11 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
           organization_id: firstPractice.id,
           ...providerSlotBundle(
             rescheduleProviderScope,
-            'appointment-provider-slot-a2',
+            rescheduleSlotStart,
+            rescheduleSlotEnd,
           ),
-          starts_at: new Date(slotStart.getTime() + 60 * 60_000),
-          ends_at: new Date(slotStart.getTime() + 90 * 60_000),
+          starts_at: rescheduleSlotStart,
+          ends_at: rescheduleSlotEnd,
           status: 'available',
           is_synthetic: true,
         },
@@ -3874,7 +4005,8 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
         organization_id: secondPractice.id,
         ...providerSlotBundle(
           secondProviderScope,
-          'appointment-provider-slot-b',
+          new Date(slotStart.getTime() + 2 * 60 * 60_000),
+          new Date(slotStart.getTime() + 150 * 60_000),
         ),
         starts_at: new Date(slotStart.getTime() + 2 * 60 * 60_000),
         ends_at: new Date(slotStart.getTime() + 150 * 60_000),
@@ -4049,6 +4181,31 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
       availability.slots.some((slot) => slot.slotId === firstSlot.id),
     ).toBe(true);
 
+    await database
+      .updateTable('patient_portal_appointment_slots')
+      .set({ withdrawal_pending: true })
+      .where('id', '=', rescheduleSlot.id)
+      .execute();
+    const availabilityWithPendingWithdrawal =
+      await appointments.listAvailability(firstAppointmentContext);
+    expect(
+      availabilityWithPendingWithdrawal.slots.some(
+        (slot) => slot.slotId === rescheduleSlot.id,
+      ),
+    ).toBe(false);
+    await expect(
+      appointments.createAppointment(
+        firstAppointmentContext,
+        'appointment-create-pending-slot-key-0001',
+        rescheduleSlot.id,
+      ),
+    ).rejects.toBeInstanceOf(ConflictException);
+    await database
+      .updateTable('patient_portal_appointment_slots')
+      .set({ withdrawal_pending: false })
+      .where('id', '=', rescheduleSlot.id)
+      .execute();
+
     const [requested, replayedRequested] = await withConcurrentAppointments(
       (first, second) =>
         Promise.all([
@@ -4148,6 +4305,11 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
       otherPracticeContext,
       firstRelationship.appointmentRelationshipId,
     );
+    await database
+      .updateTable('patient_portal_appointment_slots')
+      .set({ withdrawal_pending: true })
+      .where('id', '=', firstSlot.id)
+      .execute();
     const [rescheduled, replayedRescheduled] = await withConcurrentAppointments(
       (first, second) =>
         Promise.all([
@@ -4182,6 +4344,16 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
     });
     await expect(
       database
+        .selectFrom('patient_portal_appointment_slots')
+        .select(['status', 'withdrawal_pending'])
+        .where('id', '=', firstSlot.id)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({
+      status: 'available',
+      withdrawal_pending: false,
+    });
+    await expect(
+      database
         .selectFrom('patient_portal_appointments')
         .select([
           'facility_id',
@@ -4201,6 +4373,32 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
       practitioner_id: rescheduleProviderScope.practitionerId,
       appointment_service_id: rescheduleProviderScope.appointmentServiceId,
     });
+
+    await database
+      .updateTable('patient_portal_appointment_slots')
+      .set({ withdrawal_pending: true })
+      .where('id', '=', rescheduleSlot.id)
+      .execute();
+    await database
+      .insertInto('provider_availability_exceptions')
+      .values({
+        tenant_id: tenant.id,
+        organization_id: firstPractice.id,
+        facility_id: rescheduleProviderScope.facilityId,
+        practitioner_facility_assignment_id:
+          rescheduleProviderScope.practitionerFacilityAssignmentId,
+        practitioner_id: rescheduleProviderScope.practitionerId,
+        kind: 'practitioner_unavailable',
+        is_all_day: false,
+        local_starts_at: `${sourceLocalDate} 10:00:00`,
+        local_ends_at: `${sourceLocalDate} 10:30:00`,
+        starts_at: rescheduleSlotStart,
+        ends_at: rescheduleSlotEnd,
+        source_timezone: rescheduleProviderScope.sourceTimezone,
+        status: 'active',
+        is_synthetic: true,
+      })
+      .execute();
     const [cancelled, replayedCancelled] = await withConcurrentAppointments(
       (first, second) =>
         Promise.all([
@@ -4232,6 +4430,16 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
       version: rescheduled.appointment.version + 1,
       canCancel: false,
       canReschedule: false,
+    });
+    await expect(
+      database
+        .selectFrom('patient_portal_appointment_slots')
+        .select(['status', 'withdrawal_pending'])
+        .where('id', '=', rescheduleSlot.id)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({
+      status: 'withdrawn',
+      withdrawal_pending: false,
     });
     await expect(
       appointments.cancelAppointment(

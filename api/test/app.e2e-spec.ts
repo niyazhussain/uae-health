@@ -225,6 +225,45 @@ describe('AppController (e2e)', () => {
       });
   });
 
+  it('/v1/admin/scheduling/availability-templates rejects an unauthenticated read', () => {
+    const server = app.getHttpServer() as Server;
+
+    return request(server)
+      .get('/v1/admin/scheduling/availability-templates')
+      .query({
+        organizationId: '20000000-0000-4000-8000-000000000001',
+      })
+      .expect(401)
+      .expect({
+        message: 'Active workforce session required.',
+        error: 'Unauthorized',
+        statusCode: 401,
+      });
+  });
+
+  it('/v1/admin/scheduling/availability-exceptions rejects an unauthenticated mutation', () => {
+    const server = app.getHttpServer() as Server;
+
+    return request(server)
+      .post('/v1/admin/scheduling/availability-exceptions')
+      .set('Idempotency-Key', '12345678-1234-4234-8234-123456789012')
+      .send({
+        organizationId: '20000000-0000-4000-8000-000000000001',
+        facilityId: '30000000-0000-4000-8000-000000000001',
+        kind: 'facility_closed',
+        isAllDay: true,
+        localStartsAt: '2026-09-01T00:00',
+        localEndsAt: '2026-09-02T00:00',
+        reasonCode: 'facility-availability-change',
+      })
+      .expect(401)
+      .expect({
+        message: 'Active workforce session required.',
+        error: 'Unauthorized',
+        statusCode: 401,
+      });
+  });
+
   afterEach(async () => {
     await app.close();
   });
