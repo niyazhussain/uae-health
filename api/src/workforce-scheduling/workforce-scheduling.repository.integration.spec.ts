@@ -35,6 +35,17 @@ import {
 const databaseUrl = process.env.DATABASE_URL;
 const describeWithDatabase = databaseUrl ? describe : describe.skip;
 const providerIssuer = 'https://workforce-idp.example.invalid/scheduling-tests';
+const schedulingFixtureLocalDate = new Date(Date.now() + 14 * 24 * 60 * 60_000)
+  .toISOString()
+  .slice(0, 10);
+const schedulingFixtureIsoWeekday =
+  ((new Date(`${schedulingFixtureLocalDate}T00:00:00.000Z`).getUTCDay() + 6) %
+    7) +
+  1;
+
+function schedulingFixtureInstant(utcTime: string): Date {
+  return new Date(`${schedulingFixtureLocalDate}T${utcTime}:00.000Z`);
+}
 
 const fixture = {
   tenantId: 'd1000000-0000-4000-8000-000000000001',
@@ -623,10 +634,10 @@ async function insertPatientAppointmentFixture(
         practitioner_service_assignment_id: fixture.serviceAssignmentA1Id,
         practitioner_id: fixture.practitionerId,
         appointment_service_id: fixture.serviceA1Id,
-        iso_weekday: 1,
+        iso_weekday: schedulingFixtureIsoWeekday,
         local_start_minute: 780,
         local_end_minute: 840,
-        effective_from: '2035-01-01',
+        effective_from: schedulingFixtureLocalDate,
         effective_until: null,
         source_timezone: 'Asia/Dubai',
         status: 'active',
@@ -641,10 +652,10 @@ async function insertPatientAppointmentFixture(
         practitioner_service_assignment_id: fixture.serviceAssignmentB1Id,
         practitioner_id: fixture.practitionerId,
         appointment_service_id: fixture.serviceB1Id,
-        iso_weekday: 1,
+        iso_weekday: schedulingFixtureIsoWeekday,
         local_start_minute: 870,
         local_end_minute: 900,
-        effective_from: '2035-01-01',
+        effective_from: schedulingFixtureLocalDate,
         effective_until: null,
         source_timezone: 'Asia/Dubai',
         status: 'active',
@@ -660,8 +671,8 @@ async function insertPatientAppointmentFixture(
         bookable_practice_id: fixture.bookablePracticeAId,
         tenant_id: fixture.tenantId,
         organization_id: fixture.practiceAId,
-        starts_at: new Date('2035-01-08T09:00:00.000Z'),
-        ends_at: new Date('2035-01-08T09:30:00.000Z'),
+        starts_at: schedulingFixtureInstant('09:00'),
+        ends_at: schedulingFixtureInstant('09:30'),
         facility_id: fixture.facilityA1Id,
         practitioner_facility_assignment_id: fixture.facilityAssignmentA1Id,
         practitioner_service_assignment_id: fixture.serviceAssignmentA1Id,
@@ -669,7 +680,7 @@ async function insertPatientAppointmentFixture(
         appointment_service_id: fixture.serviceA1Id,
         availability_template_id: fixture.availabilityTemplateAId,
         generation_key_hash: 'a'.repeat(64),
-        source_local_date: '2035-01-08',
+        source_local_date: schedulingFixtureLocalDate,
         source_timezone: 'Asia/Dubai',
         status: 'available',
         is_synthetic: true,
@@ -679,8 +690,8 @@ async function insertPatientAppointmentFixture(
         bookable_practice_id: fixture.bookablePracticeAId,
         tenant_id: fixture.tenantId,
         organization_id: fixture.practiceAId,
-        starts_at: new Date('2035-01-08T09:30:00.000Z'),
-        ends_at: new Date('2035-01-08T10:00:00.000Z'),
+        starts_at: schedulingFixtureInstant('09:30'),
+        ends_at: schedulingFixtureInstant('10:00'),
         facility_id: fixture.facilityA1Id,
         practitioner_facility_assignment_id: fixture.facilityAssignmentA1Id,
         practitioner_service_assignment_id: fixture.serviceAssignmentA1Id,
@@ -688,7 +699,7 @@ async function insertPatientAppointmentFixture(
         appointment_service_id: fixture.serviceA1Id,
         availability_template_id: fixture.availabilityTemplateAId,
         generation_key_hash: 'b'.repeat(64),
-        source_local_date: '2035-01-08',
+        source_local_date: schedulingFixtureLocalDate,
         source_timezone: 'Asia/Dubai',
         status: 'available',
         is_synthetic: true,
@@ -698,8 +709,8 @@ async function insertPatientAppointmentFixture(
         bookable_practice_id: fixture.bookablePracticeBId,
         tenant_id: fixture.tenantId,
         organization_id: fixture.practiceBId,
-        starts_at: new Date('2035-01-08T10:30:00.000Z'),
-        ends_at: new Date('2035-01-08T11:00:00.000Z'),
+        starts_at: schedulingFixtureInstant('10:30'),
+        ends_at: schedulingFixtureInstant('11:00'),
         facility_id: fixture.facilityB1Id,
         practitioner_facility_assignment_id: fixture.facilityAssignmentB1Id,
         practitioner_service_assignment_id: fixture.serviceAssignmentB1Id,
@@ -707,7 +718,7 @@ async function insertPatientAppointmentFixture(
         appointment_service_id: fixture.serviceB1Id,
         availability_template_id: fixture.availabilityTemplateBId,
         generation_key_hash: 'c'.repeat(64),
-        source_local_date: '2035-01-08',
+        source_local_date: schedulingFixtureLocalDate,
         source_timezone: 'Asia/Dubai',
         status: 'available',
         is_synthetic: true,

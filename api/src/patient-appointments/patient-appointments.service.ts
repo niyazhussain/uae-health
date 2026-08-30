@@ -17,8 +17,15 @@ import type {
 } from '../database/database.types.js';
 import type { PatientPortalSessionContext } from '../patient-portal-auth/patient-portal-auth.types.js';
 import type {
+  PatientAppointmentAvailabilityQuery,
+  PatientAppointmentAvailabilityResponse,
   PatientAppointmentContext,
-  PatientAppointmentSlotView,
+  PatientAppointmentPageQuery,
+  PatientAppointmentPractitionerOptionView,
+  PatientAppointmentPractitionerOptionsQuery,
+  PatientAppointmentPractitionerOptionsResponse,
+  PatientAppointmentServicesResponse,
+  PatientAppointmentServiceView,
   PatientAppointmentView,
 } from './patient-appointments.types.js';
 import { reconcileReleasedPendingProviderSlot } from './provider-slot-release.js';
@@ -59,6 +66,40 @@ interface StoredCommand {
   appointmentId: string | null;
   responseData: Record<string, unknown>;
 }
+
+interface PublishedAppointmentServiceRecord {
+  id: string;
+  patient_facing_name: string;
+  duration_minutes: number;
+  allows_any_practitioner: boolean;
+  specialty_id: string;
+  specialty_name: string;
+  facility_id: string;
+  facility_name: string;
+  facility_timezone: string;
+}
+
+interface PublishedPractitionerOptionRecord {
+  id: string;
+  display_name: string;
+  professional_title: string;
+}
+
+type PatientAvailabilitySelection =
+  | { kind: 'compatibility' }
+  | {
+      kind: 'named';
+      service: PublishedAppointmentServiceRecord;
+      practitionerOption: PublishedPractitionerOptionRecord;
+    }
+  | { kind: 'any'; service: PublishedAppointmentServiceRecord };
+
+const DEFAULT_DISCOVERY_PAGE = 1;
+const DEFAULT_DISCOVERY_PAGE_SIZE = 25;
+const MAX_DISCOVERY_PAGE_SIZE = 100;
+const INVALID_DISCOVERY_SELECTION_MESSAGE =
+  'Choose a valid appointment service and practitioner selection.';
+const UNAVAILABLE_DISCOVERY_MESSAGE = 'Appointment discovery is unavailable.';
 
 function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');
@@ -106,6 +147,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value);
+}
+
+function databaseCount(value: unknown): number {
+  const count = Number(value ?? 0);
+  if (!Number.isSafeInteger(count) || count < 0) {
+    throw new ServiceUnavailableException(
+      'Appointment discovery is temporarily unavailable.',
+    );
+  }
+  return count;
 }
 
 @Injectable()
@@ -442,11 +493,14 @@ export class PatientAppointmentsService {
     }
   }
 
-  async listAvailability(session: PatientPortalSessionContext): Promise<{
-    practiceName: string;
-    timezone: string;
-    slots: PatientAppointmentSlotView[];
-  }> {
+  async listServices(
+    session: PatientPortalSessionContext,
+    query: PatientAppointmentPageQuery = {
+      page: DEFAULT_DISCOVERY_PAGE,
+      pageSize: DEFAULT_DISCOVERY_PAGE_SIZE,
+    },
+  ): Promise<PatientAppointmentServicesResponse> {
+    const { page, pageSize } = this.discoveryPage(query);
     const context = this.appointmentContext(session);
     const bookable = await this.resolveBookablePracticeForContext(
       this.database.client,
@@ -454,128 +508,204 @@ export class PatientAppointmentsService {
       session.patientPortalIdentityId,
       session.applicationUserId,
     );
-    if (!bookable)
-      throw new NotFoundException('Appointment availability is unavailable.');
+    if (!bookable) throw new NotFoundException(UNAVAILABLE_DISCOVERY_MESSAGE);
 
-    const now = new Date();
-    const slots = await this.database.client
-      .selectFrom('patient_portal_appointment_slots as slot')
-      .innerJoin('facilities as facility', (join) =>
-        join
-          .onRef('facility.id', '=', 'slot.facility_id')
-          .onRef('facility.tenant_id', '=', 'slot.tenant_id')
-          .onRef('facility.organization_id', '=', 'slot.organization_id'),
-      )
-      .innerJoin(
-        'practitioner_facility_assignments as facility_assignment',
-        (join) =>
-          join
-            .onRef(
-              'facility_assignment.id',
-              '=',
-              'slot.practitioner_facility_assignment_id',
-            )
-            .onRef('facility_assignment.tenant_id', '=', 'slot.tenant_id')
-            .onRef(
-              'facility_assignment.organization_id',
-              '=',
-              'slot.organization_id',
-            )
-            .onRef('facility_assignment.facility_id', '=', 'slot.facility_id')
-            .onRef(
-              'facility_assignment.practitioner_id',
-              '=',
-              'slot.practitioner_id',
-            ),
-      )
-      .innerJoin('practitioners as practitioner', (join) =>
-        join
-          .onRef('practitioner.id', '=', 'slot.practitioner_id')
-          .onRef('practitioner.tenant_id', '=', 'slot.tenant_id'),
-      )
-      .innerJoin('appointment_services as service', (join) =>
-        join
-          .onRef('service.id', '=', 'slot.appointment_service_id')
-          .onRef('service.tenant_id', '=', 'slot.tenant_id')
-          .onRef('service.organization_id', '=', 'slot.organization_id')
-          .onRef('service.facility_id', '=', 'slot.facility_id'),
-      )
-      .innerJoin('specialties as specialty', (join) =>
-        join
-          .onRef('specialty.id', '=', 'service.specialty_id')
-          .onRef('specialty.tenant_id', '=', 'service.tenant_id')
-          .onRef('specialty.organization_id', '=', 'service.organization_id'),
-      )
-      .innerJoin(
-        'practitioner_service_assignments as service_assignment',
-        (join) =>
-          join
-            .onRef(
-              'service_assignment.id',
-              '=',
-              'slot.practitioner_service_assignment_id',
-            )
-            .onRef('service_assignment.tenant_id', '=', 'slot.tenant_id')
-            .onRef(
-              'service_assignment.organization_id',
-              '=',
-              'slot.organization_id',
-            )
-            .onRef('service_assignment.facility_id', '=', 'slot.facility_id')
-            .onRef(
-              'service_assignment.practitioner_facility_assignment_id',
-              '=',
-              'slot.practitioner_facility_assignment_id',
-            )
-            .onRef(
-              'service_assignment.practitioner_id',
-              '=',
-              'slot.practitioner_id',
-            )
-            .onRef(
-              'service_assignment.appointment_service_id',
-              '=',
-              'slot.appointment_service_id',
-            ),
-      )
-      .select(['slot.id', 'slot.starts_at', 'slot.ends_at'])
-      .where('slot.bookable_practice_id', '=', bookable.bookablePracticeId)
-      .where('slot.tenant_id', '=', bookable.tenantId)
-      .where('slot.organization_id', '=', bookable.organizationId)
-      .where('slot.status', '=', 'available')
-      .where('slot.withdrawal_pending', '=', false)
-      .where('slot.is_synthetic', '=', true)
-      .where('slot.starts_at', '>', now)
-      .where('facility.is_synthetic', '=', true)
-      .where('facility_assignment.status', '=', 'active')
-      .where('facility_assignment.is_synthetic', '=', true)
-      .where('practitioner.status', '=', 'active')
-      .where('practitioner.is_synthetic', '=', true)
-      .where('specialty.status', '=', 'active')
-      .where('specialty.is_synthetic', '=', true)
-      .where('service.status', '=', 'active')
-      .where('service.is_synthetic', '=', true)
-      .where('service_assignment.status', '=', 'active')
-      .where('service_assignment.is_synthetic', '=', true)
-      .where(
-        sql<boolean>`not exists (
-        select 1
-        from patient_portal_appointments appointment
-        where appointment.appointment_slot_id = slot.id
-          and appointment.status in ('requested', 'confirmed')
-      )`,
-      )
-      .orderBy('slot.starts_at', 'asc')
-      .limit(25)
-      .execute();
+    const base = this.publishedAppointmentServicesQuery(
+      this.database.client,
+      bookable,
+    );
+    const [countRow, services] = await Promise.all([
+      base
+        .select((expression) =>
+          expression.fn.countAll<string>().as('total_count'),
+        )
+        .executeTakeFirst(),
+      base
+        .select([
+          'service.id',
+          'service.patient_facing_name',
+          'service.duration_minutes',
+          'service.allows_any_practitioner',
+          'specialty.id as specialty_id',
+          'specialty.name as specialty_name',
+          'facility.id as facility_id',
+          'facility.name as facility_name',
+          'facility.timezone as facility_timezone',
+        ])
+        .orderBy('service.patient_facing_name', 'asc')
+        .orderBy('service.id', 'asc')
+        .limit(pageSize)
+        .offset((page - 1) * pageSize)
+        .execute(),
+    ]);
 
     return {
       practiceName: bookable.practiceName,
       timezone: bookable.timezone,
+      page,
+      pageSize,
+      total: databaseCount(countRow?.total_count),
+      services: services.map((service) =>
+        this.toPatientAppointmentServiceView(service),
+      ),
+    };
+  }
+
+  async listPractitionerOptions(
+    session: PatientPortalSessionContext,
+    query: PatientAppointmentPractitionerOptionsQuery,
+  ): Promise<PatientAppointmentPractitionerOptionsResponse> {
+    const { page, pageSize } = this.discoveryPage(query);
+    const context = this.appointmentContext(session);
+    const bookable = await this.resolveBookablePracticeForContext(
+      this.database.client,
+      context,
+      session.patientPortalIdentityId,
+      session.applicationUserId,
+    );
+    if (!bookable) throw new NotFoundException(UNAVAILABLE_DISCOVERY_MESSAGE);
+
+    const service = await this.findPublishedAppointmentService(
+      this.database.client,
+      bookable,
+      query.appointmentServiceId,
+    );
+    if (!service) throw new NotFoundException(UNAVAILABLE_DISCOVERY_MESSAGE);
+
+    const base = this.publishedPractitionerOptionsQuery(
+      this.database.client,
+      bookable,
+      service.id,
+    );
+    const [countRow, options] = await Promise.all([
+      base
+        .select((expression) =>
+          expression.fn.countAll<string>().as('total_count'),
+        )
+        .executeTakeFirst(),
+      base
+        .select([
+          'service_assignment.id',
+          'practitioner.display_name',
+          'practitioner.professional_title',
+        ])
+        .orderBy('practitioner.display_name', 'asc')
+        .orderBy('practitioner.professional_title', 'asc')
+        .orderBy('service_assignment.id', 'asc')
+        .limit(pageSize)
+        .offset((page - 1) * pageSize)
+        .execute(),
+    ]);
+
+    return {
+      practiceName: bookable.practiceName,
+      timezone: bookable.timezone,
+      page,
+      pageSize,
+      total: databaseCount(countRow?.total_count),
+      practitionerOptions: options.map((option) =>
+        this.toPatientAppointmentPractitionerOptionView(option),
+      ),
+    };
+  }
+
+  async listAvailability(
+    session: PatientPortalSessionContext,
+    query: PatientAppointmentAvailabilityQuery = {
+      page: DEFAULT_DISCOVERY_PAGE,
+      pageSize: DEFAULT_DISCOVERY_PAGE_SIZE,
+    },
+  ): Promise<PatientAppointmentAvailabilityResponse> {
+    const { page, pageSize } = this.discoveryPage(query);
+    const context = this.appointmentContext(session);
+    const bookable = await this.resolveBookablePracticeForContext(
+      this.database.client,
+      context,
+      session.patientPortalIdentityId,
+      session.applicationUserId,
+    );
+    if (!bookable) throw new NotFoundException(UNAVAILABLE_DISCOVERY_MESSAGE);
+
+    const selection = await this.resolvePatientAvailabilitySelection(
+      this.database.client,
+      bookable,
+      query,
+    );
+
+    const now = new Date();
+    let base = this.availablePatientAppointmentSlotsQuery(
+      this.database.client,
+      bookable,
+      now,
+    );
+    if (selection.kind === 'named') {
+      base = base
+        .where('service.id', '=', selection.service.id)
+        .where('service_assignment.id', '=', selection.practitionerOption.id);
+    } else if (selection.kind === 'any') {
+      base = base
+        .where('service.id', '=', selection.service.id)
+        .where('service.allows_any_practitioner', '=', true);
+    }
+
+    const [countRow, slots] = await Promise.all([
+      base
+        .select((expression) =>
+          expression.fn.countAll<string>().as('total_count'),
+        )
+        .executeTakeFirst(),
+      base
+        .select([
+          'slot.id',
+          'slot.starts_at',
+          'slot.ends_at',
+          'service.id as appointment_service_id',
+          'service.patient_facing_name',
+          'service.duration_minutes',
+          'service.allows_any_practitioner',
+          'specialty.id as specialty_id',
+          'specialty.name as specialty_name',
+          'facility.id as facility_id',
+          'facility.name as facility_name',
+          'facility.timezone as facility_timezone',
+          'service_assignment.id as practitioner_option_id',
+          'practitioner.display_name as practitioner_display_name',
+          'practitioner.professional_title as practitioner_professional_title',
+        ])
+        .orderBy('slot.starts_at', 'asc')
+        .orderBy('service_assignment.id', 'asc')
+        .orderBy('slot.id', 'asc')
+        .limit(pageSize)
+        .offset((page - 1) * pageSize)
+        .execute(),
+    ]);
+
+    return {
+      practiceName: bookable.practiceName,
+      timezone: bookable.timezone,
+      page,
+      pageSize,
+      total: databaseCount(countRow?.total_count),
       slots: slots.map((slot) => ({
         slotId: slot.id,
         startsAt: slot.starts_at.toISOString(),
         endsAt: slot.ends_at.toISOString(),
+        service: this.toPatientAppointmentServiceView({
+          id: slot.appointment_service_id,
+          patient_facing_name: slot.patient_facing_name,
+          duration_minutes: slot.duration_minutes,
+          allows_any_practitioner: slot.allows_any_practitioner,
+          specialty_id: slot.specialty_id,
+          specialty_name: slot.specialty_name,
+          facility_id: slot.facility_id,
+          facility_name: slot.facility_name,
+          facility_timezone: slot.facility_timezone,
+        }),
+        practitionerOption: this.toPatientAppointmentPractitionerOptionView({
+          id: slot.practitioner_option_id,
+          display_name: slot.practitioner_display_name,
+          professional_title: slot.practitioner_professional_title,
+        }),
       })),
     };
   }
@@ -1413,6 +1543,465 @@ export class PatientAppointmentsService {
         canCancel,
         canReschedule,
       },
+    };
+  }
+
+  private discoveryPage(query: Partial<PatientAppointmentPageQuery>): {
+    page: number;
+    pageSize: number;
+  } {
+    const page = query.page ?? DEFAULT_DISCOVERY_PAGE;
+    const pageSize = query.pageSize ?? DEFAULT_DISCOVERY_PAGE_SIZE;
+    if (
+      !Number.isSafeInteger(page) ||
+      page < 1 ||
+      !Number.isSafeInteger(pageSize) ||
+      pageSize < 1 ||
+      pageSize > MAX_DISCOVERY_PAGE_SIZE ||
+      !Number.isSafeInteger((page - 1) * pageSize)
+    ) {
+      throw new BadRequestException(
+        'Appointment discovery pagination is invalid.',
+      );
+    }
+    return { page, pageSize };
+  }
+
+  private publishedAppointmentServicesQuery(
+    database: DatabaseExecutor,
+    practice: BookablePractice,
+  ) {
+    return database
+      .selectFrom('appointment_services as service')
+      .innerJoin('facilities as facility', (join) =>
+        join
+          .onRef('facility.id', '=', 'service.facility_id')
+          .onRef('facility.tenant_id', '=', 'service.tenant_id')
+          .onRef('facility.organization_id', '=', 'service.organization_id'),
+      )
+      .innerJoin('specialties as specialty', (join) =>
+        join
+          .onRef('specialty.id', '=', 'service.specialty_id')
+          .onRef('specialty.tenant_id', '=', 'service.tenant_id')
+          .onRef('specialty.organization_id', '=', 'service.organization_id'),
+      )
+      .where('service.tenant_id', '=', practice.tenantId)
+      .where('service.organization_id', '=', practice.organizationId)
+      .where('service.status', '=', 'active')
+      .where('service.is_synthetic', '=', true)
+      .where('specialty.status', '=', 'active')
+      .where('specialty.is_synthetic', '=', true)
+      .where('facility.is_synthetic', '=', true)
+      .where((expression) =>
+        expression.exists(
+          expression
+            .selectFrom(
+              'practitioner_service_assignments as service_assignment',
+            )
+            .innerJoin(
+              'practitioner_facility_assignments as facility_assignment',
+              (join) =>
+                join
+                  .onRef(
+                    'facility_assignment.id',
+                    '=',
+                    'service_assignment.practitioner_facility_assignment_id',
+                  )
+                  .onRef(
+                    'facility_assignment.tenant_id',
+                    '=',
+                    'service_assignment.tenant_id',
+                  )
+                  .onRef(
+                    'facility_assignment.organization_id',
+                    '=',
+                    'service_assignment.organization_id',
+                  )
+                  .onRef(
+                    'facility_assignment.facility_id',
+                    '=',
+                    'service_assignment.facility_id',
+                  )
+                  .onRef(
+                    'facility_assignment.practitioner_id',
+                    '=',
+                    'service_assignment.practitioner_id',
+                  ),
+            )
+            .innerJoin('practitioners as practitioner', (join) =>
+              join
+                .onRef(
+                  'practitioner.id',
+                  '=',
+                  'service_assignment.practitioner_id',
+                )
+                .onRef(
+                  'practitioner.tenant_id',
+                  '=',
+                  'service_assignment.tenant_id',
+                ),
+            )
+            .select(sql`1`.as('one'))
+            .whereRef(
+              'service_assignment.appointment_service_id',
+              '=',
+              'service.id',
+            )
+            .whereRef('service_assignment.tenant_id', '=', 'service.tenant_id')
+            .whereRef(
+              'service_assignment.organization_id',
+              '=',
+              'service.organization_id',
+            )
+            .whereRef(
+              'service_assignment.facility_id',
+              '=',
+              'service.facility_id',
+            )
+            .where('service_assignment.status', '=', 'active')
+            .where('service_assignment.is_synthetic', '=', true)
+            .where('facility_assignment.status', '=', 'active')
+            .where('facility_assignment.is_synthetic', '=', true)
+            .where('practitioner.status', '=', 'active')
+            .where('practitioner.is_synthetic', '=', true),
+        ),
+      );
+  }
+
+  private publishedPractitionerOptionsQuery(
+    database: DatabaseExecutor,
+    practice: BookablePractice,
+    appointmentServiceId: string,
+  ) {
+    return database
+      .selectFrom('practitioner_service_assignments as service_assignment')
+      .innerJoin('appointment_services as service', (join) =>
+        join
+          .onRef('service.id', '=', 'service_assignment.appointment_service_id')
+          .onRef('service.tenant_id', '=', 'service_assignment.tenant_id')
+          .onRef(
+            'service.organization_id',
+            '=',
+            'service_assignment.organization_id',
+          )
+          .onRef('service.facility_id', '=', 'service_assignment.facility_id'),
+      )
+      .innerJoin('specialties as specialty', (join) =>
+        join
+          .onRef('specialty.id', '=', 'service.specialty_id')
+          .onRef('specialty.tenant_id', '=', 'service.tenant_id')
+          .onRef('specialty.organization_id', '=', 'service.organization_id'),
+      )
+      .innerJoin('facilities as facility', (join) =>
+        join
+          .onRef('facility.id', '=', 'service_assignment.facility_id')
+          .onRef('facility.tenant_id', '=', 'service_assignment.tenant_id')
+          .onRef(
+            'facility.organization_id',
+            '=',
+            'service_assignment.organization_id',
+          ),
+      )
+      .innerJoin(
+        'practitioner_facility_assignments as facility_assignment',
+        (join) =>
+          join
+            .onRef(
+              'facility_assignment.id',
+              '=',
+              'service_assignment.practitioner_facility_assignment_id',
+            )
+            .onRef(
+              'facility_assignment.tenant_id',
+              '=',
+              'service_assignment.tenant_id',
+            )
+            .onRef(
+              'facility_assignment.organization_id',
+              '=',
+              'service_assignment.organization_id',
+            )
+            .onRef(
+              'facility_assignment.facility_id',
+              '=',
+              'service_assignment.facility_id',
+            )
+            .onRef(
+              'facility_assignment.practitioner_id',
+              '=',
+              'service_assignment.practitioner_id',
+            ),
+      )
+      .innerJoin('practitioners as practitioner', (join) =>
+        join
+          .onRef('practitioner.id', '=', 'service_assignment.practitioner_id')
+          .onRef('practitioner.tenant_id', '=', 'service_assignment.tenant_id'),
+      )
+      .where('service_assignment.tenant_id', '=', practice.tenantId)
+      .where('service_assignment.organization_id', '=', practice.organizationId)
+      .where(
+        'service_assignment.appointment_service_id',
+        '=',
+        appointmentServiceId,
+      )
+      .where('service_assignment.status', '=', 'active')
+      .where('service_assignment.is_synthetic', '=', true)
+      .where('facility_assignment.status', '=', 'active')
+      .where('facility_assignment.is_synthetic', '=', true)
+      .where('practitioner.status', '=', 'active')
+      .where('practitioner.is_synthetic', '=', true)
+      .where('service.status', '=', 'active')
+      .where('service.is_synthetic', '=', true)
+      .where('specialty.status', '=', 'active')
+      .where('specialty.is_synthetic', '=', true)
+      .where('facility.is_synthetic', '=', true);
+  }
+
+  private availablePatientAppointmentSlotsQuery(
+    database: DatabaseExecutor,
+    practice: BookablePractice,
+    now: Date,
+  ) {
+    return database
+      .selectFrom('patient_portal_appointment_slots as slot')
+      .innerJoin('facilities as facility', (join) =>
+        join
+          .onRef('facility.id', '=', 'slot.facility_id')
+          .onRef('facility.tenant_id', '=', 'slot.tenant_id')
+          .onRef('facility.organization_id', '=', 'slot.organization_id'),
+      )
+      .innerJoin(
+        'practitioner_facility_assignments as facility_assignment',
+        (join) =>
+          join
+            .onRef(
+              'facility_assignment.id',
+              '=',
+              'slot.practitioner_facility_assignment_id',
+            )
+            .onRef('facility_assignment.tenant_id', '=', 'slot.tenant_id')
+            .onRef(
+              'facility_assignment.organization_id',
+              '=',
+              'slot.organization_id',
+            )
+            .onRef('facility_assignment.facility_id', '=', 'slot.facility_id')
+            .onRef(
+              'facility_assignment.practitioner_id',
+              '=',
+              'slot.practitioner_id',
+            ),
+      )
+      .innerJoin('practitioners as practitioner', (join) =>
+        join
+          .onRef('practitioner.id', '=', 'slot.practitioner_id')
+          .onRef('practitioner.tenant_id', '=', 'slot.tenant_id'),
+      )
+      .innerJoin('appointment_services as service', (join) =>
+        join
+          .onRef('service.id', '=', 'slot.appointment_service_id')
+          .onRef('service.tenant_id', '=', 'slot.tenant_id')
+          .onRef('service.organization_id', '=', 'slot.organization_id')
+          .onRef('service.facility_id', '=', 'slot.facility_id'),
+      )
+      .innerJoin('specialties as specialty', (join) =>
+        join
+          .onRef('specialty.id', '=', 'service.specialty_id')
+          .onRef('specialty.tenant_id', '=', 'service.tenant_id')
+          .onRef('specialty.organization_id', '=', 'service.organization_id'),
+      )
+      .innerJoin(
+        'practitioner_service_assignments as service_assignment',
+        (join) =>
+          join
+            .onRef(
+              'service_assignment.id',
+              '=',
+              'slot.practitioner_service_assignment_id',
+            )
+            .onRef('service_assignment.tenant_id', '=', 'slot.tenant_id')
+            .onRef(
+              'service_assignment.organization_id',
+              '=',
+              'slot.organization_id',
+            )
+            .onRef('service_assignment.facility_id', '=', 'slot.facility_id')
+            .onRef(
+              'service_assignment.practitioner_facility_assignment_id',
+              '=',
+              'slot.practitioner_facility_assignment_id',
+            )
+            .onRef(
+              'service_assignment.practitioner_id',
+              '=',
+              'slot.practitioner_id',
+            )
+            .onRef(
+              'service_assignment.appointment_service_id',
+              '=',
+              'slot.appointment_service_id',
+            ),
+      )
+      .where('slot.bookable_practice_id', '=', practice.bookablePracticeId)
+      .where('slot.tenant_id', '=', practice.tenantId)
+      .where('slot.organization_id', '=', practice.organizationId)
+      .where('slot.status', '=', 'available')
+      .where('slot.withdrawal_pending', '=', false)
+      .where('slot.is_synthetic', '=', true)
+      .where('slot.starts_at', '>', now)
+      .where(
+        sql<boolean>`
+          slot.source_local_date >=
+            (${now}::timestamptz at time zone facility.timezone)::date
+          and slot.source_local_date <
+            ((${now}::timestamptz at time zone facility.timezone)::date + 56)
+        `,
+      )
+      .where('facility.is_synthetic', '=', true)
+      .where('facility_assignment.status', '=', 'active')
+      .where('facility_assignment.is_synthetic', '=', true)
+      .where('practitioner.status', '=', 'active')
+      .where('practitioner.is_synthetic', '=', true)
+      .where('specialty.status', '=', 'active')
+      .where('specialty.is_synthetic', '=', true)
+      .where('service.status', '=', 'active')
+      .where('service.is_synthetic', '=', true)
+      .where('service_assignment.status', '=', 'active')
+      .where('service_assignment.is_synthetic', '=', true)
+      .where(
+        sql<boolean>`not exists (
+          select 1
+          from patient_portal_appointments appointment
+          where appointment.appointment_slot_id = slot.id
+            and appointment.status in ('requested', 'confirmed')
+        )`,
+      );
+  }
+
+  private async findPublishedAppointmentService(
+    database: DatabaseExecutor,
+    practice: BookablePractice,
+    appointmentServiceId: string,
+  ): Promise<PublishedAppointmentServiceRecord | null> {
+    const service = await this.publishedAppointmentServicesQuery(
+      database,
+      practice,
+    )
+      .select([
+        'service.id',
+        'service.patient_facing_name',
+        'service.duration_minutes',
+        'service.allows_any_practitioner',
+        'specialty.id as specialty_id',
+        'specialty.name as specialty_name',
+        'facility.id as facility_id',
+        'facility.name as facility_name',
+        'facility.timezone as facility_timezone',
+      ])
+      .where('service.id', '=', appointmentServiceId)
+      .executeTakeFirst();
+    return service ?? null;
+  }
+
+  private async findPublishedPractitionerOption(
+    database: DatabaseExecutor,
+    practice: BookablePractice,
+    appointmentServiceId: string,
+    practitionerOptionId: string,
+  ): Promise<PublishedPractitionerOptionRecord | null> {
+    const option = await this.publishedPractitionerOptionsQuery(
+      database,
+      practice,
+      appointmentServiceId,
+    )
+      .select([
+        'service_assignment.id',
+        'practitioner.display_name',
+        'practitioner.professional_title',
+      ])
+      .where('service_assignment.id', '=', practitionerOptionId)
+      .executeTakeFirst();
+    return option ?? null;
+  }
+
+  private async resolvePatientAvailabilitySelection(
+    database: DatabaseExecutor,
+    practice: BookablePractice,
+    query: PatientAppointmentAvailabilityQuery,
+  ): Promise<PatientAvailabilitySelection> {
+    const hasService = query.appointmentServiceId !== undefined;
+    const hasMode = query.selectionMode !== undefined;
+    const hasOption = query.practitionerOptionId !== undefined;
+    if (!hasService && !hasMode && !hasOption) {
+      return { kind: 'compatibility' };
+    }
+    if (
+      !hasService ||
+      !hasMode ||
+      (query.selectionMode !== 'named' && query.selectionMode !== 'any')
+    ) {
+      throw new BadRequestException(INVALID_DISCOVERY_SELECTION_MESSAGE);
+    }
+
+    const service = await this.findPublishedAppointmentService(
+      database,
+      practice,
+      query.appointmentServiceId!,
+    );
+    if (!service) throw new NotFoundException(UNAVAILABLE_DISCOVERY_MESSAGE);
+
+    if (query.selectionMode === 'any') {
+      if (hasOption) {
+        throw new BadRequestException(INVALID_DISCOVERY_SELECTION_MESSAGE);
+      }
+      if (!service.allows_any_practitioner) {
+        throw new NotFoundException(UNAVAILABLE_DISCOVERY_MESSAGE);
+      }
+      return { kind: 'any', service };
+    }
+    if (!hasOption) {
+      throw new BadRequestException(INVALID_DISCOVERY_SELECTION_MESSAGE);
+    }
+
+    const practitionerOption = await this.findPublishedPractitionerOption(
+      database,
+      practice,
+      service.id,
+      query.practitionerOptionId!,
+    );
+    if (!practitionerOption) {
+      throw new NotFoundException(UNAVAILABLE_DISCOVERY_MESSAGE);
+    }
+    return { kind: 'named', service, practitionerOption };
+  }
+
+  private toPatientAppointmentServiceView(
+    service: PublishedAppointmentServiceRecord,
+  ): PatientAppointmentServiceView {
+    return {
+      appointmentServiceId: service.id,
+      patientFacingName: service.patient_facing_name,
+      durationMinutes: service.duration_minutes,
+      allowsAnyPractitioner: service.allows_any_practitioner,
+      specialty: {
+        specialtyId: service.specialty_id,
+        name: service.specialty_name,
+      },
+      facility: {
+        facilityId: service.facility_id,
+        name: service.facility_name,
+        timezone: service.facility_timezone,
+      },
+    };
+  }
+
+  private toPatientAppointmentPractitionerOptionView(
+    option: PublishedPractitionerOptionRecord,
+  ): PatientAppointmentPractitionerOptionView {
+    return {
+      practitionerOptionId: option.id,
+      displayName: option.display_name,
+      professionalTitle: option.professional_title,
     };
   }
 

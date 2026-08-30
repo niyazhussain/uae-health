@@ -169,6 +169,29 @@ synthetic data and SHALL never disclose practitioner login identifiers, contact
 details, licence data, private assignments, or another patient's booking.
 Every offered slot SHALL include its safe practitioner, specialty or service,
 facility, facility timezone, and UTC appointment time for patient review.
+Discovery SHALL derive its practice scope only from the current authenticated
+patient session and SHALL expose a practice/service-local opaque practitioner
+option rather than a tenant-global practitioner or workforce identifier.
+Services, practitioner options, and slots SHALL use bounded deterministic
+pagination with a maximum page size of 100.
+
+Filtered availability SHALL require an appointment service and an explicit
+`named` or `any` selection mode. Named selection SHALL require one eligible
+practitioner option for that exact service; any-practitioner selection SHALL
+forbid an option identifier and SHALL be available only when the service
+explicitly permits it. A zero-filter request MAY retain the existing concrete
+slot overview for additive client compatibility, but SHALL NOT be treated as an
+implicit any-practitioner choice.
+
+#### Scenario: Discover safe services and practitioner options
+
+- **WHEN** a patient lists services and eligible practitioner options in the current selected practice context
+- **THEN** the system returns only complete active synthetic chains in that exact practice and facility with approved labels and local opaque option identifiers, even when a valid option currently has no open slot
+
+#### Scenario: Preserve the existing concrete-slot overview
+
+- **WHEN** the existing patient client requests availability without provider filters
+- **THEN** the system returns a bounded page of concrete provider-aware slots while preserving each legacy slot identifier and UTC start/end field
 
 #### Scenario: Choose a named doctor
 
@@ -179,6 +202,16 @@ facility, facility timezone, and UTC appointment time for patient review.
 
 - **WHEN** a service permits “any available doctor” and the patient selects that option
 - **THEN** the API returns available concrete slots with the assigned doctor's safe summary so the patient can confirm the actual practitioner before booking
+
+#### Scenario: Reject incomplete or cross-scope discovery filters
+
+- **WHEN** a patient omits the explicit selection mode, mixes named and any-practitioner inputs, guesses an inactive or sibling service/option, or uses an option for another service
+- **THEN** the system returns a generic safe validation or unavailable response without echoing the target or disclosing any label
+
+#### Scenario: Return an empty valid selection
+
+- **WHEN** an active in-scope service and practitioner selection currently has no open future slot
+- **THEN** the system returns a successful empty availability page without weakening the provider or practice filter
 
 #### Scenario: Hide another practice assignment
 

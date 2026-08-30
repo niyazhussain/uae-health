@@ -226,6 +226,62 @@ This avoids a later asynchronous assignment race and gives the patient clear
 information about the booked doctor. Automated provider reassignment is
 deferred.
 
+Task 4.1 adds only additive, context-scoped discovery reads. It introduces
+`GET /v1/patient-appointments/services` and
+`GET /v1/patient-appointments/practitioner-options?appointmentServiceId=<uuid>`,
+and enriches the existing `GET /v1/patient-appointments/availability` response.
+Every route derives the patient identity, tenant, practice, and bookable
+practice from the current server-selected practice or appointment-onboarding
+relationship. The browser never supplies those scope identifiers.
+
+Patient-facing doctor selection uses a neutral `practitionerOptionId` backed by
+the exact active practitioner-service assignment. It does not expose or accept
+the tenant-global practitioner identifier, application-user link, facility
+assignment identifier, or another service/practice assignment. The option is
+therefore local to one exact practice, facility, and service and cannot be used
+as a stable cross-practice correlation key. Booking continues to accept only a
+concrete slot identifier.
+
+A filtered availability request supplies an appointment service plus an
+explicit `selectionMode=named|any`. `named` also requires one exact
+`practitionerOptionId`; `any` forbids an option identifier and is available only
+when the locked service permits any practitioner. Missing, mixed, inactive,
+wrong-service, or sibling-scope targets fail generically without echoing a
+label or identifier. A valid selection with no open capacity returns an empty
+page. The zero-filter availability request remains as a temporary additive
+compatibility view of concrete slots across the selected practice; it is not an
+implicit any-doctor selection and may include named-only services.
+
+Service discovery returns an active synthetic service and specialty only when
+at least one complete active synthetic practitioner eligibility exists in the
+same exact practice facility. Practitioner options remain visible while that
+eligibility is active even if no slot is currently open, allowing an explicit
+empty-availability state. Concrete slots additionally require a future,
+available, synthetic, non-pending row with the exact provider bundle and no
+`requested` or `confirmed` appointment. Materialized slot state remains the
+availability authority; discovery does not dynamically reinterpret template
+or exception state.
+
+Responses use a strict allowlist. A service exposes its opaque identifier,
+patient-facing name, duration, any-practitioner setting, safe specialty opaque
+identifier and label, and exact facility opaque identifier, name, and timezone.
+A practitioner option exposes only its local option identifier, display name,
+and professional title. Every slot retains the
+legacy `slotId`, `startsAt`, and `endsAt` fields and adds those safe service,
+specialty, facility, and concrete-doctor summaries. Internal codes, statuses,
+source template/generation evidence, patient or appointment identifiers,
+login/contact/licence data, and sibling assignments are excluded. The legacy
+top-level timezone remains temporarily for the existing client; each facility
+timezone is authoritative for its offered service and slot.
+
+All three lists use page-number pagination with deterministic opaque-ID
+tie-breaks. Page size defaults to 25 and is capped at 100. Services order by
+patient-facing name then service identifier; options order by display name,
+professional title, then option identifier; slots order by UTC start, option
+identifier, then slot identifier. Availability starts strictly after one
+server-captured instant and can expose only rows inside the server-owned
+materialized publication horizon.
+
 ### 5. Server session context remains the only patient scope authority
 
 Patient discovery may run from restricted onboarding only for practices that

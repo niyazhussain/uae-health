@@ -18,7 +18,7 @@
 
 ## 4. Patient provider-aware API
 
-- [ ] 4.1 Extend safe patient discovery with practice services, eligible practitioner summaries, named-doctor filtering, any-available-doctor selection, and concrete provider-aware slots.
+- [x] 4.1 Extend safe patient discovery with practice services, eligible practitioner summaries, named-doctor filtering, any-available-doctor selection, and concrete provider-aware slots.
 - [ ] 4.2 Extend booking to persist a concrete practitioner, service, facility, and slot while retaining session-derived practice scope, durable idempotency replay, and double-booking protection.
 - [ ] 4.3 Extend patient cancellation and rescheduling so an explicit concrete replacement slot controls any provider change and stale versions fail safely.
 

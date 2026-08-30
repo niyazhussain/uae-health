@@ -7,12 +7,15 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import {
+  ApiBadRequestResponse,
   ApiCookieAuth,
   ApiCreatedResponse,
   ApiForbiddenResponse,
+  ApiNotFoundResponse,
   ApiOkResponse,
   ApiOperation,
   ApiTags,
@@ -25,9 +28,19 @@ import { PatientPortalSessionAuthenticationGuard } from '../patient-portal-auth/
 import { CancelPatientAppointmentDto } from './dto/cancel-patient-appointment.dto.js';
 import { CreatePatientAppointmentRelationshipDto } from './dto/create-patient-appointment-relationship.dto.js';
 import { CreatePatientAppointmentDto } from './dto/create-patient-appointment.dto.js';
+import {
+  PatientAppointmentAvailabilityQueryDto,
+  PatientAppointmentPageQueryDto,
+  PatientAppointmentPractitionerOptionsQueryDto,
+} from './dto/patient-appointment-discovery-query.dto.js';
 import { ReschedulePatientAppointmentDto } from './dto/reschedule-patient-appointment.dto.js';
 import { PatientAppointmentsService } from './patient-appointments.service.js';
-import type { PatientAppointmentView } from './patient-appointments.types.js';
+import type {
+  PatientAppointmentAvailabilityResponse,
+  PatientAppointmentPractitionerOptionsResponse,
+  PatientAppointmentServicesResponse,
+  PatientAppointmentView,
+} from './patient-appointments.types.js';
 import { PatientPortalAppointmentContextGuard } from './patient-portal-appointment-context.guard.js';
 
 @ApiTags('Patient appointments')
@@ -78,6 +91,53 @@ export class PatientAppointmentsController {
     );
   }
 
+  @Get('services')
+  @Header('Cache-Control', 'no-store')
+  @UseGuards(
+    PatientPortalSessionAuthenticationGuard,
+    PatientPortalAppointmentContextGuard,
+  )
+  @ApiOperation({
+    summary:
+      'List safe published appointment services for the current patient context',
+  })
+  @ApiOkResponse({ description: 'A bounded page of safe service summaries.' })
+  @ApiForbiddenResponse({
+    description: 'A practice or appointment context is required.',
+  })
+  services(
+    @CurrentPatientPortalSession() session: PatientPortalSessionContext,
+    @Query() query: PatientAppointmentPageQueryDto,
+  ): Promise<PatientAppointmentServicesResponse> {
+    return this.appointments.listServices(session, query);
+  }
+
+  @Get('practitioner-options')
+  @Header('Cache-Control', 'no-store')
+  @UseGuards(
+    PatientPortalSessionAuthenticationGuard,
+    PatientPortalAppointmentContextGuard,
+  )
+  @ApiOperation({
+    summary:
+      'List safe practice-local practitioner options for one appointment service',
+  })
+  @ApiOkResponse({
+    description: 'A bounded page of safe practitioner option summaries.',
+  })
+  @ApiForbiddenResponse({
+    description: 'A practice or appointment context is required.',
+  })
+  @ApiNotFoundResponse({
+    description: 'The service is unavailable in the current patient context.',
+  })
+  practitionerOptions(
+    @CurrentPatientPortalSession() session: PatientPortalSessionContext,
+    @Query() query: PatientAppointmentPractitionerOptionsQueryDto,
+  ): Promise<PatientAppointmentPractitionerOptionsResponse> {
+    return this.appointments.listPractitionerOptions(session, query);
+  }
+
   @Get('availability')
   @Header('Cache-Control', 'no-store')
   @UseGuards(
@@ -91,14 +151,17 @@ export class PatientAppointmentsController {
   @ApiForbiddenResponse({
     description: 'A practice or appointment context is required.',
   })
+  @ApiBadRequestResponse({
+    description: 'The provider selection is incomplete or contradictory.',
+  })
+  @ApiNotFoundResponse({
+    description: 'The selected service or practitioner option is unavailable.',
+  })
   availability(
     @CurrentPatientPortalSession() session: PatientPortalSessionContext,
-  ): Promise<{
-    practiceName: string;
-    timezone: string;
-    slots: Array<{ slotId: string; startsAt: string; endsAt: string }>;
-  }> {
-    return this.appointments.listAvailability(session);
+    @Query() query: PatientAppointmentAvailabilityQueryDto,
+  ): Promise<PatientAppointmentAvailabilityResponse> {
+    return this.appointments.listAvailability(session, query);
   }
 
   @Get()

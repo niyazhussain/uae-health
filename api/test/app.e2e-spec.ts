@@ -304,6 +304,20 @@ describe('AppController (e2e)', () => {
       });
   });
 
+  it.each([
+    '/v1/patient-appointments/services',
+    '/v1/patient-appointments/practitioner-options?appointmentServiceId=70000000-0000-4000-8000-000000000001',
+    '/v1/patient-appointments/availability',
+  ])('%s rejects an unauthenticated discovery read', (path) => {
+    const server = app.getHttpServer() as Server;
+
+    return request(server).get(path).expect(401).expect({
+      message: 'Active patient portal session required.',
+      error: 'Unauthorized',
+      statusCode: 401,
+    });
+  });
+
   afterEach(async () => {
     await app.close();
   });
