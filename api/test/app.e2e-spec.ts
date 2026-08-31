@@ -333,6 +333,33 @@ describe('AppController (e2e)', () => {
       });
   });
 
+  it.each([
+    {
+      path: '/v1/patient-appointments/70000000-0000-4000-8000-000000000001/cancellation',
+      body: { version: 1 },
+    },
+    {
+      path: '/v1/patient-appointments/70000000-0000-4000-8000-000000000001/reschedule',
+      body: {
+        version: 1,
+        slotId: '70000000-0000-4000-8000-000000000002',
+      },
+    },
+  ])('$path rejects an unauthenticated patient change', ({ path, body }) => {
+    const server = app.getHttpServer() as Server;
+
+    return request(server)
+      .post(path)
+      .set('Idempotency-Key', 'provider-aware-e2e-patient-change-key')
+      .send(body)
+      .expect(401)
+      .expect({
+        message: 'Active patient portal session required.',
+        error: 'Unauthorized',
+        statusCode: 401,
+      });
+  });
+
   afterEach(async () => {
     await app.close();
   });

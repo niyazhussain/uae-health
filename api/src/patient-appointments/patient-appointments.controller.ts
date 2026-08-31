@@ -218,11 +218,14 @@ export class PatientAppointmentsController {
   }
 
   @Post(':appointmentId/cancellation')
+  @Header('Cache-Control', 'no-store')
   @UseGuards(
     PatientPortalSessionAuthenticationGuard,
     PatientPortalAppointmentContextGuard,
   )
-  @ApiOperation({ summary: 'Cancel one current-context appointment request' })
+  @ApiOperation({
+    summary: 'Cancel one future current-context appointment',
+  })
   cancelAppointment(
     @CurrentPatientPortalSession() session: PatientPortalSessionContext,
     @Param('appointmentId', new ParseUUIDPipe()) appointmentId: string,
@@ -242,12 +245,14 @@ export class PatientAppointmentsController {
   }
 
   @Post(':appointmentId/reschedule')
+  @Header('Cache-Control', 'no-store')
   @UseGuards(
     PatientPortalSessionAuthenticationGuard,
     PatientPortalAppointmentContextGuard,
   )
   @ApiOperation({
-    summary: 'Reschedule one current-context appointment request',
+    summary:
+      'Reschedule one future current-context appointment to a concrete slot',
   })
   rescheduleAppointment(
     @CurrentPatientPortalSession() session: PatientPortalSessionContext,

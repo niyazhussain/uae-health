@@ -1143,8 +1143,8 @@ describeWithDatabase('workforce appointment queue repository', () => {
         expect.objectContaining({
           appointmentId: confirmationTarget.id,
           status: 'confirmed',
-          canCancel: false,
-          canReschedule: false,
+          canCancel: true,
+          canReschedule: true,
         }),
       ],
     });

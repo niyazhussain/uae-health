@@ -4106,17 +4106,6 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
         effectiveFrom: sourceLocalDate,
       },
     );
-    const rescheduleProviderScope = await insertSyntheticProviderTestScope(
-      database,
-      {
-        tenantId: tenant.id,
-        organizationId: firstPractice.id,
-        suffix: 'A2',
-        isoWeekday,
-        localStartMinute: 600,
-        effectiveFrom: sourceLocalDate,
-      },
-    );
     const secondProviderScope = await insertSyntheticProviderTestScope(
       database,
       {
@@ -4173,7 +4162,7 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
           tenant_id: tenant.id,
           organization_id: firstPractice.id,
           ...providerSlotBundle(
-            rescheduleProviderScope,
+            firstProviderScope,
             rescheduleSlotStart,
             rescheduleSlotEnd,
           ),
@@ -4553,13 +4542,13 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
         .where('id', '=', requested.appointment.appointmentId)
         .executeTakeFirstOrThrow(),
     ).resolves.toEqual({
-      facility_id: rescheduleProviderScope.facilityId,
+      facility_id: firstProviderScope.facilityId,
       practitioner_facility_assignment_id:
-        rescheduleProviderScope.practitionerFacilityAssignmentId,
+        firstProviderScope.practitionerFacilityAssignmentId,
       practitioner_service_assignment_id:
-        rescheduleProviderScope.practitionerServiceAssignmentId,
-      practitioner_id: rescheduleProviderScope.practitionerId,
-      appointment_service_id: rescheduleProviderScope.appointmentServiceId,
+        firstProviderScope.practitionerServiceAssignmentId,
+      practitioner_id: firstProviderScope.practitionerId,
+      appointment_service_id: firstProviderScope.appointmentServiceId,
     });
 
     await database
@@ -4572,17 +4561,17 @@ describeWithDatabase('identity, authorization, and audit migrations', () => {
       .values({
         tenant_id: tenant.id,
         organization_id: firstPractice.id,
-        facility_id: rescheduleProviderScope.facilityId,
+        facility_id: firstProviderScope.facilityId,
         practitioner_facility_assignment_id:
-          rescheduleProviderScope.practitionerFacilityAssignmentId,
-        practitioner_id: rescheduleProviderScope.practitionerId,
+          firstProviderScope.practitionerFacilityAssignmentId,
+        practitioner_id: firstProviderScope.practitionerId,
         kind: 'practitioner_unavailable',
         is_all_day: false,
         local_starts_at: `${sourceLocalDate} 10:00:00`,
         local_ends_at: `${sourceLocalDate} 10:30:00`,
         starts_at: rescheduleSlotStart,
         ends_at: rescheduleSlotEnd,
-        source_timezone: rescheduleProviderScope.sourceTimezone,
+        source_timezone: firstProviderScope.sourceTimezone,
         status: 'active',
         is_synthetic: true,
       })

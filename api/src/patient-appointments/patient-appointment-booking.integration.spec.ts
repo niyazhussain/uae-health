@@ -80,11 +80,13 @@ const fixture = {
     any: fixtureUuid(31),
     named: fixtureUuid(32),
     sibling: fixtureUuid(33),
+    namedAny: fixtureUuid(45),
   },
   templates: {
     any: fixtureUuid(34),
     named: fixtureUuid(35),
     sibling: fixtureUuid(36),
+    namedAny: fixtureUuid(46),
   },
   slots: {
     equivalentAny: fixtureUuid(37),
@@ -94,6 +96,12 @@ const fixture = {
     auditFailure: fixtureUuid(41),
     beyondHorizon: fixtureUuid(42),
     sibling: fixtureUuid(43),
+    confirmedCancel: fixtureUuid(47),
+    confirmedRescheduleOld: fixtureUuid(48),
+    confirmedRescheduleNewDoctor: fixtureUuid(49),
+    differentServiceOld: fixtureUuid(50),
+    differentServiceTarget: fixtureUuid(51),
+    staleTarget: fixtureUuid(52),
   },
 } as const;
 
@@ -410,6 +418,7 @@ interface ProviderScope {
   serviceAssignmentId: string;
   serviceId: string;
   templateId: string;
+  templateStatus?: 'active' | 'inactive';
 }
 
 const providerScopes = {
@@ -422,6 +431,7 @@ const providerScopes = {
     serviceAssignmentId: fixture.serviceAssignments.any,
     serviceId: fixture.services.any,
     templateId: fixture.templates.any,
+    templateStatus: 'active',
   },
   named: {
     organizationId: fixture.practices.exact,
@@ -432,6 +442,18 @@ const providerScopes = {
     serviceAssignmentId: fixture.serviceAssignments.named,
     serviceId: fixture.services.named,
     templateId: fixture.templates.named,
+    templateStatus: 'active',
+  },
+  namedAny: {
+    organizationId: fixture.practices.exact,
+    facilityId: fixture.facilities.exact,
+    bookablePracticeId: fixture.bookablePractices.exact,
+    practitionerId: fixture.practitioners.named,
+    facilityAssignmentId: fixture.facilityAssignments.named,
+    serviceAssignmentId: fixture.serviceAssignments.namedAny,
+    serviceId: fixture.services.any,
+    templateId: fixture.templates.namedAny,
+    templateStatus: 'inactive',
   },
   sibling: {
     organizationId: fixture.practices.sibling,
@@ -442,6 +464,7 @@ const providerScopes = {
     serviceAssignmentId: fixture.serviceAssignments.sibling,
     serviceId: fixture.services.sibling,
     templateId: fixture.templates.sibling,
+    templateStatus: 'active',
   },
 } satisfies Record<string, ProviderScope>;
 
@@ -605,6 +628,17 @@ async function insertProviderFixture(
         is_synthetic: true,
       },
       {
+        id: fixture.serviceAssignments.namedAny,
+        tenant_id: fixture.tenantId,
+        organization_id: fixture.practices.exact,
+        facility_id: fixture.facilities.exact,
+        practitioner_facility_assignment_id: fixture.facilityAssignments.named,
+        practitioner_id: fixture.practitioners.named,
+        appointment_service_id: fixture.services.any,
+        status: 'active',
+        is_synthetic: true,
+      },
+      {
         id: fixture.serviceAssignments.sibling,
         tenant_id: fixture.tenantId,
         organization_id: fixture.practices.sibling,
@@ -638,7 +672,7 @@ async function insertProviderFixture(
         effective_from: nearDate,
         effective_until: null,
         source_timezone: 'Asia/Dubai',
-        status: 'active' as const,
+        status: scope.templateStatus,
         is_synthetic: true,
       })),
     )
@@ -708,6 +742,36 @@ async function insertSlotFixture(
         fixture.slots.sibling,
         providerScopes.sibling,
         futureInstant(14, 0),
+      ),
+      slotRow(
+        fixture.slots.confirmedCancel,
+        providerScopes.any,
+        futureInstant(15, 0),
+      ),
+      slotRow(
+        fixture.slots.confirmedRescheduleOld,
+        providerScopes.any,
+        futureInstant(16, 0),
+      ),
+      slotRow(
+        fixture.slots.confirmedRescheduleNewDoctor,
+        providerScopes.namedAny,
+        futureInstant(16, 60),
+      ),
+      slotRow(
+        fixture.slots.differentServiceOld,
+        providerScopes.any,
+        futureInstant(17, 0),
+      ),
+      slotRow(
+        fixture.slots.differentServiceTarget,
+        providerScopes.named,
+        futureInstant(17, 60),
+      ),
+      slotRow(
+        fixture.slots.staleTarget,
+        providerScopes.any,
+        futureInstant(18, 0),
       ),
     ])
     .execute();
@@ -1159,6 +1223,324 @@ describeWithDatabase('patient provider-aware booking integration', () => {
         .where('status', 'in', ['requested', 'confirmed'])
         .execute(),
     ).resolves.toHaveLength(1);
+  });
+
+  it('cancels a future confirmed appointment and reconciles its pending provider slot', async () => {
+    const booked = await appointments.createAppointment(
+      onboardingSessionA(),
+      'provider-aware-confirmed-cancel-create-key',
+      fixture.slots.confirmedCancel,
+    );
+    await database
+      .updateTable('patient_portal_appointments')
+      .set({ status: 'confirmed', version: 2, updated_at: new Date() })
+      .where('id', '=', booked.appointment.appointmentId)
+      .execute();
+    await database
+      .updateTable('patient_portal_appointment_slots')
+      .set({ withdrawal_pending: true })
+      .where('id', '=', fixture.slots.confirmedCancel)
+      .execute();
+
+    const key = 'provider-aware-confirmed-cancel-key';
+    const cancelled = await appointments.cancelAppointment(
+      onboardingSessionA(),
+      key,
+      booked.appointment.appointmentId,
+      2,
+    );
+    expectProviderAware(cancelled.appointment);
+    expect(cancelled.appointment).toMatchObject({
+      appointmentId: booked.appointment.appointmentId,
+      status: 'cancelled',
+      version: 3,
+      canCancel: false,
+      canReschedule: false,
+      slotId: fixture.slots.confirmedCancel,
+      service: { appointmentServiceId: fixture.services.any },
+      practitionerOption: {
+        practitionerOptionId: fixture.serviceAssignments.any,
+      },
+    });
+    await expect(
+      appointments.cancelAppointment(
+        onboardingSessionA(),
+        key,
+        booked.appointment.appointmentId,
+        2,
+      ),
+    ).resolves.toEqual(cancelled);
+    const cancelledRow = await database
+      .selectFrom('patient_portal_appointments')
+      .select(['status', 'version', 'cancelled_at'])
+      .where('id', '=', booked.appointment.appointmentId)
+      .executeTakeFirstOrThrow();
+    expect(cancelledRow).toMatchObject({
+      status: 'cancelled',
+      version: 3,
+    });
+    expect(cancelledRow.cancelled_at).toBeInstanceOf(Date);
+    await expect(
+      database
+        .selectFrom('patient_portal_appointment_slots')
+        .select(['status', 'withdrawal_pending'])
+        .where('id', '=', fixture.slots.confirmedCancel)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({ status: 'withdrawn', withdrawal_pending: false });
+    await expect(
+      database
+        .selectFrom('audit_events')
+        .select(['facility_id', 'before_data', 'after_data'])
+        .where('action', '=', 'patient.appointment_cancelled')
+        .where('target_entity_id', '=', booked.appointment.appointmentId)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toMatchObject({
+      facility_id: fixture.facilities.exact,
+      before_data: {
+        status: 'confirmed',
+        version: 2,
+        patientContextKind: 'appointment-onboarding',
+        patientContextId: fixture.relationships.patientA,
+        slotId: fixture.slots.confirmedCancel,
+        appointmentServiceId: fixture.services.any,
+      },
+      after_data: {
+        status: 'cancelled',
+        version: 3,
+        releasedSlotId: fixture.slots.confirmedCancel,
+        releasedSlotDisposition: 'withdrawn',
+      },
+    });
+  });
+
+  it('reschedules a confirmed appointment to an explicit eligible doctor and returns it to requested', async () => {
+    const booked = await appointments.createAppointment(
+      onboardingSessionA(),
+      'provider-aware-confirmed-reschedule-create-key',
+      fixture.slots.confirmedRescheduleOld,
+    );
+    await database
+      .updateTable('patient_portal_appointments')
+      .set({ status: 'confirmed', version: 2, updated_at: new Date() })
+      .where('id', '=', booked.appointment.appointmentId)
+      .execute();
+
+    const key = 'provider-aware-confirmed-reschedule-key';
+    const changed = await appointments.rescheduleAppointment(
+      onboardingSessionA(),
+      key,
+      booked.appointment.appointmentId,
+      fixture.slots.confirmedRescheduleNewDoctor,
+      2,
+    );
+    expectProviderAware(changed.appointment);
+    expect(changed.appointment).toMatchObject({
+      appointmentId: booked.appointment.appointmentId,
+      status: 'requested',
+      version: 3,
+      canCancel: true,
+      canReschedule: true,
+      slotId: fixture.slots.confirmedRescheduleNewDoctor,
+      service: { appointmentServiceId: fixture.services.any },
+      practitionerOption: {
+        practitionerOptionId: fixture.serviceAssignments.namedAny,
+        displayName: 'Dr Named Synthetic',
+      },
+    });
+    await expect(
+      database
+        .selectFrom('patient_portal_appointments')
+        .select([
+          'status',
+          'version',
+          'appointment_slot_id',
+          'facility_id',
+          'practitioner_service_assignment_id',
+          'practitioner_id',
+          'appointment_service_id',
+        ])
+        .where('id', '=', booked.appointment.appointmentId)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({
+      status: 'requested',
+      version: 3,
+      appointment_slot_id: fixture.slots.confirmedRescheduleNewDoctor,
+      facility_id: fixture.facilities.exact,
+      practitioner_service_assignment_id: fixture.serviceAssignments.namedAny,
+      practitioner_id: fixture.practitioners.named,
+      appointment_service_id: fixture.services.any,
+    });
+    await expect(
+      database
+        .selectFrom('patient_portal_appointment_slots')
+        .select(['status', 'withdrawal_pending'])
+        .where('id', '=', fixture.slots.confirmedRescheduleOld)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({ status: 'available', withdrawal_pending: false });
+    await expect(
+      database
+        .selectFrom('audit_events')
+        .select(['facility_id', 'before_data', 'after_data'])
+        .where('action', '=', 'patient.appointment_reschedule_requested')
+        .where('target_entity_id', '=', booked.appointment.appointmentId)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toMatchObject({
+      facility_id: fixture.facilities.exact,
+      before_data: {
+        status: 'confirmed',
+        version: 2,
+        patientContextKind: 'appointment-onboarding',
+        patientContextId: fixture.relationships.patientA,
+        slotId: fixture.slots.confirmedRescheduleOld,
+        practitionerServiceAssignmentId: fixture.serviceAssignments.any,
+        appointmentServiceId: fixture.services.any,
+      },
+      after_data: {
+        status: 'requested',
+        version: 3,
+        slotId: fixture.slots.confirmedRescheduleNewDoctor,
+        practitionerServiceAssignmentId: fixture.serviceAssignments.namedAny,
+        appointmentServiceId: fixture.services.any,
+        releasedSlotId: fixture.slots.confirmedRescheduleOld,
+      },
+    });
+
+    await expect(
+      appointments.rescheduleAppointment(
+        onboardingSessionA(),
+        key,
+        booked.appointment.appointmentId,
+        fixture.slots.confirmedRescheduleNewDoctor,
+        2,
+      ),
+    ).resolves.toEqual(changed);
+    await expect(
+      appointments.rescheduleAppointment(
+        onboardingSessionA(),
+        key,
+        booked.appointment.appointmentId,
+        fixture.slots.staleTarget,
+        2,
+      ),
+    ).rejects.toBeInstanceOf(ConflictException);
+
+    await expect(
+      appointments.rescheduleAppointment(
+        onboardingSessionA(),
+        'provider-aware-stale-reschedule-key',
+        booked.appointment.appointmentId,
+        fixture.slots.staleTarget,
+        2,
+      ),
+    ).rejects.toBeInstanceOf(ConflictException);
+    await expect(
+      database
+        .selectFrom('patient_portal_appointments')
+        .select(['version', 'appointment_slot_id'])
+        .where('id', '=', booked.appointment.appointmentId)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({
+      version: 3,
+      appointment_slot_id: fixture.slots.confirmedRescheduleNewDoctor,
+    });
+  });
+
+  it('rejects an explicit replacement slot from another appointment service without side effects', async () => {
+    const booked = await appointments.createAppointment(
+      onboardingSessionA(),
+      'provider-aware-different-service-create-key',
+      fixture.slots.differentServiceOld,
+    );
+    const key = 'provider-aware-different-service-reschedule-key';
+    await expect(
+      appointments.rescheduleAppointment(
+        onboardingSessionA(),
+        key,
+        booked.appointment.appointmentId,
+        fixture.slots.differentServiceTarget,
+        1,
+      ),
+    ).rejects.toBeInstanceOf(ConflictException);
+    await expect(
+      database
+        .selectFrom('patient_portal_appointments')
+        .select(['status', 'version', 'appointment_slot_id'])
+        .where('id', '=', booked.appointment.appointmentId)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({
+      status: 'requested',
+      version: 1,
+      appointment_slot_id: fixture.slots.differentServiceOld,
+    });
+    await expect(
+      database
+        .selectFrom('patient_portal_appointment_commands')
+        .select('id')
+        .where('idempotency_key_hash', '=', sha256(key))
+        .execute(),
+    ).resolves.toEqual([]);
+  });
+
+  it('rolls back a provider-aware reschedule when audit persistence fails', async () => {
+    const key = 'provider-aware-reschedule-audit-failure-key';
+    const appointment = await database
+      .selectFrom('patient_portal_appointments')
+      .select(['id', 'version', 'appointment_slot_id'])
+      .where('appointment_slot_id', '=', fixture.slots.differentServiceOld)
+      .executeTakeFirstOrThrow();
+    await sql`
+      create function fail_patient_reschedule_audit() returns trigger
+      language plpgsql as $function$
+      begin
+        if new.action = 'patient.appointment_reschedule_requested' then
+          raise exception 'synthetic reschedule audit failure';
+        end if;
+        return new;
+      end;
+      $function$
+    `.execute(database);
+    await sql`
+      create trigger fail_patient_reschedule_audit_trigger
+      before insert on audit_events
+      for each row execute function fail_patient_reschedule_audit()
+    `.execute(database);
+    try {
+      await expect(
+        appointments.rescheduleAppointment(
+          onboardingSessionA(),
+          key,
+          appointment.id,
+          fixture.slots.staleTarget,
+          appointment.version,
+        ),
+      ).rejects.toBeInstanceOf(ServiceUnavailableException);
+    } finally {
+      await sql`
+        drop trigger if exists fail_patient_reschedule_audit_trigger
+        on audit_events
+      `.execute(database);
+      await sql`drop function if exists fail_patient_reschedule_audit()`.execute(
+        database,
+      );
+    }
+
+    await expect(
+      database
+        .selectFrom('patient_portal_appointments')
+        .select(['version', 'appointment_slot_id'])
+        .where('id', '=', appointment.id)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({
+      version: appointment.version,
+      appointment_slot_id: appointment.appointment_slot_id,
+    });
+    await expect(
+      database
+        .selectFrom('patient_portal_appointment_commands')
+        .select('id')
+        .where('idempotency_key_hash', '=', sha256(key))
+        .execute(),
+    ).resolves.toEqual([]);
   });
 
   it('rolls back the appointment and durable command when booking audit persistence fails', async () => {

@@ -388,6 +388,26 @@ live request. Task 3.3 expands patient read responses to represent confirmed and
 declined states without defining new patient mutations; confirmed cancellation
 or rescheduling behavior remains task 4.3.
 
+Task 4.3 permits a patient to cancel a future `requested` or `confirmed`
+appointment in the current locked patient session and context. Cancellation
+retains the immutable appointment and provider evidence, moves the appointment
+to `cancelled`, increments its optimistic version, releases capacity, and
+reconciles a deferred-withdrawal slot in the same serializable transaction.
+`declined`, `cancelled`, and started appointments are terminal for patient
+changes.
+
+Patient rescheduling accepts only an opaque concrete replacement slot and the
+current appointment version. The replacement must belong to the same exact
+practice, facility, and appointment service as the current appointment; it may
+belong to another active eligible practitioner only because the patient chose
+that concrete slot. A current `requested` appointment remains `requested`; a
+current `confirmed` appointment returns to `requested` so workforce staff must
+approve the new time and provider. The old and new provider bundles, patient
+context identifiers, version transition, and released-slot disposition are
+recorded as privacy-safe opaque audit evidence. Every cancellation and
+reschedule re-locks the exact patient session and stored context before replay,
+uses one captured server time, and returns a no-store response.
+
 Composite foreign keys SHALL prove that appointment, patient context, slot,
 practitioner assignment, service, facility, tenant, and practice belong to one
 scope. A partial unique index SHALL prevent more than one live appointment for a

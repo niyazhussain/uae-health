@@ -393,7 +393,27 @@ free text.
 Patient cancellation and rescheduling SHALL use the current patient context,
 optimistic version, idempotency key, serializable transaction, and safe audit
 rules. A reschedule SHALL select another concrete provider-aware slot and SHALL
-never silently assign or change a doctor.
+never silently assign or change a doctor. A future requested or confirmed
+appointment MAY be cancelled. A replacement slot SHALL retain the same exact
+facility and appointment service, MAY use another explicitly selected eligible
+doctor, and SHALL change a confirmed appointment back to requested for a new
+workforce decision. Declined, cancelled, and started appointments SHALL reject
+patient cancellation or rescheduling without changing capacity or evidence.
+
+#### Scenario: Cancel a confirmed appointment
+
+- **WHEN** a patient cancels a future confirmed appointment using its current version
+- **THEN** the system records cancellation, releases provider capacity, increments the version, and reconciles any deferred slot withdrawal atomically
+
+#### Scenario: Reschedule a confirmed appointment
+
+- **WHEN** a patient explicitly selects another eligible concrete slot for the same service and facility
+- **THEN** the system moves the appointment to that slot, records its concrete provider bundle, increments the version, and returns the appointment to requested for workforce approval
+
+#### Scenario: Reject a different-service or facility replacement
+
+- **WHEN** a patient attempts to reschedule using a slot for another service or facility
+- **THEN** the system returns a generic safe conflict without changing either capacity reservation or durable command evidence
 
 #### Scenario: Reschedule with the same doctor
 

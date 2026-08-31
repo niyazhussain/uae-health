@@ -52,6 +52,10 @@ interface AppointmentRecord {
   slotId: string;
 }
 
+interface ScopedAppointmentRecord extends AppointmentRecord {
+  providerSlot: ResolvedAvailableSlot;
+}
+
 interface ResolvedAvailableSlot {
   id: string;
   starts_at: Date;
@@ -950,7 +954,7 @@ export class PatientAppointmentsService {
     rawIdempotencyKey: string,
     appointmentId: string,
     version: number,
-  ): Promise<{ appointment: PatientAppointmentView }> {
+  ): Promise<{ appointment: PatientAppointmentCommandView }> {
     const context = this.appointmentContext(session);
     const idempotencyKey = this.normalizedIdempotencyKey(rawIdempotencyKey);
     const requestHash = sha256(
@@ -960,7 +964,8 @@ export class PatientAppointmentsService {
 
     try {
       return await this.withSerializableTransaction(async (trx) => {
-        await this.assertMutationContextStillActive(trx, session, context);
+        const now = new Date();
+        await this.assertMutationContextStillActive(trx, session, context, now);
         const existing = await this.findStoredCommand(
           trx,
           session.patientPortalIdentityId,
@@ -1006,13 +1011,13 @@ export class PatientAppointmentsService {
           );
         }
         if (
-          appointment.status !== 'requested' ||
-          appointment.startsAt <= new Date()
+          (appointment.status !== 'requested' &&
+            appointment.status !== 'confirmed') ||
+          appointment.startsAt <= now
         ) {
           throw new ConflictException('This appointment cannot be cancelled.');
         }
 
-        const now = new Date();
         const updated = await trx
           .updateTable('patient_portal_appointments')
           .set({
@@ -1022,7 +1027,7 @@ export class PatientAppointmentsService {
             updated_at: now,
           })
           .where('id', '=', appointment.id)
-          .where('status', '=', 'requested')
+          .where('status', 'in', ['requested', 'confirmed'])
           .where('version', '=', version)
           .returning(['id', 'status', 'version'])
           .executeTakeFirst();
@@ -1039,12 +1044,13 @@ export class PatientAppointmentsService {
         );
 
         const response = {
-          appointment: this.toAppointmentView(
+          appointment: this.toProviderAwareAppointmentView(
             {
               ...appointment,
               status: updated.status,
               version: updated.version,
             },
+            appointment.providerSlot,
             now,
           ),
         };
@@ -1061,6 +1067,7 @@ export class PatientAppointmentsService {
           session,
           tenantId: bookable.tenantId,
           organizationId: bookable.organizationId,
+          facilityId: appointment.providerSlot.facility_id,
           action: 'patient.appointment_cancelled',
           targetEntityType: 'patient_portal_appointment',
           targetEntityId: updated.id,
@@ -1070,6 +1077,20 @@ export class PatientAppointmentsService {
           beforeData: {
             status: appointment.status,
             version: appointment.version,
+            patientContextKind: context.kind,
+            patientContextId:
+              context.kind === 'practice'
+                ? context.portalProfileId
+                : context.appointmentRelationshipId,
+            slotId: appointment.slotId,
+            facilityId: appointment.providerSlot.facility_id,
+            practitionerFacilityAssignmentId:
+              appointment.providerSlot.practitioner_facility_assignment_id,
+            practitionerServiceAssignmentId:
+              appointment.providerSlot.practitioner_service_assignment_id,
+            practitionerId: appointment.providerSlot.practitioner_id,
+            appointmentServiceId:
+              appointment.providerSlot.appointment_service_id,
           },
           afterData: {
             status: updated.status,
@@ -1111,7 +1132,7 @@ export class PatientAppointmentsService {
     appointmentId: string,
     slotId: string,
     version: number,
-  ): Promise<{ appointment: PatientAppointmentView }> {
+  ): Promise<{ appointment: PatientAppointmentCommandView }> {
     const context = this.appointmentContext(session);
     const idempotencyKey = this.normalizedIdempotencyKey(rawIdempotencyKey);
     const requestHash = sha256(
@@ -1121,7 +1142,8 @@ export class PatientAppointmentsService {
 
     try {
       return await this.withSerializableTransaction(async (trx) => {
-        await this.assertMutationContextStillActive(trx, session, context);
+        const now = new Date();
+        await this.assertMutationContextStillActive(trx, session, context, now);
         const existing = await this.findStoredCommand(
           trx,
           session.patientPortalIdentityId,
@@ -1167,8 +1189,9 @@ export class PatientAppointmentsService {
           );
         }
         if (
-          appointment.status !== 'requested' ||
-          appointment.startsAt <= new Date()
+          (appointment.status !== 'requested' &&
+            appointment.status !== 'confirmed') ||
+          appointment.startsAt <= now
         ) {
           throw new ConflictException(
             'This appointment cannot be rescheduled.',
@@ -1178,13 +1201,26 @@ export class PatientAppointmentsService {
           throw new ConflictException('Choose a different appointment time.');
         }
 
-        const slot = await this.resolveAvailableSlot(trx, bookable, slotId);
+        const slot = await this.resolveAvailableSlot(
+          trx,
+          bookable,
+          slotId,
+          now,
+        );
         if (!slot) {
           throw new ConflictException(
             'The selected appointment time is no longer available.',
           );
         }
-        const now = new Date();
+        if (
+          slot.facility_id !== appointment.providerSlot.facility_id ||
+          slot.appointment_service_id !==
+            appointment.providerSlot.appointment_service_id
+        ) {
+          throw new ConflictException(
+            'The selected appointment time is no longer available.',
+          );
+        }
         const updated = await trx
           .updateTable('patient_portal_appointments')
           .set({
@@ -1196,11 +1232,12 @@ export class PatientAppointmentsService {
               slot.practitioner_service_assignment_id,
             practitioner_id: slot.practitioner_id,
             appointment_service_id: slot.appointment_service_id,
+            status: 'requested',
             version: appointment.version + 1,
             updated_at: now,
           })
           .where('id', '=', appointment.id)
-          .where('status', '=', 'requested')
+          .where('status', 'in', ['requested', 'confirmed'])
           .where('version', '=', version)
           .returning(['id', 'status', 'version'])
           .executeTakeFirst();
@@ -1217,7 +1254,7 @@ export class PatientAppointmentsService {
         );
 
         const response = {
-          appointment: this.toAppointmentView(
+          appointment: this.toProviderAwareAppointmentView(
             {
               id: updated.id,
               status: updated.status,
@@ -1226,6 +1263,7 @@ export class PatientAppointmentsService {
               endsAt: slot.ends_at,
               slotId: slot.id,
             },
+            slot,
             now,
           ),
         };
@@ -1242,6 +1280,7 @@ export class PatientAppointmentsService {
           session,
           tenantId: bookable.tenantId,
           organizationId: bookable.organizationId,
+          facilityId: slot.facility_id,
           action: 'patient.appointment_reschedule_requested',
           targetEntityType: 'patient_portal_appointment',
           targetEntityId: updated.id,
@@ -1251,7 +1290,20 @@ export class PatientAppointmentsService {
           beforeData: {
             status: appointment.status,
             version: appointment.version,
+            patientContextKind: context.kind,
+            patientContextId:
+              context.kind === 'practice'
+                ? context.portalProfileId
+                : context.appointmentRelationshipId,
             slotId: appointment.slotId,
+            facilityId: appointment.providerSlot.facility_id,
+            practitionerFacilityAssignmentId:
+              appointment.providerSlot.practitioner_facility_assignment_id,
+            practitionerServiceAssignmentId:
+              appointment.providerSlot.practitioner_service_assignment_id,
+            practitionerId: appointment.providerSlot.practitioner_id,
+            appointmentServiceId:
+              appointment.providerSlot.appointment_service_id,
           },
           afterData: {
             status: updated.status,
@@ -2376,13 +2428,37 @@ export class PatientAppointmentsService {
     context: PatientAppointmentContext,
     practice: BookablePractice,
     appointmentId: string,
-  ): Promise<AppointmentRecord | null> {
+  ): Promise<ScopedAppointmentRecord | null> {
     const query = database
       .selectFrom('patient_portal_appointments as appointment')
       .innerJoin(
         'patient_portal_appointment_slots as slot',
         'slot.id',
         'appointment.appointment_slot_id',
+      )
+      .innerJoin('facilities as facility', (join) =>
+        join
+          .onRef('facility.id', '=', 'slot.facility_id')
+          .onRef('facility.tenant_id', '=', 'slot.tenant_id')
+          .onRef('facility.organization_id', '=', 'slot.organization_id'),
+      )
+      .innerJoin('appointment_services as service', (join) =>
+        join
+          .onRef('service.id', '=', 'slot.appointment_service_id')
+          .onRef('service.tenant_id', '=', 'slot.tenant_id')
+          .onRef('service.organization_id', '=', 'slot.organization_id')
+          .onRef('service.facility_id', '=', 'slot.facility_id'),
+      )
+      .innerJoin('specialties as specialty', (join) =>
+        join
+          .onRef('specialty.id', '=', 'service.specialty_id')
+          .onRef('specialty.tenant_id', '=', 'service.tenant_id')
+          .onRef('specialty.organization_id', '=', 'service.organization_id'),
+      )
+      .innerJoin('practitioners as practitioner', (join) =>
+        join
+          .onRef('practitioner.id', '=', 'slot.practitioner_id')
+          .onRef('practitioner.tenant_id', '=', 'slot.tenant_id'),
       )
       .select([
         'appointment.id',
@@ -2391,6 +2467,20 @@ export class PatientAppointmentsService {
         'slot.id as slot_id',
         'slot.starts_at',
         'slot.ends_at',
+        'slot.facility_id',
+        'slot.practitioner_facility_assignment_id',
+        'slot.practitioner_service_assignment_id',
+        'slot.practitioner_id',
+        'slot.appointment_service_id',
+        'service.patient_facing_name',
+        'service.duration_minutes',
+        'service.allows_any_practitioner',
+        'specialty.id as specialty_id',
+        'specialty.name as specialty_name',
+        'facility.name as facility_name',
+        'facility.timezone as facility_timezone',
+        'practitioner.display_name as practitioner_display_name',
+        'practitioner.professional_title as practitioner_professional_title',
       ])
       .where('appointment.id', '=', appointmentId)
       .where('appointment.tenant_id', '=', practice.tenantId)
@@ -2414,18 +2504,51 @@ export class PatientAppointmentsService {
             '=',
             context.appointmentRelationshipId,
           );
-    const appointment = await scopedQuery.forUpdate().executeTakeFirst();
+    const appointment = await scopedQuery
+      .forUpdate(['appointment', 'slot'])
+      .forShare(['facility', 'service', 'specialty', 'practitioner'])
+      .executeTakeFirst();
 
-    return appointment
-      ? {
-          id: appointment.id,
-          status: appointment.status,
-          version: appointment.version,
-          startsAt: appointment.starts_at,
-          endsAt: appointment.ends_at,
-          slotId: appointment.slot_id,
-        }
-      : null;
+    if (
+      !appointment?.facility_id ||
+      !appointment.practitioner_facility_assignment_id ||
+      !appointment.practitioner_service_assignment_id ||
+      !appointment.practitioner_id ||
+      !appointment.appointment_service_id
+    ) {
+      return null;
+    }
+
+    return {
+      id: appointment.id,
+      status: appointment.status,
+      version: appointment.version,
+      startsAt: appointment.starts_at,
+      endsAt: appointment.ends_at,
+      slotId: appointment.slot_id,
+      providerSlot: {
+        id: appointment.slot_id,
+        starts_at: appointment.starts_at,
+        ends_at: appointment.ends_at,
+        facility_id: appointment.facility_id,
+        practitioner_facility_assignment_id:
+          appointment.practitioner_facility_assignment_id,
+        practitioner_service_assignment_id:
+          appointment.practitioner_service_assignment_id,
+        practitioner_id: appointment.practitioner_id,
+        appointment_service_id: appointment.appointment_service_id,
+        patient_facing_name: appointment.patient_facing_name,
+        duration_minutes: appointment.duration_minutes,
+        allows_any_practitioner: appointment.allows_any_practitioner,
+        specialty_id: appointment.specialty_id,
+        specialty_name: appointment.specialty_name,
+        facility_name: appointment.facility_name,
+        facility_timezone: appointment.facility_timezone,
+        practitioner_display_name: appointment.practitioner_display_name,
+        practitioner_professional_title:
+          appointment.practitioner_professional_title,
+      },
+    };
   }
 
   private async relationshipResponse(
@@ -2575,7 +2698,9 @@ export class PatientAppointmentsService {
     now: Date,
   ): PatientAppointmentView {
     const canChange =
-      appointment.status === 'requested' && appointment.startsAt > now;
+      (appointment.status === 'requested' ||
+        appointment.status === 'confirmed') &&
+      appointment.startsAt > now;
 
     return {
       appointmentId: appointment.id,
