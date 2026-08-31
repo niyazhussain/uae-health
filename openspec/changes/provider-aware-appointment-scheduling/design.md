@@ -282,6 +282,26 @@ identifier, then slot identifier. Availability starts strictly after one
 server-captured instant and can expose only rows inside the server-owned
 materialized publication horizon.
 
+Task 4.2 keeps the booking command deliberately small: `POST
+/v1/patient-appointments` accepts an idempotency key and one concrete `slotId`
+only. Each serializable attempt captures one server instant, locks and
+revalidates the exact persisted patient session and selected profile or pending
+relationship, then locks a slot through the same active-chain, future-time, and
+facility-local 56-day publication predicate used by discovery. The appointment
+copies the locked slot's complete provider bundle; no provider, facility,
+service, tenant, practice, profile, or relationship identifier is accepted as
+booking scope from the browser.
+
+A new booking result retains the legacy appointment identifier, lifecycle,
+UTC time, version, and change flags, and additively includes the concrete
+`slotId`, safe service/specialty/facility summary, and service-local
+`practitionerOption`. The durable result uses the same strict response allowlist
+and is returned with `Cache-Control: no-store`. A command snapshot written
+before task 4.2 remains replayable in its exact legacy form; a new or partially
+expanded snapshot must contain the complete safe provider-aware response
+bundle. Booking, durable command evidence, facility-scoped audit evidence, and
+the provider reservation commit together.
+
 ### 5. Server session context remains the only patient scope authority
 
 Patient discovery may run from restricted onboarding only for practices that
@@ -289,6 +309,12 @@ explicitly publish synthetic booking data. Practice-owned appointment reads and
 mutations derive tenant, practice, patient identity, portal profile or pending
 relationship exclusively from the current server session. Browser-supplied
 tenant, organization, profile, or practitioner-practice scope is never trusted.
+Every patient mutation attempt, including durable-command replay after a
+concurrent race, re-locks the exact session row and verifies that it is
+unrevoked, unexpired, bound to the same active patient identity and application
+user, and still stores the exact selected profile or appointment relationship.
+A rotated, revoked, expired, or identity-disabled session cannot replay a prior
+command result.
 
 The patient may see only practitioners and slots published for the one practice
 being discovered or selected. Responses never aggregate private appointments

@@ -318,6 +318,21 @@ describe('AppController (e2e)', () => {
     });
   });
 
+  it('/v1/patient-appointments rejects an unauthenticated provider-aware booking command', () => {
+    const server = app.getHttpServer() as Server;
+
+    return request(server)
+      .post('/v1/patient-appointments')
+      .set('Idempotency-Key', 'provider-aware-e2e-booking-key')
+      .send({ slotId: '70000000-0000-4000-8000-000000000001' })
+      .expect(401)
+      .expect({
+        message: 'Active patient portal session required.',
+        error: 'Unauthorized',
+        statusCode: 401,
+      });
+  });
+
   afterEach(async () => {
     await app.close();
   });

@@ -76,6 +76,21 @@ export interface PatientAppointmentView {
   canReschedule: boolean;
 }
 
+/**
+ * The provider-aware scheduling evidence returned for commands created after
+ * provider-aware booking was enabled. Legacy durable command snapshots remain
+ * valid PatientAppointmentView values so an old retry can return its exact
+ * original result.
+ */
+export interface PatientProviderAwareAppointmentView extends PatientAppointmentView {
+  slotId: string;
+  service: PatientAppointmentServiceView;
+  practitionerOption: PatientAppointmentPractitionerOptionView;
+}
+
+export type PatientAppointmentCommandView =
+  PatientAppointmentView | PatientProviderAwareAppointmentView;
+
 export interface PatientAppointmentSlotView {
   slotId: string;
   startsAt: string;

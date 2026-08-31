@@ -654,9 +654,11 @@ async function insertPatient(
   const applicationUserId = randomUUID();
   const identityId = randomUUID();
   const relationshipId = randomUUID();
+  const sessionId = randomUUID();
   const displayName = `Synthetic Queue Patient ${label}`;
   const privateEmail = `private.queue.${label}@example.invalid`;
   const privateSubject = `private-queue-patient-subject-${label}`;
+  const csrfToken = `synthetic-csrf-${label}`;
 
   await database
     .insertInto('application_users')
@@ -697,6 +699,27 @@ async function insertPatient(
     .execute();
 
   const sessionExpiry = new Date('2036-01-01T00:00:00.000Z');
+  await database
+    .insertInto('patient_portal_sessions')
+    .values({
+      id: sessionId,
+      session_token_hash: sha256(
+        `synthetic-queue-session-${label}-${sessionId}`,
+      ),
+      csrf_token_hash: sha256(csrfToken),
+      patient_portal_identity_id: identityId,
+      patient_portal_profile_id: null,
+      patient_portal_appointment_relationship_id: relationshipId,
+      identity_issuer: 'https://patient-idp.example.invalid/queue-tests',
+      identity_subject: privateSubject,
+      identity_client_id: 'private-queue-patient-client',
+      identity_username: privateEmail,
+      idle_expires_at: sessionExpiry,
+      absolute_expires_at: sessionExpiry,
+      revoked_at: null,
+    })
+    .execute();
+
   return {
     applicationUserId,
     identityId,
@@ -705,7 +728,7 @@ async function insertPatient(
     privateEmail,
     privateSubject,
     session: {
-      sessionId: randomUUID(),
+      sessionId,
       principal: {
         issuer: 'https://patient-idp.example.invalid/queue-tests',
         subject: privateSubject,
@@ -728,7 +751,7 @@ async function insertPatient(
           practiceName: scope.organizationName,
         },
       ],
-      csrfToken: `synthetic-csrf-${label}`,
+      csrfToken,
       idleExpiresAt: sessionExpiry,
       absoluteExpiresAt: sessionExpiry,
       renewed: false,

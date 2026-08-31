@@ -539,6 +539,8 @@ async function insertPatient(
   const applicationUserId = nextUuid();
   const identityId = nextUuid();
   const relationshipId = nextUuid();
+  const sessionId = nextUuid();
+  const csrfToken = `synthetic-csrf-${label}`;
   const subject = `synthetic-availability-patient-${label}`;
   const issuer = 'https://patient-idp.example.invalid/availability-tests';
   const clientId = 'synthetic-patient-availability-client';
@@ -580,11 +582,32 @@ async function insertPatient(
     .execute();
 
   const future = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  await database
+    .insertInto('patient_portal_sessions')
+    .values({
+      id: sessionId,
+      session_token_hash: sha256(
+        `synthetic-availability-session-${label}-${sessionId}`,
+      ),
+      csrf_token_hash: sha256(csrfToken),
+      patient_portal_identity_id: identityId,
+      patient_portal_profile_id: null,
+      patient_portal_appointment_relationship_id: relationshipId,
+      identity_issuer: issuer,
+      identity_subject: subject,
+      identity_client_id: clientId,
+      identity_username: `availability-patient-${label}@example.invalid`,
+      idle_expires_at: future,
+      absolute_expires_at: future,
+      revoked_at: null,
+    })
+    .execute();
+
   return {
     identityId,
     relationshipId,
     session: {
-      sessionId: nextUuid(),
+      sessionId,
       principal: { issuer, subject, clientId },
       patientPortalIdentityId: identityId,
       applicationUserId,
@@ -609,7 +632,7 @@ async function insertPatient(
               : 'Synthetic Availability Practice B',
         },
       ],
-      csrfToken: `synthetic-csrf-${label}`,
+      csrfToken,
       idleExpiresAt: future,
       absoluteExpiresAt: future,
       renewed: false,

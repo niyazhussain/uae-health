@@ -192,6 +192,7 @@ export class PatientAppointmentsController {
   }
 
   @Post()
+  @Header('Cache-Control', 'no-store')
   @UseGuards(
     PatientPortalSessionAuthenticationGuard,
     PatientPortalAppointmentContextGuard,

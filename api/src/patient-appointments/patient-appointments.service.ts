@@ -16,9 +16,11 @@ import type {
   PatientPortalAppointmentCommandOperation,
 } from '../database/database.types.js';
 import type { PatientPortalSessionContext } from '../patient-portal-auth/patient-portal-auth.types.js';
+import { decodeStoredAppointmentCommandView } from './patient-appointment-command-response.js';
 import type {
   PatientAppointmentAvailabilityQuery,
   PatientAppointmentAvailabilityResponse,
+  PatientAppointmentCommandView,
   PatientAppointmentContext,
   PatientAppointmentPageQuery,
   PatientAppointmentPractitionerOptionView,
@@ -27,6 +29,7 @@ import type {
   PatientAppointmentServicesResponse,
   PatientAppointmentServiceView,
   PatientAppointmentView,
+  PatientProviderAwareAppointmentView,
 } from './patient-appointments.types.js';
 import { reconcileReleasedPendingProviderSlot } from './provider-slot-release.js';
 
@@ -58,6 +61,15 @@ interface ResolvedAvailableSlot {
   practitioner_service_assignment_id: string;
   practitioner_id: string;
   appointment_service_id: string;
+  patient_facing_name: string;
+  duration_minutes: number;
+  allows_any_practitioner: boolean;
+  specialty_id: string;
+  specialty_name: string;
+  facility_name: string;
+  facility_timezone: string;
+  practitioner_display_name: string;
+  practitioner_professional_title: string;
 }
 
 interface StoredCommand {
@@ -139,14 +151,6 @@ function isAppointmentUnavailableError(error: unknown): boolean {
     error instanceof NotFoundException &&
     error.message === 'Appointment is unavailable.'
   );
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function isInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isInteger(value);
 }
 
 function databaseCount(value: unknown): number {
@@ -791,7 +795,7 @@ export class PatientAppointmentsService {
     session: PatientPortalSessionContext,
     rawIdempotencyKey: string,
     slotId: string,
-  ): Promise<{ appointment: PatientAppointmentView }> {
+  ): Promise<{ appointment: PatientAppointmentCommandView }> {
     const context = this.appointmentContext(session);
     const idempotencyKey = this.normalizedIdempotencyKey(rawIdempotencyKey);
     const requestHash = sha256(
@@ -801,7 +805,8 @@ export class PatientAppointmentsService {
 
     try {
       return await this.withSerializableTransaction(async (trx) => {
-        await this.assertMutationContextStillActive(trx, session, context);
+        const now = new Date();
+        await this.assertMutationContextStillActive(trx, session, context, now);
         const existing = await this.findStoredCommand(
           trx,
           session.patientPortalIdentityId,
@@ -824,7 +829,12 @@ export class PatientAppointmentsService {
             'Appointment availability is unavailable.',
           );
         }
-        const slot = await this.resolveAvailableSlot(trx, bookable, slotId);
+        const slot = await this.resolveAvailableSlot(
+          trx,
+          bookable,
+          slotId,
+          now,
+        );
         if (!slot) {
           throw new ConflictException(
             'The selected appointment time is no longer available.',
@@ -859,7 +869,7 @@ export class PatientAppointmentsService {
           .executeTakeFirstOrThrow();
 
         const response = {
-          appointment: this.toAppointmentView(
+          appointment: this.toProviderAwareAppointmentView(
             {
               id: appointment.id,
               status: appointment.status,
@@ -868,7 +878,8 @@ export class PatientAppointmentsService {
               endsAt: slot.ends_at,
               slotId: slot.id,
             },
-            new Date(),
+            slot,
+            now,
           ),
         };
         await this.insertStoredCommand(trx, {
@@ -884,6 +895,7 @@ export class PatientAppointmentsService {
           session,
           tenantId: bookable.tenantId,
           organizationId: bookable.organizationId,
+          facilityId: slot.facility_id,
           action: 'patient.appointment_requested',
           targetEntityType: 'patient_portal_appointment',
           targetEntityId: appointment.id,
@@ -894,6 +906,11 @@ export class PatientAppointmentsService {
           afterData: {
             status: appointment.status,
             version: appointment.version,
+            patientContextKind: context.kind,
+            patientContextId:
+              context.kind === 'practice'
+                ? context.portalProfileId
+                : context.appointmentRelationshipId,
             slotId: slot.id,
             facilityId: slot.facility_id,
             practitionerFacilityAssignmentId:
@@ -1412,16 +1429,31 @@ export class PatientAppointmentsService {
     >,
     idempotencyKeyHash: string,
     requestHash: string,
-  ): Promise<{ appointment: PatientAppointmentView } | null> {
-    const command = await this.findStoredCommandForReplay(
-      session.patientPortalIdentityId,
-      operation,
-      idempotencyKeyHash,
-    );
-    if (!command) return null;
+  ): Promise<{ appointment: PatientAppointmentCommandView } | null> {
+    const context = this.appointmentContext(session);
+    return this.withSerializableTransaction(async (transaction) => {
+      const now = new Date();
+      // A losing concurrent command may reach this replay path after its first
+      // transaction rolls back. Keep the current patient context locked and
+      // valid while reading the winning durable result; a stale session must
+      // never become authority merely because an idempotency row exists.
+      await this.assertMutationContextStillActive(
+        transaction,
+        session,
+        context,
+        now,
+      );
+      const command = await this.findStoredCommand(
+        transaction,
+        session.patientPortalIdentityId,
+        operation,
+        idempotencyKeyHash,
+      );
+      if (!command) return null;
 
-    this.assertMatchingIdempotencyRequest(command, requestHash);
-    return this.storedAppointmentResponse(command);
+      this.assertMatchingIdempotencyRequest(command, requestHash);
+      return this.storedAppointmentResponse(command);
+    });
   }
 
   private async replayRelationshipCommand(
@@ -1502,48 +1534,17 @@ export class PatientAppointmentsService {
   }
 
   private storedAppointmentResponse(command: StoredCommand): {
-    appointment: PatientAppointmentView;
+    appointment: PatientAppointmentCommandView;
   } {
-    const appointment = command.responseData.appointment;
-    const version = isRecord(appointment) ? appointment.version : undefined;
-    if (
-      !isRecord(appointment) ||
-      typeof appointment.appointmentId !== 'string' ||
-      (appointment.status !== 'requested' &&
-        appointment.status !== 'confirmed' &&
-        appointment.status !== 'declined' &&
-        appointment.status !== 'cancelled') ||
-      typeof appointment.startsAt !== 'string' ||
-      typeof appointment.endsAt !== 'string' ||
-      !isInteger(version) ||
-      typeof appointment.canCancel !== 'boolean' ||
-      typeof appointment.canReschedule !== 'boolean'
-    ) {
+    const appointment = decodeStoredAppointmentCommandView(
+      command.responseData.appointment,
+    );
+    if (!appointment) {
       throw new ServiceUnavailableException(
         'The appointment request is temporarily unavailable.',
       );
     }
-
-    const {
-      appointmentId,
-      status,
-      startsAt,
-      endsAt,
-      canCancel,
-      canReschedule,
-    } = appointment;
-
-    return {
-      appointment: {
-        appointmentId,
-        status,
-        startsAt,
-        endsAt,
-        version,
-        canCancel,
-        canReschedule,
-      },
-    };
+    return { appointment };
   }
 
   private discoveryPage(query: Partial<PatientAppointmentPageQuery>): {
@@ -2178,7 +2179,67 @@ export class PatientAppointmentsService {
     database: Transaction<DatabaseSchema>,
     session: PatientPortalSessionContext,
     context: PatientAppointmentContext,
+    now = new Date(),
   ): Promise<void> {
+    const sessionQuery = database
+      .selectFrom('patient_portal_sessions as portal_session')
+      .innerJoin(
+        'patient_portal_identities as identity',
+        'identity.id',
+        'portal_session.patient_portal_identity_id',
+      )
+      .innerJoin(
+        'application_users as application_user',
+        'application_user.id',
+        'identity.application_user_id',
+      )
+      .select('portal_session.id')
+      .where('portal_session.id', '=', session.sessionId)
+      .where(
+        'portal_session.patient_portal_identity_id',
+        '=',
+        session.patientPortalIdentityId,
+      )
+      .where('identity.application_user_id', '=', session.applicationUserId)
+      .where('identity.issuer', '=', session.principal.issuer)
+      .where('identity.subject', '=', session.principal.subject)
+      .where('identity.client_id', '=', session.principal.clientId)
+      .whereRef('portal_session.identity_issuer', '=', 'identity.issuer')
+      .whereRef('portal_session.identity_subject', '=', 'identity.subject')
+      .whereRef('portal_session.identity_client_id', '=', 'identity.client_id')
+      .where('portal_session.revoked_at', 'is', null)
+      .where('portal_session.idle_expires_at', '>', now)
+      .where('portal_session.absolute_expires_at', '>', now)
+      .where('identity.status', '=', 'active')
+      .where('application_user.status', '=', 'active');
+    const scopedSessionQuery =
+      context.kind === 'practice'
+        ? sessionQuery
+            .where(
+              'portal_session.patient_portal_profile_id',
+              '=',
+              context.portalProfileId,
+            )
+            .where(
+              'portal_session.patient_portal_appointment_relationship_id',
+              'is',
+              null,
+            )
+        : sessionQuery
+            .where('portal_session.patient_portal_profile_id', 'is', null)
+            .where(
+              'portal_session.patient_portal_appointment_relationship_id',
+              '=',
+              context.appointmentRelationshipId,
+            );
+    const activeSession = await scopedSessionQuery
+      .forUpdate('portal_session')
+      .forShare(['identity', 'application_user'])
+      .executeTakeFirst();
+    if (!activeSession) {
+      throw new NotFoundException('Appointment is unavailable.');
+    }
+
     if (context.kind === 'practice') {
       const activeLink = await database
         .selectFrom('patient_portal_profile_links as profile_link')
@@ -2235,88 +2296,13 @@ export class PatientAppointmentsService {
     database: Transaction<DatabaseSchema>,
     practice: BookablePractice,
     slotId: string,
+    now = new Date(),
   ): Promise<ResolvedAvailableSlot | null> {
-    const now = new Date();
-    const slot = await database
-      .selectFrom('patient_portal_appointment_slots as slot')
-      .innerJoin('facilities as facility', (join) =>
-        join
-          .onRef('facility.id', '=', 'slot.facility_id')
-          .onRef('facility.tenant_id', '=', 'slot.tenant_id')
-          .onRef('facility.organization_id', '=', 'slot.organization_id'),
-      )
-      .innerJoin(
-        'practitioner_facility_assignments as facility_assignment',
-        (join) =>
-          join
-            .onRef(
-              'facility_assignment.id',
-              '=',
-              'slot.practitioner_facility_assignment_id',
-            )
-            .onRef('facility_assignment.tenant_id', '=', 'slot.tenant_id')
-            .onRef(
-              'facility_assignment.organization_id',
-              '=',
-              'slot.organization_id',
-            )
-            .onRef('facility_assignment.facility_id', '=', 'slot.facility_id')
-            .onRef(
-              'facility_assignment.practitioner_id',
-              '=',
-              'slot.practitioner_id',
-            ),
-      )
-      .innerJoin('practitioners as practitioner', (join) =>
-        join
-          .onRef('practitioner.id', '=', 'slot.practitioner_id')
-          .onRef('practitioner.tenant_id', '=', 'slot.tenant_id'),
-      )
-      .innerJoin('appointment_services as service', (join) =>
-        join
-          .onRef('service.id', '=', 'slot.appointment_service_id')
-          .onRef('service.tenant_id', '=', 'slot.tenant_id')
-          .onRef('service.organization_id', '=', 'slot.organization_id')
-          .onRef('service.facility_id', '=', 'slot.facility_id'),
-      )
-      .innerJoin('specialties as specialty', (join) =>
-        join
-          .onRef('specialty.id', '=', 'service.specialty_id')
-          .onRef('specialty.tenant_id', '=', 'service.tenant_id')
-          .onRef('specialty.organization_id', '=', 'service.organization_id'),
-      )
-      .innerJoin(
-        'practitioner_service_assignments as service_assignment',
-        (join) =>
-          join
-            .onRef(
-              'service_assignment.id',
-              '=',
-              'slot.practitioner_service_assignment_id',
-            )
-            .onRef('service_assignment.tenant_id', '=', 'slot.tenant_id')
-            .onRef(
-              'service_assignment.organization_id',
-              '=',
-              'slot.organization_id',
-            )
-            .onRef('service_assignment.facility_id', '=', 'slot.facility_id')
-            .onRef(
-              'service_assignment.practitioner_facility_assignment_id',
-              '=',
-              'slot.practitioner_facility_assignment_id',
-            )
-            .onRef(
-              'service_assignment.practitioner_id',
-              '=',
-              'slot.practitioner_id',
-            )
-            .onRef(
-              'service_assignment.appointment_service_id',
-              '=',
-              'slot.appointment_service_id',
-            ),
-      )
+    const slot = await this.availablePatientAppointmentSlotsQuery(
+      database,
+      practice,
+      now,
+    )
       .select([
         'slot.id',
         'slot.starts_at',
@@ -2326,34 +2312,17 @@ export class PatientAppointmentsService {
         'slot.practitioner_service_assignment_id',
         'slot.practitioner_id',
         'slot.appointment_service_id',
+        'service.patient_facing_name',
+        'service.duration_minutes',
+        'service.allows_any_practitioner',
+        'specialty.id as specialty_id',
+        'specialty.name as specialty_name',
+        'facility.name as facility_name',
+        'facility.timezone as facility_timezone',
+        'practitioner.display_name as practitioner_display_name',
+        'practitioner.professional_title as practitioner_professional_title',
       ])
       .where('slot.id', '=', slotId)
-      .where('slot.bookable_practice_id', '=', practice.bookablePracticeId)
-      .where('slot.tenant_id', '=', practice.tenantId)
-      .where('slot.organization_id', '=', practice.organizationId)
-      .where('slot.status', '=', 'available')
-      .where('slot.withdrawal_pending', '=', false)
-      .where('slot.is_synthetic', '=', true)
-      .where('slot.starts_at', '>', now)
-      .where('facility.is_synthetic', '=', true)
-      .where('facility_assignment.status', '=', 'active')
-      .where('facility_assignment.is_synthetic', '=', true)
-      .where('practitioner.status', '=', 'active')
-      .where('practitioner.is_synthetic', '=', true)
-      .where('specialty.status', '=', 'active')
-      .where('specialty.is_synthetic', '=', true)
-      .where('service.status', '=', 'active')
-      .where('service.is_synthetic', '=', true)
-      .where('service_assignment.status', '=', 'active')
-      .where('service_assignment.is_synthetic', '=', true)
-      .where(
-        sql<boolean>`not exists (
-        select 1
-        from patient_portal_appointments appointment
-        where appointment.appointment_slot_id = slot.id
-          and appointment.status in ('requested', 'confirmed')
-      )`,
-      )
       // Serialize commands for the same slot while allowing different slots
       // to share the stable provider chain. Catalogue deactivation still needs
       // an exclusive row lock and therefore waits for these shared locks.
@@ -2389,6 +2358,15 @@ export class PatientAppointmentsService {
         slot.practitioner_service_assignment_id,
       practitioner_id: slot.practitioner_id,
       appointment_service_id: slot.appointment_service_id,
+      patient_facing_name: slot.patient_facing_name,
+      duration_minutes: slot.duration_minutes,
+      allows_any_practitioner: slot.allows_any_practitioner,
+      specialty_id: slot.specialty_id,
+      specialty_name: slot.specialty_name,
+      facility_name: slot.facility_name,
+      facility_timezone: slot.facility_timezone,
+      practitioner_display_name: slot.practitioner_display_name,
+      practitioner_professional_title: slot.practitioner_professional_title,
     };
   }
 
@@ -2533,6 +2511,7 @@ export class PatientAppointmentsService {
       session: PatientPortalSessionContext;
       tenantId: string;
       organizationId: string;
+      facilityId?: string | null;
       action: string;
       targetEntityType: string;
       targetEntityId: string;
@@ -2551,7 +2530,7 @@ export class PatientAppointmentsService {
         effective_user_id: input.session.applicationUserId,
         tenant_id: input.tenantId,
         organization_id: input.organizationId,
-        facility_id: null,
+        facility_id: input.facilityId ?? null,
         action: input.action,
         target_entity_type: input.targetEntityType,
         target_entity_id: input.targetEntityId,
@@ -2562,6 +2541,33 @@ export class PatientAppointmentsService {
         after_data: input.afterData,
       })
       .execute();
+  }
+
+  private toProviderAwareAppointmentView(
+    appointment: AppointmentRecord,
+    slot: ResolvedAvailableSlot,
+    now: Date,
+  ): PatientProviderAwareAppointmentView {
+    return {
+      ...this.toAppointmentView(appointment, now),
+      slotId: slot.id,
+      service: this.toPatientAppointmentServiceView({
+        id: slot.appointment_service_id,
+        patient_facing_name: slot.patient_facing_name,
+        duration_minutes: slot.duration_minutes,
+        allows_any_practitioner: slot.allows_any_practitioner,
+        specialty_id: slot.specialty_id,
+        specialty_name: slot.specialty_name,
+        facility_id: slot.facility_id,
+        facility_name: slot.facility_name,
+        facility_timezone: slot.facility_timezone,
+      }),
+      practitionerOption: this.toPatientAppointmentPractitionerOptionView({
+        id: slot.practitioner_service_assignment_id,
+        display_name: slot.practitioner_display_name,
+        professional_title: slot.practitioner_professional_title,
+      }),
+    };
   }
 
   private toAppointmentView(

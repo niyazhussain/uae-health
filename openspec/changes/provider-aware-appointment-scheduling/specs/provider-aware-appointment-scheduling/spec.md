@@ -288,6 +288,15 @@ selected portal profile or pending appointment relationship, one tenant, one
 practice, one facility, one service, one practitioner assignment, and one slot.
 The API SHALL derive patient scope from the authenticated server session and
 SHALL revalidate all provider-aware ownership inside the booking transaction.
+The booking command SHALL accept only a durable idempotency key and one opaque
+concrete slot identifier. Every serializable attempt SHALL use one captured
+server instant to revalidate the exact active persisted session and selected
+context, future slot, complete active synthetic publication chain, and
+facility-local 56-day publication horizon. A new booking response SHALL retain
+the legacy appointment fields and add the concrete slot, safe service,
+specialty, facility, facility timezone, and service-local practitioner option;
+it SHALL be non-cacheable and SHALL exclude global practitioner, authentication,
+contact, internal catalogue code, and sibling-assignment data.
 
 #### Scenario: Book a named doctor's slot
 
@@ -308,6 +317,12 @@ SHALL revalidate all provider-aware ownership inside the booking transaction.
 
 - **WHEN** the same patient concurrently retries the same booking key and payload
 - **THEN** the system returns the original stored result and does not create another appointment or audit success event
+
+#### Scenario: Reject replay from a rotated patient session
+
+- **GIVEN** a patient booking command has a durable result
+- **WHEN** the original patient session is revoked, expired, rotated to another context, or no longer belongs to an active patient identity and application user
+- **THEN** a retry through that stale session is denied before replay without changing the appointment, command, slot, or audit evidence
 
 ### Requirement: Manage appointment request decisions
 

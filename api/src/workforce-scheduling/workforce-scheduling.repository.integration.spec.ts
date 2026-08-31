@@ -105,6 +105,7 @@ const fixture = {
     identityId: 'd1710000-0000-4000-8000-000000000001',
     relationshipAId: 'd1720000-0000-4000-8000-000000000001',
     relationshipBId: 'd1720000-0000-4000-8000-000000000002',
+    sessionId: 'd1770000-0000-4000-8000-000000000001',
   },
   bookablePracticeAId: 'd1730000-0000-4000-8000-000000000001',
   bookablePracticeBId: 'd1730000-0000-4000-8000-000000000002',
@@ -622,6 +623,26 @@ async function insertPatientAppointmentFixture(
       },
     ])
     .execute();
+  const sessionExpiry = new Date('2036-01-01T00:00:00.000Z');
+  await database
+    .insertInto('patient_portal_sessions')
+    .values({
+      id: fixture.patient.sessionId,
+      session_token_hash: sha256('synthetic-patient-session-token'),
+      csrf_token_hash: sha256('synthetic-patient-csrf-token'),
+      patient_portal_identity_id: fixture.patient.identityId,
+      patient_portal_profile_id: null,
+      patient_portal_appointment_relationship_id:
+        fixture.patient.relationshipAId,
+      identity_issuer: 'https://patient-idp.example.invalid/scheduling-tests',
+      identity_subject: 'synthetic-scheduling-patient',
+      identity_client_id: 'synthetic-patient-scheduling-client',
+      identity_username: 'scheduling-patient@example.invalid',
+      idle_expires_at: sessionExpiry,
+      absolute_expires_at: sessionExpiry,
+      revoked_at: null,
+    })
+    .execute();
   await database
     .insertInto('practitioner_availability_templates')
     .values([
@@ -771,7 +792,7 @@ async function insertPatientAppointmentFixture(
 function patientSession(): PatientPortalSessionContext {
   const future = new Date('2036-01-01T00:00:00.000Z');
   return {
-    sessionId: 'd1770000-0000-4000-8000-000000000001',
+    sessionId: fixture.patient.sessionId,
     principal: {
       issuer: 'https://patient-idp.example.invalid/scheduling-tests',
       subject: 'synthetic-scheduling-patient',
