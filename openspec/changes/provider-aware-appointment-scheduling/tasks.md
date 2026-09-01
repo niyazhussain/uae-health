@@ -24,7 +24,7 @@
 
 ## 5. Scheduling interfaces
 
-- [ ] 5.1 Add workforce scheduling catalogue pages for practitioners, specialties, services, facilities, and eligible assignments with explicit loading, empty, denied, validation, and success states.
+- [x] 5.1 Add workforce scheduling catalogue pages for practitioners, specialties, services, facilities, and eligible assignments with explicit loading, empty, denied, validation, and success states.
 - [ ] 5.2 Add workforce availability pages for weekly templates, exceptions, affected live requests, and bounded slot publication.
 - [ ] 5.3 Add the scoped workforce appointment queue with confirm and decline controls, conflict handling, and permission-denied states.
 - [ ] 5.4 Upgrade the patient booking journey to practice, service, doctor or any-doctor, concrete time, and confirmation steps while keeping one selected practice context at a time.

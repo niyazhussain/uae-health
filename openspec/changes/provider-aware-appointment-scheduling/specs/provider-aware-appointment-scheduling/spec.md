@@ -483,3 +483,32 @@ SHALL not rely on frontend state for authorization.
 
 - **WHEN** a workforce user opens scheduling administration without current API authorization
 - **THEN** the page presents a clear permission-denied state and does not display cached or placeholder practitioner schedules
+
+#### Scenario: Manage one practice catalogue by keyboard
+
+- **WHEN** an authorized scheduler opens the scheduling catalogue and uses only a keyboard
+- **THEN** practice selection, practitioner creation, specialty and service lifecycle controls, facility affiliations, and practitioner eligibility remain labelled, ordered, and operable
+
+#### Scenario: Switch scheduling practice safely
+
+- **WHEN** a scheduler changes from one authorized practice context to another
+- **THEN** the page clears the previous catalogue, loads only the selected practice, and never presents sibling-practice rows as cached results
+
+#### Scenario: Show a conflicting catalogue command
+
+- **WHEN** a catalogue command is stale, duplicated, invalid, or no longer authorized
+- **THEN** the page preserves the submitted context where safe and presents an explicit validation, conflict, or permission-denied state without assuming the mutation succeeded
+
+#### Scenario: Explain catalogue terminology and completed assignments
+
+- **WHEN** a scheduler needs clarification about affiliation, eligibility, publication, or doctor-selection behavior
+- **THEN** visible guidance and keyboard-focusable information controls explain the term without resembling lifecycle actions
+- **AND** lifecycle actions have visible button boundaries that distinguish them from information controls and plain labels
+- **AND WHEN** every authorized facility or eligible practitioner is already assigned
+- **THEN** the page labels that assignment complete and does not open an empty mutation dialog
+
+#### Scenario: Review eligible practitioners as a list
+
+- **WHEN** a scheduler reviews the practitioners eligible for one service
+- **THEN** the page presents one practitioner per row with aligned eligibility status and lifecycle action
+- **AND** narrow screens preserve the practitioner, status, and action reading order without a multi-column card grid

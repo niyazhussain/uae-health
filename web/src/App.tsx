@@ -27,6 +27,11 @@ const PatientPortalInvitationPage = lazy(async () => {
   return { default: module.PatientPortalInvitationPage };
 });
 
+const SchedulingCatalogue = lazy(async () => {
+  const module = await import("@/pages/scheduling/catalogue/page");
+  return { default: module.SchedulingCatalogue };
+});
+
 const PatientPortalPage = lazy(async () => {
   const module = await import("@/pages/patient-portal/page");
   return { default: module.PatientPortalPage };
@@ -55,6 +60,12 @@ const modules: MainModule[] = [
     id: "scheduling",
     label: "Scheduling",
     pages: [
+      {
+        id: "catalogue",
+        label: "Catalogue",
+        path: "/scheduling/catalogue",
+        implemented: true,
+      },
       { id: "appointments", label: "Appointments", path: "/scheduling" },
       { id: "calendar", label: "Calendar", path: "/scheduling/calendar" },
     ],
@@ -64,7 +75,11 @@ const modules: MainModule[] = [
     label: "Clinical",
     pages: [
       { id: "encounters", label: "Encounters", path: "/clinical" },
-      { id: "documentation", label: "Documentation", path: "/clinical/documentation" },
+      {
+        id: "documentation",
+        label: "Documentation",
+        path: "/clinical/documentation",
+      },
     ],
   },
   {
@@ -88,7 +103,12 @@ const modules: MainModule[] = [
     label: "Administration",
     pages: [
       { id: "workforce", label: "Workforce", path: "/", implemented: true },
-      { id: "roles", label: "Roles & permissions", path: "/roles", implemented: true },
+      {
+        id: "roles",
+        label: "Roles & permissions",
+        path: "/roles",
+        implemented: true,
+      },
     ],
   },
 ];
@@ -97,7 +117,9 @@ function routeFromLocation(): ApplicationRoute {
   const currentPath = window.location.pathname.replace(/\/$/, "") || "/";
 
   for (const module of modules) {
-    const page = module.pages.find((candidate) => candidate.path === currentPath);
+    const page = module.pages.find(
+      (candidate) => candidate.path === currentPath,
+    );
     if (page) return { module, page };
   }
 
@@ -130,7 +152,8 @@ function WorkforceApplication() {
   const [route, setRoute] = useState<ApplicationRoute>(routeFromLocation);
   const [navigationOpen, setNavigationOpen] = useState(false);
   const [isNavigating, setIsNavigating] = useState(false);
-  const [selectedOrganizationId, setSelectedOrganizationId] = useState<string>();
+  const [selectedOrganizationId, setSelectedOrganizationId] =
+    useState<string>();
   const [currentContext, setCurrentContext] =
     useState<ApplicationPracticeContext>();
 
@@ -223,6 +246,15 @@ function WorkforceApplication() {
             onPageReady={finishNavigation}
             onSessionExpired={session.handleUnauthorized}
           />
+        ) : route.page.implemented && route.page.id === "catalogue" ? (
+          <SchedulingCatalogue
+            csrfToken={session.step.csrfToken}
+            selectedOrganizationId={selectedOrganizationId}
+            onSelectedOrganizationChange={updateOrganization}
+            onContextChange={updateContext}
+            onPageReady={finishNavigation}
+            onSessionExpired={session.handleUnauthorized}
+          />
         ) : route.page.implemented && route.page.id === "workforce" ? (
           <WorkforceDirectory
             csrfToken={session.step.csrfToken}
@@ -269,7 +301,9 @@ function UnauthenticatedHeader() {
         </span>
         <div>
           <p className="text-sm font-semibold">UAE Health</p>
-          <p className="text-xs text-muted-foreground">Workforce administration</p>
+          <p className="text-xs text-muted-foreground">
+            Workforce administration
+          </p>
         </div>
       </div>
     </header>

@@ -530,6 +530,33 @@ service-eligibility chain. Consequently a local deactivation immediately stops
 new discovery and booking while existing requests and their immutable provider
 evidence remain available for explicit staff resolution.
 
+Task 5.1 adds `/scheduling/catalogue` to the existing workforce application
+shell. One exact-practice context drives four keyboard-operable views for
+practitioners, specialties, services, and facilities. The facility view is a
+read-only scheduling context summary because facility creation and ownership
+remain an operations responsibility; scheduling mutations manage practitioner
+affiliations and service eligibility against those existing facilities.
+
+The catalogue UI never derives authority from visible controls. It loads the
+authorized scheduling contexts from the API, clears stale catalogue data when
+the practice changes, and presents explicit loading, empty, denied, validation,
+conflict, and success states. Create and lifecycle commands generate a fresh
+idempotency key, use one approved closed reason code selected by the workflow,
+and send the current optimistic `updatedAt` value for status changes. It does
+not ask for or persist free-text audit reasons, practitioner login data,
+credentials, patient data, or sibling-practice assignments.
+
+Catalogue terminology is explained with visible contextual guidance and
+keyboard-focusable information tooltips. Information icons remain visually
+distinct from pause and play lifecycle icons, and lifecycle actions use visible
+button boundaries rather than appearing as informational labels. When every
+authorized facility or eligible practitioner is already assigned, the
+corresponding action is disabled and labelled as complete instead of opening an
+empty dialog. Eligible practitioners within a service are presented as one
+vertically aligned list with separate practitioner, eligibility-status, and
+lifecycle-action columns; narrow screens stack each row without changing its
+reading order.
+
 ## Risks / Trade-offs
 
 - **Unverified professional labels could imply credentialing** → Restrict the
