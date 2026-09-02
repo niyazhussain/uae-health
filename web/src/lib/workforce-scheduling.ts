@@ -671,3 +671,107 @@ export function changeSchedulingServiceDuration(
     idempotencyKey,
   );
 }
+
+export type WorkforceAppointmentStatus =
+  "requested" | "confirmed" | "declined" | "cancelled";
+
+export type WorkforceAppointmentDeclineReason =
+  | "appointment-request-provider-unavailable"
+  | "appointment-request-service-unavailable"
+  | "appointment-request-scheduling-conflict";
+
+export interface WorkforceAppointmentQueueItem {
+  appointmentId: string;
+  status: WorkforceAppointmentStatus;
+  version: number;
+  patientDisplayName: string;
+  facilityId: string;
+  facilityName: string;
+  facilityTimezone: string;
+  appointmentServiceId: string;
+  serviceName: string;
+  specialtyId: string;
+  specialtyName: string;
+  practitionerId: string;
+  practitionerDisplayName: string;
+  practitionerProfessionalTitle: string;
+  appointmentSlotId: string;
+  startsAt: string;
+  endsAt: string;
+  withdrawalPending: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WorkforceAppointmentDecision {
+  appointmentId: string;
+  appointmentSlotId: string;
+  facilityId: string;
+  practitionerId: string;
+  appointmentServiceId: string;
+  status: "confirmed" | "declined";
+  version: number;
+  updatedAt: string;
+  withdrawalPending: boolean;
+  releasedSlotDisposition:
+    "not_pending" | "still_live" | "available" | "withdrawn" | null;
+  releasedSlotValidityReason:
+    | "desired"
+    | "not-future"
+    | "outside-horizon"
+    | "template-inactive"
+    | "outside-effective-range"
+    | "weekday-mismatch"
+    | "definition-mismatch"
+    | "exception-covered"
+    | "inactive_chain"
+    | null;
+}
+
+export interface WorkforceAppointmentDecisionResponse {
+  appointment: WorkforceAppointmentDecision;
+}
+
+export function getWorkforceAppointmentQueue(input: {
+  organizationId: string;
+  facilityId: string;
+  status?: WorkforceAppointmentStatus;
+  page?: number;
+  pageSize?: number;
+}): Promise<SchedulingPage<WorkforceAppointmentQueueItem>> {
+  return read("/v1/admin/scheduling/appointments", {
+    organizationId: input.organizationId,
+    facilityId: input.facilityId,
+    page: String(input.page ?? 1),
+    pageSize: String(input.pageSize ?? 25),
+    ...(input.status ? { status: input.status } : {}),
+  });
+}
+
+export function decideWorkforceAppointment(
+  csrfToken: string,
+  appointment: WorkforceAppointmentQueueItem,
+  organizationId: string,
+  facilityId: string,
+  decision:
+    | { status: "confirmed" }
+    | { status: "declined"; reasonCode: WorkforceAppointmentDeclineReason },
+  idempotencyKey: string,
+): Promise<WorkforceAppointmentDecisionResponse> {
+  return command(
+    `/v1/admin/scheduling/appointments/${appointment.appointmentId}/status`,
+    "PATCH",
+    csrfToken,
+    {
+      organizationId,
+      facilityId,
+      status: decision.status,
+      expectedVersion: appointment.version,
+      reasonCode:
+        decision.status === "confirmed"
+          ? "appointment-request-confirmed"
+          : decision.reasonCode,
+    },
+    idempotencyKey,
+  );
+}

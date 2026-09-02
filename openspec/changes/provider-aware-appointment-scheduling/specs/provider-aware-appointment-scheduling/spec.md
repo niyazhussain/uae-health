@@ -588,3 +588,47 @@ SHALL not rely on frontend state for authorization.
 - **WHEN** an availability reconciliation reports affected live requests
 - **THEN** this page shows only the bounded opaque identifiers, total, truncation state, and generic slot reservation state
 - **AND** patient-identifying summaries and request resolution remain in the task 5.3 queue requiring both scheduling and patient-read permissions
+
+#### Scenario: Open one exact-facility appointment queue
+
+- **WHEN** a workforce user selects one exact practice and authorized facility on the Appointments page
+- **THEN** the page requests a bounded server-ordered queue and labels its default `requested|confirmed` result as Live reservations rather than all history
+- **AND** exact requested, confirmed, declined, and cancelled filters and server pagination remain keyboard operable
+
+#### Scenario: Deny patient-identifying queue access safely
+
+- **WHEN** the selected scheduling context lacks current `patients.read`, current `scheduling.manage`, matching direct membership, or exact-facility scope
+- **THEN** the page clears every patient-identifying row and decision result and presents an explicit dual-permission denied state without placeholder or cached appointment data
+
+#### Scenario: Switch appointment queue scope safely
+
+- **WHEN** a scheduler changes the selected practice or facility while queue requests or a decision dialog are active
+- **THEN** the page immediately clears the previous rows, filters, pagination, dialog, and result and ignores any late response from the previous scope
+
+#### Scenario: Review the minimum workforce appointment summary
+
+- **WHEN** an authorized scheduler reviews one queue row
+- **THEN** the page shows only the approved patient display name, opaque appointment reference, service and specialty, practitioner display summary, facility-local time and timezone, lifecycle/version timestamps, and deferred-withdrawal state
+- **AND** it does not request or infer patient contact, login, portal context, clinical data, provider login, or sibling-practice data
+
+#### Scenario: Confirm a requested appointment explicitly
+
+- **WHEN** a scheduler confirms a current requested row from its labelled confirmation dialog
+- **THEN** the page submits the displayed optimistic version, fixed confirmation reason, and one durable idempotency key without changing the patient, practitioner, service, facility, or slot
+- **AND** an existing deferred-withdrawal warning remains visible because confirmation preserves that follow-up state
+
+#### Scenario: Decline with one closed operational reason
+
+- **WHEN** a scheduler declines a current requested row
+- **THEN** the dialog requires provider unavailable, service unavailable, or scheduling conflict without accepting free text and explains that capacity and any pending slot are resolved transactionally
+- **AND** changing the selected reason creates a new semantic attempt while an unchanged uncertain retry reuses its idempotency key
+
+#### Scenario: Resolve a stale workforce decision visibly
+
+- **WHEN** a decision conflicts because its version or requested state is no longer current
+- **THEN** the page never presents success, closes the stale decision, retains a privacy-safe conflict summary, reloads the current facility page, and requires a new explicit decision
+
+#### Scenario: Operate the appointment queue accessibly
+
+- **WHEN** a keyboard or assistive-technology user reviews and decides requests at a narrow viewport, browser zoom, or right-to-left document direction
+- **THEN** scope controls, filters, pagination, rows, and dialogs preserve labelled reading and focus order, announce loading, denied, conflict, uncertain, and success states, and use logical layout without relying on color or pointer input

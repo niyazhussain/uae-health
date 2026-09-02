@@ -37,6 +37,11 @@ const SchedulingAvailability = lazy(async () => {
   return { default: module.SchedulingAvailability };
 });
 
+const WorkforceAppointmentQueue = lazy(async () => {
+  const module = await import("@/pages/scheduling/appointments/page");
+  return { default: module.WorkforceAppointmentQueue };
+});
+
 const PatientPortalPage = lazy(async () => {
   const module = await import("@/pages/patient-portal/page");
   return { default: module.PatientPortalPage };
@@ -71,11 +76,16 @@ const modules: MainModule[] = [
         path: "/scheduling/catalogue",
         implemented: true,
       },
-      { id: "appointments", label: "Appointments", path: "/scheduling" },
       {
         id: "availability",
         label: "Availability",
         path: "/scheduling/availability",
+        implemented: true,
+      },
+      {
+        id: "appointments",
+        label: "Appointments",
+        path: "/scheduling",
         implemented: true,
       },
       { id: "calendar", label: "Calendar", path: "/scheduling/calendar" },
@@ -268,6 +278,15 @@ function WorkforceApplication() {
           />
         ) : route.page.implemented && route.page.id === "availability" ? (
           <SchedulingAvailability
+            csrfToken={session.step.csrfToken}
+            selectedOrganizationId={selectedOrganizationId}
+            onSelectedOrganizationChange={updateOrganization}
+            onContextChange={updateContext}
+            onPageReady={finishNavigation}
+            onSessionExpired={session.handleUnauthorized}
+          />
+        ) : route.page.implemented && route.page.id === "appointments" ? (
+          <WorkforceAppointmentQueue
             csrfToken={session.step.csrfToken}
             selectedOrganizationId={selectedOrganizationId}
             onSelectedOrganizationChange={updateOrganization}

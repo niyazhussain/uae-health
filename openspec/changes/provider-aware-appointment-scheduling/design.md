@@ -659,6 +659,59 @@ server state. Affected-request information remains limited to the bounded
 opaque mutation summary and a slot's live-reservation boolean; patient details
 and durable request resolution belong only to task 5.3's dual-permission queue.
 
+Task 5.3 implements the existing `/scheduling` **Appointments** destination as
+the workforce request queue. The page retains one exact-practice selector and
+requires one facility returned by the scheduling-context API before it requests
+patient-identifying summaries. Scheduling contexts remain only navigation
+options: the queue clears all rows immediately and presents a dedicated denied
+state unless the API confirms that the same active actor and direct practice
+membership currently hold both `scheduling.manage` and `patients.read` for the
+selected facility. Changing practice or facility also clears the previous
+rows, filters, pagination, dialog state, and decision result before the next
+read completes.
+
+The default queue view is labelled **Live reservations** because omitting a
+status returns `requested|confirmed`, not every historical state. An exact
+status filter exposes requested, confirmed, declined, or cancelled history;
+server page-number pagination remains ordered by slot start and appointment
+identifier. Each aligned row contains only the approved patient display name,
+opaque appointment reference, service and specialty labels, practitioner name
+and professional title, facility-local appointment time and timezone, status,
+optimistic version, creation/update timestamps, and deferred-withdrawal state.
+It never requests or derives patient contact, login, portal-context, clinical,
+provider-login, or sibling-practice data. Requested appointments remain
+actionable after their start because the API deliberately permits operational
+resolution of an overdue request; the UI labels this condition and does not
+misrepresent confirmation as attendance or clinical evidence.
+
+Only a current `requested` row exposes decision controls. Confirmation uses the
+fixed `appointment-request-confirmed` reason and explains that it preserves the
+exact patient, practitioner, service, facility, slot, and any existing deferred
+withdrawal. Decline requires one visible closed operational reason—provider
+unavailable, service unavailable, or scheduling conflict—and accepts no free
+text. Its confirmation explains that provider capacity is released and a
+pending slot is re-evaluated transactionally. Confirmed, declined, and
+cancelled rows are review-only.
+
+Each decision dialog snapshots the row's current version and one browser
+idempotency key. An unchanged retry after an uncertain transport outcome reuses
+that key; changing the decline reason creates a new semantic attempt. A `409`
+never presents success: the page closes the stale decision, preserves a safe
+conflict summary, reloads the current facility page, and requires a new explicit
+decision. Successful decisions render the server-owned status/version and safe
+released-slot disposition before reloading the queue. A `401` returns to the
+session flow, while a `403` clears all patient-identifying queue state.
+
+The queue uses the existing accessible application primitives. Its filters and
+pagination are labelled and keyboard operable; decision dialogs trap and
+restore focus; loading and success use polite status announcements; denied,
+validation, uncertain-outcome, and conflict states are announced as alerts.
+Rows preserve patient, appointment, time, service, practitioner, status, and
+action reading order when stacked on narrow screens. Layout uses logical
+start/end alignment, and opaque identifiers are isolated left-to-right so the
+workflow remains understandable under right-to-left document direction,
+browser zoom, and reflow.
+
 ## Risks / Trade-offs
 
 - **Unverified professional labels could imply credentialing** → Restrict the
