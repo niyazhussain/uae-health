@@ -1,4 +1,5 @@
 import {
+  CaretDownIcon,
   HeartbeatIcon,
   ListIcon,
   SignOutIcon,
@@ -8,6 +9,12 @@ import {
 
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 export interface ApplicationPracticeContext {
   organizationName: string;
@@ -165,26 +172,34 @@ function SubNavigation({
   route: ApplicationRoute;
   onNavigate: (module: MainModule, page: NavigationPage) => void;
 }) {
+  const shouldCollapseOverflow = route.module.pages.length > 7;
+  const visiblePages = shouldCollapseOverflow
+    ? route.module.pages.slice(0, 6)
+    : route.module.pages;
+  const overflowPages = shouldCollapseOverflow
+    ? route.module.pages.slice(6)
+    : [];
+  const activeOverflowPage = overflowPages.find(
+    (page) => page.id === route.page.id,
+  );
+
   return (
     <div className="border-t bg-background/70">
       <nav
         className="mx-auto flex w-full max-w-7xl items-center gap-1 overflow-x-auto px-4 py-2 sm:px-6 lg:px-8"
         aria-label={`${route.module.label} navigation`}
       >
-        <span className="me-2 shrink-0 text-xs font-medium text-muted-foreground">
-          {route.module.label}
-        </span>
-        {route.module.pages.map((page) => {
+        {visiblePages.map((page) => {
           const active = page.id === route.page.id;
 
           return (
             <button
               key={page.id}
               type="button"
-              className={`min-h-8 shrink-0 rounded-md px-2.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+              className={`min-h-9 shrink-0 border-x-0 border-t-0 border-b-2 px-3 text-xs font-semibold transition-[color,background-color,border-color] focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                 active
-                  ? "bg-secondary text-secondary-foreground"
-                  : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                  ? "border-primary bg-transparent text-foreground"
+                  : "border-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground"
               }`}
               aria-current={active ? "page" : undefined}
               onClick={() => onNavigate(route.module, page)}
@@ -193,6 +208,52 @@ function SubNavigation({
             </button>
           );
         })}
+        {overflowPages.length > 0 && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                className={`flex min-h-9 shrink-0 items-center gap-1 border-x-0 border-t-0 border-b-2 px-3 text-xs font-semibold transition-[color,background-color,border-color] focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                  activeOverflowPage
+                    ? "border-primary bg-transparent text-foreground"
+                    : "border-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+                }`}
+                aria-current={activeOverflowPage ? "page" : undefined}
+                aria-label={
+                  activeOverflowPage
+                    ? `More pages, current page ${activeOverflowPage.label}`
+                    : "More pages"
+                }
+              >
+                {activeOverflowPage ? activeOverflowPage.label : "More"}
+                <CaretDownIcon aria-hidden="true" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              align="start"
+              className="max-h-[min(32rem,var(--radix-dropdown-menu-content-available-height))] min-w-56 overflow-y-auto"
+            >
+              {overflowPages.map((page) => {
+                const active = page.id === route.page.id;
+                return (
+                  <DropdownMenuItem
+                    key={page.id}
+                    className={active ? "font-semibold" : undefined}
+                    aria-current={active ? "page" : undefined}
+                    onSelect={() => onNavigate(route.module, page)}
+                  >
+                    {page.label}
+                    {active && (
+                      <span className="ms-auto text-xs text-primary">
+                        Current
+                      </span>
+                    )}
+                  </DropdownMenuItem>
+                );
+              })}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
       </nav>
     </div>
   );
@@ -230,7 +291,11 @@ function MobileNavigation({
         <div className="flex min-h-10 items-center justify-between gap-3 px-2">
           <div className="flex items-center gap-3">
             <span className="grid size-9 place-items-center rounded-md bg-primary text-primary-foreground">
-              <HeartbeatIcon aria-hidden="true" className="size-5" weight="bold" />
+              <HeartbeatIcon
+                aria-hidden="true"
+                className="size-5"
+                weight="bold"
+              />
             </span>
             <span className="text-sm font-semibold">UAE Health</span>
           </div>

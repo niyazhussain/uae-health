@@ -83,6 +83,14 @@ The web application SHALL support keyboard operation, visible focus, semantic st
 - **WHEN** a keyboard user moves through and activates primary navigation
 - **THEN** focus order, focus visibility, labels, and route activation remain understandable without pointer input
 
+#### Scenario: Distinguish module navigation from page destinations
+- **WHEN** a user opens one top-level module with contextual pages
+- **THEN** the highlighted top-level control identifies the active module and the second navigation row contains only actual page destinations
+- **AND** the solid active module and underlined active page use visibly different patterns rather than two strengths of one pill treatment
+- **AND** when the module has more than seven contextual destinations, secondary destinations are available from a labelled keyboard-operable More disclosure that identifies an active overflow page
+- **AND** the second row does not repeat the parent module as non-interactive text that resembles a destination
+- **AND** the solid active module and underlined active page use visibly different patterns in addition to their programmatic current-page states
+
 #### Scenario: Use the shell on a supported small viewport
 - **WHEN** the application is displayed at the minimum supported viewport width
 - **THEN** primary actions and content remain available without unintended horizontal page scrolling

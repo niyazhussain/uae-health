@@ -29,6 +29,24 @@ The POC SHALL NOT add a central client-state library. A page owns its transient 
 
 The navigation SHALL establish a stable healthcare information architecture before every module is implemented: Dashboard, Patients, Scheduling, Clinical, Operations, Revenue, and Administration are the initial top-level modules. Selecting a module SHALL reveal only its contextual second-level navigation. Until a module has an authorized application capability, its route SHALL present a clear unavailable state and SHALL not imply authorization, display placeholder clinical data, or call a protected module API. Administration SHALL initially contain Workforce and Roles.
 
+The active top-level control is the sole visible parent-module label. Contextual
+second-level navigation SHALL contain only real destination controls and SHALL
+not repeat the parent label as non-interactive text that resembles another tab.
+The solid primary top-level module treatment and the second-level current-page
+treatment SHALL not look like two strengths of the same pill. The current page
+therefore uses an underline and emphasized label on the shared navigation
+surface, in addition to `aria-current`, while inactive destinations remain
+unfilled. This makes module-versus-page hierarchy recognizable without relying
+on color alone.
+Its accessible navigation label continues to name the active module so removing
+the visual duplicate does not remove structure for assistive technology.
+Contextual navigation with more than seven destinations SHALL keep a bounded
+set of direct page controls and move the remaining destinations into a labelled,
+keyboard-operable **More** disclosure. The disclosure identifies the current
+page when it belongs to the overflow set. It is an overflow safeguard rather
+than a substitute for grouping a genuinely large settings or operational area
+into named information-architecture sections.
+
 The token contract SHALL use semantic names for background, surface, foreground, muted content, border, input, focus ring, primary action, destructive action, and operational status. Teal is the provisional product accent until approved brand guidance replaces it through the semantic token layer. Success, warning, information, and destructive colors are reserved for meaning and SHALL also include visible text or accessible labels. Feature code SHALL NOT encode meaning through color alone.
 
 Light and dark palettes SHALL meet WCAG AA contrast for ordinary text and interactive labels. Theme selection MAY be stored locally because it is non-sensitive preference data. Motion SHALL be limited to feedback and state transitions and SHALL honor `prefers-reduced-motion`. The radius system SHALL use 8-pixel controls, 12-pixel surfaces, and pill shapes only for status or categorization.
