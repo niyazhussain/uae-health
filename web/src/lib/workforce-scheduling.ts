@@ -80,11 +80,102 @@ export interface SchedulingService {
   practitionerAssignments: PractitionerServiceAssignment[];
 }
 
+export interface SchedulingAvailabilityTemplate {
+  availabilityTemplateId: string;
+  facilityId: string;
+  facilityName: string;
+  practitionerFacilityAssignmentId: string;
+  practitionerServiceAssignmentId: string;
+  practitionerId: string;
+  practitionerDisplayName: string;
+  appointmentServiceId: string;
+  serviceName: string;
+  durationMinutes: number;
+  isoWeekday: number;
+  localStartMinute: number;
+  localEndMinute: number;
+  effectiveFrom: string;
+  effectiveUntil: string | null;
+  sourceTimezone: string;
+  status: "active" | "inactive";
+  updatedAt: string;
+}
+
+export interface SchedulingAvailabilityException {
+  availabilityExceptionId: string;
+  facilityId: string;
+  facilityName: string;
+  practitionerFacilityAssignmentId: string | null;
+  practitionerId: string | null;
+  practitionerDisplayName: string | null;
+  kind: "facility_closed" | "practitioner_unavailable";
+  isAllDay: boolean;
+  localStartsAt: string;
+  localEndsAt: string;
+  startsAt: string;
+  endsAt: string;
+  sourceTimezone: string;
+  status: "active" | "cancelled";
+  updatedAt: string;
+}
+
+export interface SchedulingAvailabilitySlot {
+  appointmentSlotId: string;
+  availabilityTemplateId: string;
+  facilityId: string;
+  practitionerFacilityAssignmentId: string;
+  practitionerServiceAssignmentId: string;
+  practitionerId: string;
+  appointmentServiceId: string;
+  sourceLocalDate: string;
+  sourceTimezone: string;
+  startsAt: string;
+  endsAt: string;
+  status: "available" | "withdrawn";
+  withdrawalPending: boolean;
+  hasLiveAppointment: boolean;
+  updatedAt: string;
+}
+
+export interface AvailabilityMaterializationSummary {
+  horizonStartsOn: string;
+  horizonEndsBefore: string;
+  sourceTimezone: string;
+  createdSlotCount: number;
+  reactivatedSlotCount: number;
+  withdrawnSlotCount: number;
+  preservedLiveSlotCount: number;
+  skippedOverlapCount: number;
+  affectedAppointmentCount: number;
+  affectedAppointmentIds: string[];
+  affectedAppointmentIdsTruncated: boolean;
+}
+
+export interface AvailabilityTemplateMutationResponse {
+  template: SchedulingAvailabilityTemplate;
+  replacedTemplateId: string | null;
+  materialization: AvailabilityMaterializationSummary;
+}
+
+export interface AvailabilityExceptionMutationResponse {
+  exception: SchedulingAvailabilityException;
+  materialization: AvailabilityMaterializationSummary;
+}
+
+export interface ServiceDurationMutationResponse {
+  service: SchedulingService;
+  materialization: AvailabilityMaterializationSummary;
+}
+
 export type SchedulingReasonCode =
   | "catalogue-setup"
   | "staffing-change"
   | "service-configuration"
-  | "service-retirement";
+  | "service-retirement"
+  | "availability-configuration"
+  | "provider-availability-change"
+  | "facility-availability-change"
+  | "service-duration-change";
 
 interface ApiErrorBody {
   message?: string | string[];
@@ -144,16 +235,18 @@ async function read<T>(
 
 async function command<T>(
   path: string,
-  method: "POST" | "PATCH",
+  method: "POST" | "PUT" | "PATCH",
   csrfToken: string,
   input: Record<string, unknown>,
+  idempotencyKey: string = crypto.randomUUID(),
 ): Promise<T> {
   const response = await fetch(new URL(path, apiBaseUrl()), {
     method,
+    cache: "no-store",
     credentials: "include",
     headers: {
       "Content-Type": "application/json",
-      "Idempotency-Key": crypto.randomUUID(),
+      "Idempotency-Key": idempotencyKey,
       "X-CSRF-Token": csrfToken,
     },
     body: JSON.stringify(input),
@@ -357,5 +450,224 @@ export function changePractitionerServiceAssignment(
       expectedUpdatedAt: assignment.updatedAt,
       reasonCode: "staffing-change",
     },
+  );
+}
+
+export function getSchedulingAvailabilityTemplates(
+  organizationId: string,
+  facilityId: string,
+  page = 1,
+  filters?: {
+    appointmentServiceId?: string;
+    status?: "active" | "inactive";
+  },
+): Promise<SchedulingPage<SchedulingAvailabilityTemplate>> {
+  return read("/v1/admin/scheduling/availability-templates", {
+    organizationId,
+    facilityId,
+    page: String(page),
+    pageSize: "50",
+    ...(filters?.appointmentServiceId
+      ? { appointmentServiceId: filters.appointmentServiceId }
+      : {}),
+    ...(filters?.status ? { status: filters.status } : {}),
+  });
+}
+
+export function getSchedulingAvailabilityExceptions(
+  organizationId: string,
+  facilityId: string,
+  page = 1,
+): Promise<SchedulingPage<SchedulingAvailabilityException>> {
+  return read("/v1/admin/scheduling/availability-exceptions", {
+    organizationId,
+    facilityId,
+    page: String(page),
+    pageSize: "50",
+  });
+}
+
+export function getSchedulingAvailabilitySlots(input: {
+  organizationId: string;
+  facilityId: string;
+  startsAt: string;
+  endsAt: string;
+  page?: number;
+  status?: "available" | "withdrawn";
+}): Promise<SchedulingPage<SchedulingAvailabilitySlot>> {
+  return read("/v1/admin/scheduling/slots", {
+    organizationId: input.organizationId,
+    facilityId: input.facilityId,
+    startsAt: input.startsAt,
+    endsAt: input.endsAt,
+    page: String(input.page ?? 1),
+    pageSize: "100",
+    ...(input.status ? { status: input.status } : {}),
+  });
+}
+
+export function createSchedulingAvailabilityTemplate(
+  csrfToken: string,
+  input: {
+    organizationId: string;
+    practitionerServiceAssignmentId: string;
+    isoWeekday: number;
+    localStartMinute: number;
+    localEndMinute: number;
+    effectiveFrom: string;
+    effectiveUntil?: string;
+  },
+  idempotencyKey: string,
+): Promise<AvailabilityTemplateMutationResponse> {
+  return command(
+    "/v1/admin/scheduling/availability-templates",
+    "POST",
+    csrfToken,
+    {
+      ...input,
+      status: "inactive",
+      reasonCode: "availability-configuration",
+    },
+    idempotencyKey,
+  );
+}
+
+export function replaceSchedulingAvailabilityTemplate(
+  csrfToken: string,
+  template: SchedulingAvailabilityTemplate,
+  input: {
+    organizationId: string;
+    practitionerServiceAssignmentId: string;
+    isoWeekday: number;
+    localStartMinute: number;
+    localEndMinute: number;
+    effectiveFrom: string;
+    effectiveUntil?: string;
+    status: "active" | "inactive";
+  },
+  idempotencyKey: string,
+): Promise<AvailabilityTemplateMutationResponse> {
+  return command(
+    `/v1/admin/scheduling/availability-templates/${template.availabilityTemplateId}`,
+    "PUT",
+    csrfToken,
+    {
+      ...input,
+      expectedUpdatedAt: template.updatedAt,
+      reasonCode: "availability-configuration",
+    },
+    idempotencyKey,
+  );
+}
+
+export function changeSchedulingAvailabilityTemplateStatus(
+  csrfToken: string,
+  template: SchedulingAvailabilityTemplate,
+  organizationId: string,
+  status: "active" | "inactive",
+  idempotencyKey: string,
+): Promise<AvailabilityTemplateMutationResponse> {
+  return command(
+    `/v1/admin/scheduling/availability-templates/${template.availabilityTemplateId}/status`,
+    "PATCH",
+    csrfToken,
+    {
+      organizationId,
+      status,
+      expectedUpdatedAt: template.updatedAt,
+      reasonCode: "availability-configuration",
+    },
+    idempotencyKey,
+  );
+}
+
+export function materializeSchedulingAvailabilityTemplate(
+  csrfToken: string,
+  template: SchedulingAvailabilityTemplate,
+  organizationId: string,
+  idempotencyKey: string,
+): Promise<AvailabilityTemplateMutationResponse> {
+  return command(
+    `/v1/admin/scheduling/availability-templates/${template.availabilityTemplateId}/materializations`,
+    "POST",
+    csrfToken,
+    {
+      organizationId,
+      expectedUpdatedAt: template.updatedAt,
+      reasonCode: "availability-configuration",
+    },
+    idempotencyKey,
+  );
+}
+
+export function createSchedulingAvailabilityException(
+  csrfToken: string,
+  input: {
+    organizationId: string;
+    facilityId: string;
+    practitionerFacilityAssignmentId?: string;
+    kind: "facility_closed" | "practitioner_unavailable";
+    isAllDay: boolean;
+    localStartsAt: string;
+    localEndsAt: string;
+  },
+  idempotencyKey: string,
+): Promise<AvailabilityExceptionMutationResponse> {
+  return command(
+    "/v1/admin/scheduling/availability-exceptions",
+    "POST",
+    csrfToken,
+    {
+      ...input,
+      reasonCode:
+        input.kind === "facility_closed"
+          ? "facility-availability-change"
+          : "provider-availability-change",
+    },
+    idempotencyKey,
+  );
+}
+
+export function cancelSchedulingAvailabilityException(
+  csrfToken: string,
+  exception: SchedulingAvailabilityException,
+  organizationId: string,
+  idempotencyKey: string,
+): Promise<AvailabilityExceptionMutationResponse> {
+  return command(
+    `/v1/admin/scheduling/availability-exceptions/${exception.availabilityExceptionId}/status`,
+    "PATCH",
+    csrfToken,
+    {
+      organizationId,
+      status: "cancelled",
+      expectedUpdatedAt: exception.updatedAt,
+      reasonCode:
+        exception.kind === "facility_closed"
+          ? "facility-availability-change"
+          : "provider-availability-change",
+    },
+    idempotencyKey,
+  );
+}
+
+export function changeSchedulingServiceDuration(
+  csrfToken: string,
+  service: SchedulingService,
+  organizationId: string,
+  durationMinutes: number,
+  idempotencyKey: string,
+): Promise<ServiceDurationMutationResponse> {
+  return command(
+    `/v1/admin/scheduling/services/${service.appointmentServiceId}/duration`,
+    "PATCH",
+    csrfToken,
+    {
+      organizationId,
+      durationMinutes,
+      expectedUpdatedAt: service.updatedAt,
+      reasonCode: "service-duration-change",
+    },
+    idempotencyKey,
   );
 }

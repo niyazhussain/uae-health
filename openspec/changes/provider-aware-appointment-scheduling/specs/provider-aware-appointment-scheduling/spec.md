@@ -512,3 +512,79 @@ SHALL not rely on frontend state for authorization.
 - **WHEN** a scheduler reviews the practitioners eligible for one service
 - **THEN** the page presents one practitioner per row with aligned eligibility status and lifecycle action
 - **AND** narrow screens preserve the practitioner, status, and action reading order without a multi-column card grid
+
+#### Scenario: Manage weekly availability in one facility
+
+- **WHEN** an authorized scheduler selects one exact practice and facility and opens weekly schedules
+- **THEN** the page groups templates by practitioner and lists service, facility-local weekday, time, effective dates, status, and labelled create, replace, publish, and deactivate actions without repeating provider details on every row
+- **AND** each practitioner group can be expanded or collapsed with a labelled keyboard-operable chevron, while service and lifecycle-status filters constrain the server-paginated result
+- **AND** one explained Regenerate slots action per displayed practitioner reconciles all of that practitioner's active definitions in the selected facility
+- **AND** a newly created definition starts inactive until the scheduler explicitly publishes it
+
+#### Scenario: Distinguish retained definitions from usable capacity
+
+- **GIVEN** an upstream service, practitioner, facility affiliation, or service eligibility becomes inactive
+- **WHEN** the scheduler reviews that practitioner's weekly schedules
+- **THEN** active definitions that cannot publish are labelled blocked with the failed prerequisite and cannot be regenerated or replaced as usable capacity
+- **AND** inactive definitions and inactive service settings are collapsed behind a labelled keyboard-operable disclosure as retained scheduling history rather than displayed like current bookable hours
+- **AND** the scheduler may still deactivate an active blocked definition explicitly
+
+#### Scenario: Scan availability actions and rows consistently
+
+- **WHEN** a scheduler reviews weekly schedules, service durations, exceptions, or published slots
+- **THEN** desktop lists use visible headers and stable service, time, status, and action columns while narrow screens preserve the same reading order with explicit field labels
+- **AND** primary, secondary, warning, and lifecycle-removal actions have visible button boundaries, text labels, focus indicators, and distinct emphasis without relying on color alone
+- **AND** contextual help appears beside the heading or label it explains rather than in an action column, while completed assignment states render as status rather than disabled actions with adjacent information controls
+
+#### Scenario: Switch availability scope safely
+
+- **WHEN** a scheduler changes the selected practice or facility
+- **THEN** the page clears the previous templates, exceptions, slots, and mutation summary before loading the new exact scope
+
+#### Scenario: Apply a local availability exception
+
+- **WHEN** a scheduler creates a facility closure or practitioner unavailability period
+- **THEN** the page labels the selected facility timezone, accepts either one all-day local date or explicit local minute boundaries, supplies the closed server-approved reason code, and never accepts free text
+- **AND** applying the exception is confirmed as an immediate capacity-affecting reconciliation
+
+#### Scenario: Preserve local schedule evidence in the browser
+
+- **WHEN** a scheduler enters or reviews weekly hours or an exception
+- **THEN** the page preserves canonical wall-clock values without parsing them through the browser timezone, labels next-day midnight and inclusive effective dates, and explains that overnight hours require two templates
+- **AND** a returned historical row uses its immutable source timezone and flags a difference from the facility's current timezone
+- **AND** replacing that row labels the facility's current timezone for the new definition without reinterpreting the historical evidence
+
+#### Scenario: Review a bounded publication result
+
+- **WHEN** publication, reconciliation, exception, or duration regeneration completes
+- **THEN** the page shows the server-owned local horizon and created, reactivated, withdrawn, preserved-live, and skipped-overlap counts
+- **AND** it shows only the bounded opaque affected appointment identifiers authorized for the current practice, with an explicit truncation message and no patient or sibling-practice data
+
+#### Scenario: Inspect published slot state
+
+- **WHEN** a scheduler opens published slots for the selected facility
+- **THEN** the page presents a bounded deterministic list in the facility timezone and visibly distinguishes available, withdrawn, live-reserved, and deferred-withdrawal states
+- **AND** the page explains that slots are retained as durable evidence and removed capacity is withdrawn rather than deleted
+
+#### Scenario: Block one published time safely
+
+- **WHEN** a scheduler confirms Block this time on an available practitioner slot
+- **THEN** the page creates an exact practitioner-facility unavailability exception for that interval using the facility's current timezone and approved reason code
+- **AND** overlapping unbooked capacity may be withdrawn while live referenced evidence is preserved and reported without deleting the slot row
+
+#### Scenario: Show an availability conflict without assuming success
+
+- **WHEN** a template, exception, duration, or materialization command is stale, overlaps another provider window, exceeds a bound, or loses authorization
+- **THEN** the page presents an explicit validation, conflict, or permission-denied state and never presents an optimistic success
+- **AND** a stale conflict preserves the safe draft, reloads the latest server version, and requires explicit reconfirmation
+
+#### Scenario: Retry an uncertain availability command safely
+
+- **WHEN** an unchanged availability command is still in flight or its transport outcome is uncertain
+- **THEN** the browser retains the same idempotency key for retry and rotates it only after a definitive outcome or payload change
+
+#### Scenario: Keep affected-request details in the dual-permission queue
+
+- **WHEN** an availability reconciliation reports affected live requests
+- **THEN** this page shows only the bounded opaque identifiers, total, truncation state, and generic slot reservation state
+- **AND** patient-identifying summaries and request resolution remain in the task 5.3 queue requiring both scheduling and patient-read permissions

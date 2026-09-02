@@ -32,6 +32,11 @@ const SchedulingCatalogue = lazy(async () => {
   return { default: module.SchedulingCatalogue };
 });
 
+const SchedulingAvailability = lazy(async () => {
+  const module = await import("@/pages/scheduling/availability/page");
+  return { default: module.SchedulingAvailability };
+});
+
 const PatientPortalPage = lazy(async () => {
   const module = await import("@/pages/patient-portal/page");
   return { default: module.PatientPortalPage };
@@ -67,6 +72,12 @@ const modules: MainModule[] = [
         implemented: true,
       },
       { id: "appointments", label: "Appointments", path: "/scheduling" },
+      {
+        id: "availability",
+        label: "Availability",
+        path: "/scheduling/availability",
+        implemented: true,
+      },
       { id: "calendar", label: "Calendar", path: "/scheduling/calendar" },
     ],
   },
@@ -248,6 +259,15 @@ function WorkforceApplication() {
           />
         ) : route.page.implemented && route.page.id === "catalogue" ? (
           <SchedulingCatalogue
+            csrfToken={session.step.csrfToken}
+            selectedOrganizationId={selectedOrganizationId}
+            onSelectedOrganizationChange={updateOrganization}
+            onContextChange={updateContext}
+            onPageReady={finishNavigation}
+            onSessionExpired={session.handleUnauthorized}
+          />
+        ) : route.page.implemented && route.page.id === "availability" ? (
+          <SchedulingAvailability
             csrfToken={session.step.csrfToken}
             selectedOrganizationId={selectedOrganizationId}
             onSelectedOrganizationChange={updateOrganization}

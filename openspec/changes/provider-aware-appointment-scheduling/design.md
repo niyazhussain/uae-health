@@ -557,6 +557,108 @@ vertically aligned list with separate practitioner, eligibility-status, and
 lifecycle-action columns; narrow screens stack each row without changing its
 reading order.
 
+Task 5.2 adds `/scheduling/availability` as a separate workforce scheduling
+page. It retains the exact-practice selector and requires one authorized
+facility before loading availability. Changing either scope clears the previous
+facility's templates, exceptions, slots, and mutation result before the next
+read completes. Three keyboard-operable views separate weekly schedules, dated
+exceptions, and published slots without making any browser state authoritative.
+
+Weekly schedules are grouped by practitioner so repeated provider details and
+advanced actions are not duplicated on every weekday row. Each aligned
+schedule row contains service, facility-local weekday and time, effective
+dates, lifecycle status, and bounded definition actions. New definitions start
+inactive. Each practitioner group is a labelled keyboard-operable chevron
+disclosure, and server-backed service and lifecycle-status filters constrain
+the paginated schedule result without implying that a client-only subset is the
+whole facility schedule. Publication is an explicit status command, immutable edits replace
+the definition, and one practitioner-level **Regenerate slots** action invokes
+manual reconciliation for all of that practitioner's active definitions in the
+selected facility. Its adjacent explanation states that ordinary publication,
+replacement, exception, and duration commands already reconcile automatically.
+The same view exposes service
+duration changes with the current optimistic version and explains that a
+change regenerates future capacity while preserving referenced slot evidence.
+Replacing an active definition with another active definition is explicitly
+capacity-affecting and uses the same confirmation and result treatment as
+publication.
+
+Inactive weekly definitions remain durable scheduling history rather than
+disappearing with an upstream catalogue lifecycle change. The page collapses
+those retained inactive definitions and inactive service-duration settings by
+default behind labelled chevron disclosures that remain operable with Enter or
+Space. Operational lists use stable desktop column tracks and visible headers;
+the same rows stack with explicit field labels on narrow screens. Primary,
+secondary, warning, and lifecycle-removal actions use distinct button emphasis,
+visible boundaries, and text labels instead of relying on icon shape or color.
+Across the implemented workforce scheduling pages, compact help triggers SHALL
+sit immediately beside the heading or label they explain and SHALL not occupy
+an action column or trail a lifecycle control. Operational action areas contain
+only verb-labelled, visibly bounded controls. Completion is rendered as status,
+not as a disabled action with an adjacent help control. Restrained semantic
+surface color differentiates guidance, current scope, blocked prerequisites,
+and destructive lifecycle actions in both themes without making color the only
+carrier of meaning.
+An active definition whose service, practitioner, facility
+affiliation, or service eligibility is no longer active is labelled
+**Blocked**, explains the failed prerequisite, and does not present replacement,
+publication, or regeneration as usable capacity. Deactivation remains
+available so the scheduler can retire the definition explicitly.
+
+Exception creation distinguishes an exact facility closure from one
+practitioner-facility unavailability period. The form uses the selected
+facility timezone, supports either one local all-day date or explicit local
+start/end minutes, selects only in-scope practitioner affiliations, and never
+accepts a free-text reason. Active exceptions may be cancelled terminally but
+are never deleted from the page's operational history.
+
+Creating an exception applies it immediately and is presented as a
+capacity-affecting command. The browser treats weekly and exception wall-clock
+values as canonical local strings and integers rather than parsing them through
+`Date` or the browser timezone. Template end minute `1440` is labelled as
+next-day midnight, `effectiveUntil` is inclusive, and overnight working hours
+are explained as two same-local-day templates. The API remains responsible for
+IANA validation and DST gap/fold rejection without automatic shifting.
+
+Published slots are a bounded operational view whose durable slot evidence is
+read-only. Its only row-level capacity action creates a separate availability
+exception and never edits or deletes the slot directly. It displays UTC-backed
+times in the facility timezone and visibly distinguishes available, withdrawn,
+live-reserved, and deferred-withdrawal states. The page queries only a short
+server-bounded range within the 56-day
+publication horizon using rolling UTC bounds and deterministic pagination.
+Each historical row is formatted with its returned immutable source timezone;
+the page flags a difference from the facility's current timezone instead of
+silently reinterpreting the source evidence. A replacement form separately
+labels the facility's current timezone because the replacement is a new
+definition that snapshots that current zone; it retains the historical zone
+only as a warning and never presents it as the replacement input zone.
+
+Slot rows are durable scheduling evidence and are never hard-deleted. The
+published-slot view explains that removing capacity changes an unbooked slot to
+`withdrawn`, while a live referenced slot becomes unavailable for new booking
+and remains preserved as deferred withdrawal. An available row may offer
+**Block this time**, which confirms and creates an exact practitioner-facility
+unavailability exception for the slot interval in the facility's current
+timezone. That operation may block overlapping services for the same
+practitioner, retains the slot row and any live appointment evidence, and uses
+the normal transactional exception audit and reconciliation response.
+
+Every availability mutation displays the server reconciliation summary:
+created, reactivated, withdrawn, preserved-live, and skipped-overlap counts,
+the exact local horizon and timezone, plus the authorized practice's bounded
+opaque affected appointment identifiers and truncation state. A summary never
+reveals sibling-practice appointment identifiers or patient information. The
+page confirms publication, deactivation, cancellation, and regeneration
+actions and never presents an optimistic success. It retains one browser
+idempotency key while an unchanged command is in flight or its outcome is
+uncertain, and rotates the key only after a definitive outcome or payload
+change. A stale conflict preserves the safe draft, reloads the latest server
+version, and requires explicit reconfirmation. A successful command reloads
+server state. Affected-request information remains limited to the bounded
+opaque mutation summary and a slot's live-reservation boolean; patient details
+and durable request resolution belong only to task 5.3's dual-permission queue.
+
 ## Risks / Trade-offs
 
 - **Unverified professional labels could imply credentialing** → Restrict the
