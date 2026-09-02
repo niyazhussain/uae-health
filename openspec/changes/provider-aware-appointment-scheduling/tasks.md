@@ -29,6 +29,7 @@
 - [x] 5.3 Add the scoped workforce appointment queue with confirm and decline controls, conflict handling, and permission-denied states.
 - [ ] 5.4 Upgrade the patient booking journey to practice, service, doctor or any-doctor, concrete time, and confirmation steps while keeping one selected practice context at a time.
 - [ ] 5.5 Verify responsive keyboard operation, labels, focus management, status announcements, and patient-versus-workforce terminology across the new scheduling pages.
+- [x] 5.5a Standardize contextual-help placement, semantic section color, and action-versus-status affordances across the implemented workforce scheduling pages so help icons never compete with lifecycle controls.
 
 ## 6. Assurance and delivery
 

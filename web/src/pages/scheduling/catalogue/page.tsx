@@ -943,8 +943,8 @@ function InfoTip({ label }: { label: string }) {
       <TooltipTrigger asChild>
         <button
           type="button"
-          className="inline-grid size-7 shrink-0 place-items-center rounded-full text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-          aria-label={label}
+          className="inline-grid size-5 shrink-0 place-items-center rounded-full text-primary/75 outline-none hover:bg-info/15 hover:text-primary focus-visible:ring-2 focus-visible:ring-ring"
+          aria-label={`Help: ${label}`}
         >
           <InfoIcon className="size-4" />
         </button>
@@ -1005,7 +1005,10 @@ function PractitionersPanel({
     <>
       <div className="divide-y">
         {practitioners.map((practitioner) => (
-          <article key={practitioner.practitionerId} className="p-5">
+          <article
+            key={practitioner.practitionerId}
+            className="border-s-4 border-s-transparent p-5 transition-colors hover:border-s-primary/40 hover:bg-primary/[0.025]"
+          >
             <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
               <div className="flex min-w-0 gap-3">
                 <span className="grid size-10 shrink-0 place-items-center rounded-full bg-secondary text-secondary-foreground">
@@ -1031,12 +1034,10 @@ function PractitionersPanel({
               </div>
               {practitioner.facilityAssignments.length >=
               authorizedFacilityCount ? (
-                <div className="flex items-center gap-1">
-                  <Button size="sm" variant="outline" disabled>
-                    All facilities assigned
-                  </Button>
-                  <InfoTip label="This practitioner already has an affiliation with every facility in your current scheduling scope." />
-                </div>
+                <Badge variant="outline">
+                  <CheckCircleIcon />
+                  All facilities assigned
+                </Badge>
               ) : (
                 <Button
                   size="sm"
@@ -1250,7 +1251,10 @@ function ServicesPanel({
     <>
       <div className="divide-y">
         {services.map((service) => (
-          <article key={service.appointmentServiceId} className="p-5">
+          <article
+            key={service.appointmentServiceId}
+            className="border-s-4 border-s-transparent p-5 transition-colors hover:border-s-primary/40 hover:bg-primary/[0.025]"
+          >
             <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
               <div>
                 <div className="flex flex-wrap items-center gap-2">
@@ -1261,7 +1265,6 @@ function ServicesPanel({
                       ? "Ready to publish"
                       : "Not publishable"}
                   </Badge>
-                  <InfoTip label="Publishable means the specialty, practitioner, facility affiliation, and service eligibility chain is active." />
                 </div>
                 <p className="mt-1 text-sm text-muted-foreground">
                   {service.specialtyName} · {service.facilityName} ·{" "}
@@ -1289,12 +1292,10 @@ function ServicesPanel({
                     Add eligibility
                   </Button>
                 ) : (
-                  <div className="flex items-center gap-1">
-                    <Button size="sm" variant="outline" disabled>
-                      All practitioners assigned
-                    </Button>
-                    <InfoTip label="Every active practitioner affiliation at this service facility already has an eligibility record." />
-                  </div>
+                  <Badge variant="outline">
+                    <CheckCircleIcon />
+                    All practitioners assigned
+                  </Badge>
                 )}
                 <Button
                   size="sm"
@@ -1455,7 +1456,7 @@ function FacilitiesPanel({
         return (
           <article
             key={facility.facilityId}
-            className="rounded-xl border bg-muted/15 p-4"
+            className="rounded-xl border bg-primary/[0.025] p-4 transition-colors hover:border-primary/40 hover:bg-primary/[0.05]"
           >
             <span className="grid size-10 place-items-center rounded-lg bg-secondary text-secondary-foreground">
               <BuildingsIcon className="size-5" />
