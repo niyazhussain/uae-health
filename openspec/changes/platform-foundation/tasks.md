@@ -2,7 +2,7 @@
 
 - [x] 0.1 Establish the OpenSpec document map, evolved-task tracking rule, and task-numbered commit-and-push workflow.
 - [x] 0.1a Require explicit user review and approval before every task commit or push.
-- [ ] 0.2 Configure protected `develop` and `main` branch rules, required checks, and production environment approval without bypassing the documented release flow.
+- [ ] 0.2 Configure protected `main` branch rules, required checks, and explicit development/production environment approvals without bypassing the documented release flow.
 - [x] 0.3 Re-scope the POC checklist to native workforce access plus basic patient identity and appointments, and move enterprise identity and real-data production work to the dedicated Phase 2 OpenSpec change.
 
 ## 1. Confirm and record the foundation
@@ -54,11 +54,11 @@
 
 ## 4. Deploy a disposable fake-data demonstration
 
-- [ ] 4.0 Add GitHub Actions verification for feature branches, `develop`, and `main`; build source-revision-tagged web and API artifacts without deploying feature branches.
-- [ ] 4.1 Configure the synthetic staging GitHub environment, least-privilege staging secrets, protected `develop` deployment, and review gates without production credentials or a production deployment.
-- [ ] 4.2 Implement the Portal-style `develop` deployment to the existing Singapore Linux server using immutable artifacts, SSH, atomic activation, readiness checks, and rollback without compiling source on the server.
-- [ ] 4.3 Run one self-managed NestJS API and synthetic PostgreSQL service on the Singapore server with private database networking and an encrypted persistent volume.
-- [ ] 4.4 Publish the staging React artifact through its own CloudFront distribution, custom hostname and certificate, HTTPS-only delivery, SPA fallback, security headers, and safe cache policies.
+- [x] 4.0 Add GitHub Actions verification for pull requests and branch pushes, plus a manual source-revision-tagged web/API artifact build that performs no deployment.
+- [ ] 4.1 Configure the synthetic `singapore-development` GitHub environment, least-privilege environment secrets and public variables, protected manual promotion from an exact reviewed `main` artifact run, and review gates without production credentials or an automatic deployment.
+- [ ] 4.2 Implement the Portal-style deployment to the existing Singapore Linux server using immutable artifacts, SSH, atomic activation, readiness checks, and rollback without compiling source on the server.
+- [ ] 4.3 Define the Singapore NestJS API and synthetic PostgreSQL 17 runtime in `/Users/niyazshafrina/Github/infrastructure`, with no database host port, a dedicated internal database network, an encrypted persistent host volume, and migration/seed gates.
+- [ ] 4.4 Publish the revision-tagged React artifact at `uae-health.softdefine.com` through the existing Singapore Nginx edge with HTTPS-only delivery, atomic activation, SPA fallback, security headers, and safe cache policies; proxy the API separately at `api.uae-health.softdefine.com` without caching it.
 - [ ] 4.4a Publish workforce and patient portal entry points on separate approved hosts (`uae-health.com` and `patient.uae-health.com`, with staging equivalents), route both to the shared API through separate endpoint namespaces and session boundaries, and reject cross-entry authentication context.
 - [ ] 4.4b Configure and verify the API's explicit trusted-proxy policy before enabling public patient registration outside local synthetic QA, so IP-based abuse limits use a verified client address and never trust client-supplied forwarding headers by default.
 - [ ] 4.5 Document and verify staging database backup/restore, deployment rollback, and complete synthetic-environment recovery before public demonstration.

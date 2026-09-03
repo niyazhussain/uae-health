@@ -12,7 +12,7 @@ Terraform state mutation and cloud resource changes SHALL run only through a man
 - **THEN** the plan is treated as advisory and is not applied or used to mutate remote state from the local environment
 
 ### Requirement: Trace decisions and completed work
-The repository SHALL use focused OpenSpec changes to record accepted design decisions, normative behavior, and implementation tasks. Newly discovered work SHALL receive a stable task identifier. After applicable verification passes, the task SHALL be presented to the user for review. It SHALL be marked complete, committed with its task identifier, and pushed to the current non-production branch only after explicit user approval for those operations. `main` SHALL remain a protected production-release branch.
+The repository SHALL use focused OpenSpec changes to record accepted design decisions, normative behavior, and implementation tasks. Newly discovered work SHALL receive a stable task identifier. After applicable verification passes, the task SHALL be presented to the user for review. It SHALL be marked complete, committed with its task identifier, and pushed to protected `main` only after explicit user approval for those operations. A push SHALL run verification only; environment promotion SHALL remain a separate manual, approval-gated action and SHALL not make `main` an implicit production deployment trigger.
 
 #### Scenario: Discussion introduces additional implementation work
 - **WHEN** the team accepts work that is not represented by an existing incomplete task
@@ -59,19 +59,19 @@ The platform SHALL produce a versioned frontend artifact and API/worker containe
 - **WHEN** the release pipeline completes its verified build
 - **THEN** each artifact is identifiable by source revision and does not require source compilation on the production host
 
-### Requirement: Deploy branches to their assigned environments
-GitHub Actions SHALL deploy `develop` only to the synthetic-data staging environment on the existing Singapore server using SSH. It SHALL deploy `main` only to AWS UAE production resources. Feature branches SHALL run verification checks but SHALL NOT deploy automatically. Deployment credentials SHALL be supplied as repository or environment secrets; AWS production deployment SHALL use short-lived federated credentials where available.
+### Requirement: Promote reviewed revisions to an explicit environment
+GitHub Actions SHALL verify pull requests and branch pushes without deploying them. A manually dispatched, approval-gated workflow MAY promote one exact successful artifact run from protected `main` to the synthetic-data `singapore-development` environment on the existing Singapore server using SSH. No workflow in this change SHALL deploy to AWS UAE production. Deployment credentials SHALL be supplied only as environment secrets.
 
-#### Scenario: Develop branch is merged or pushed
-- **WHEN** a verified commit is pushed to `develop`
-- **THEN** GitHub Actions builds revision-tagged UI and API artifacts and deploys them to the Singapore staging environment, performs health checks, and does not access production resources
+#### Scenario: Branch or pull request changes
+- **WHEN** a commit is pushed or proposed for merge
+- **THEN** GitHub Actions runs the required checks without opening an SSH session, changing infrastructure, or deploying an application release
 
-#### Scenario: Main branch is merged or pushed
-- **WHEN** a verified commit is pushed to `main`
-- **THEN** GitHub Actions deploys the revision-tagged artifacts to the approved AWS UAE production environment and does not deploy to the Singapore staging server
+#### Scenario: Reviewed Singapore development release is promoted
+- **WHEN** an authorized operator manually selects a successful artifact run for an exact reviewed `main` commit and the `singapore-development` environment approval is granted
+- **THEN** GitHub Actions deploys only those revision-tagged artifacts to the Singapore server, verifies health before activation, and does not access production resources
 
 ### Requirement: Serve the SPA securely
-The production UI edge SHALL use a dedicated production CloudFront distribution to serve the static React application from a private S3 origin in AWS UAE. The synthetic staging UI MAY use a separate staging CloudFront distribution with a Singapore static origin. Each distribution SHALL have its own hostname, origin, cache namespace, and certificate binding. Both SHALL redirect HTTP to HTTPS, serve client-route fallback, apply approved security headers, cache fingerprinted assets immutably, and prevent stale long-lived caching of the application entry document. They SHALL NOT cache authenticated responses, API responses, sessions, or patient data.
+The production UI edge SHALL use a dedicated production CloudFront distribution to serve the static React application from a private S3 origin in AWS UAE. The Singapore development UI SHALL instead use the existing shared Nginx edge with an immutable static release directory and atomic active-release pointer. Both patterns SHALL redirect HTTP to HTTPS, serve client-route fallback, apply approved security headers, cache fingerprinted assets immutably, and prevent stale long-lived caching of the application entry document. They SHALL NOT cache authenticated responses, API responses, sessions, or patient data.
 
 Workforce and patient portal entry points SHALL use separate approved hostnames (`uae-health.com` and `patient.uae-health.com`, with staging equivalents). They MAY use the same immutable frontend artifact when host-aware routing is verified, but one hostname SHALL NOT render the other audience's application shell or reuse its authentication configuration.
 
@@ -79,9 +79,9 @@ Workforce and patient portal entry points SHALL use separate approved hostnames 
 - **WHEN** a user requests a valid SPA route that is not a physical file
 - **THEN** the UI edge returns the application entry document and the client router displays the requested route
 
-#### Scenario: Staging and production are released independently
-- **WHEN** a staging deployment occurs
-- **THEN** only the staging CloudFront distribution and hostname can expose the new synthetic-data UI release; the production distribution remains unchanged
+#### Scenario: Singapore development and production are released independently
+- **WHEN** a Singapore development deployment occurs
+- **THEN** only `uae-health.softdefine.com` can expose the new synthetic static release and no production distribution or hostname changes
 
 ### Requirement: Proxy API traffic securely
 The API edge SHALL terminate TLS, forward trusted request context, propagate correlation, restrict request size and timeout according to endpoint policy, and route traffic only to the private API upstream.
@@ -89,6 +89,17 @@ The API edge SHALL terminate TLS, forward trusted request context, propagate cor
 #### Scenario: Upload exceeds endpoint limit
 - **WHEN** a client submits a request larger than the configured endpoint allowance
 - **THEN** the edge or API rejects it without forwarding or retaining an uncontrolled oversized payload
+
+### Requirement: Isolate the Singapore development database
+The infrastructure repository SHALL define PostgreSQL 17 and the NestJS API for the Singapore synthetic environment. PostgreSQL SHALL use a persistent encrypted host volume, SHALL publish no host port, and SHALL accept application traffic only through a dedicated internal Docker network. The API SHALL join that network and the existing external reverse-proxy network; Nginx SHALL never join the database network.
+
+#### Scenario: External client probes PostgreSQL
+- **WHEN** an external or sibling reverse-proxy-network client attempts to reach the Singapore PostgreSQL service
+- **THEN** no published database port or shared proxy-network route is available
+
+#### Scenario: API release starts against persistent synthetic data
+- **WHEN** a reviewed API release starts after its approved migration and synthetic seed jobs complete
+- **THEN** it connects to the infrastructure-owned PostgreSQL volume without replacing or deleting that volume
 
 ### Requirement: Stage deployment by data classification
 The platform SHALL permit a low-cost, disposable pre-customer environment on the existing Singapore server only when it contains synthetic data. It MAY use one self-managed API instance and PostgreSQL instance without a load balancer. Before any real customer health data is processed, the API and workers SHALL run in AWS UAE behind approved production-grade edge/load-balancing controls, and all health-data processing, storage, backups, and logs SHALL remain in the UAE.

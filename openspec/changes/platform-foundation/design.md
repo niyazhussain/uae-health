@@ -145,11 +145,42 @@ The production web application SHALL be a static React build in a private S3 buc
 
 The production API SHALL run behind a private origin and a production-grade TLS edge/load-balancing configuration. Load balancing, WAF, multi-instance compute, Multi-AZ PostgreSQL, backup verification, and active monitoring become mandatory before processing real customer health data.
 
-GitHub Actions SHALL be the deployment control plane. A push to `develop` SHALL build and deploy only the synthetic-data staging environment to the existing Singapore Linux server using the Portal-style SSH deployment pattern. A push to `main` SHALL deploy the verified production release to AWS UAE. Feature branches SHALL run checks but SHALL NOT deploy automatically. Each deployment SHALL use a source-revision-tagged API image and a source-revision-tagged frontend build, run a health check before activation, and retain the prior compatible release for rollback.
+GitHub Actions SHALL be the deployment control plane. Pull requests and pushes
+SHALL verify the application without deploying it. The POC's only configured
+remote application environment is the manually approved
+`singapore-development` GitHub environment, sourced from an exact reviewed
+commit on `main`; neither a push to `main` nor a feature-branch event deploys it
+automatically. No AWS UAE production application deployment is configured in
+this change. Each Singapore deployment SHALL consume source-revision-tagged
+API and frontend artifacts from one successful verification run, run readiness
+checks before activation, and retain the prior compatible release for rollback.
+
+The Singapore development workforce application SHALL use
+`https://uae-health.softdefine.com`, and its API SHALL use
+`https://api.uae-health.softdefine.com`. These are synthetic-data development
+hosts for external QA, not production hosts. The workforce host SHALL not
+render the patient portal. Public patient registration and patient-host QA stay
+disabled until task 4.4a supplies and verifies a distinct approved patient
+hostname, origin, session boundary, and abuse controls.
+
+The application repository SHALL own verification, artifact construction, and
+the manually approved release workflow. The infrastructure repository SHALL
+own the Singapore runtime definition: the private PostgreSQL 17 service,
+NestJS service wiring, persistent host-volume path, shared-Nginx virtual hosts,
+certificate renewal definitions, and server-side atomic activation/rollback
+scripts. PostgreSQL SHALL have no published host port and SHALL be reachable
+only from the API on a dedicated internal Docker network. The API alone also
+joins the existing external `softdefine` proxy network.
 
 Terraform state mutation and cloud resource changes SHALL run only from the infrastructure repository's manually dispatched, commit-pinned GitHub Actions workflows. Developer workstations and agent sessions MAY run formatting, validation, planning, plan display, and read-only state inspection, but SHALL NOT run Terraform apply, destroy, import, or state mutation commands. A workflow apply SHALL consume the immutable plan artifact from its reviewed plan run and verify that the plan commit matches current `main`.
 
-Staging and production SHALL use the same CloudFront delivery pattern but SHALL NOT share a CloudFront distribution, origin, cache namespace, certificate binding, or hostname. The staging hostname (for example, `stage.example.com`) SHALL point to a staging distribution with only synthetic static content. The production hostname (for example, `app.example.com`) SHALL point to the production distribution with its private UAE S3 origin. CloudFront SHALL NOT proxy or cache API or patient data in either environment.
+The Singapore development frontend SHALL be served as an immutable static
+release by the existing shared Nginx edge, with atomic release-directory
+activation, SPA fallback, HTTPS-only delivery, security headers, immutable
+fingerprinted-asset caching, and no long-lived cache for `index.html`. It SHALL
+not proxy or cache API responses. The later production frontend remains a
+separate private-S3 and CloudFront design in AWS UAE and is not provisioned by
+this POC deployment.
 
 All infrastructure SHALL be defined as code. Disposable AWS test resources SHALL be controlled as follows:
 
@@ -176,7 +207,13 @@ If a discussion introduces additional implementation work, it SHALL be added as 
 
 A task SHALL be presented for user review only after its code and documentation are complete and applicable verification passes. The agent SHALL summarize the diff and checks, explicitly request approval to commit and push, and stop before either operation. Approval SHALL be specific to the current task and SHALL NOT carry forward from prior tasks. If approval covers only committing, pushing requires a separate approval. Once approved, the task checkbox SHALL be marked complete in the task-numbered commit, using `task <task-id>: <imperative summary>`, and the commit SHALL be pushed only when the user has approved the push. Failed, incomplete, or unapproved work SHALL not be marked complete, committed, or pushed. Force-pushes are prohibited.
 
-The repository SHALL use `develop` as the integration branch that deploys synthetic data to staging and `main` as the protected production-release branch for AWS UAE. Ordinary development SHALL not be pushed directly to `main`. The initial uncommitted repository state MAY be captured in one task-numbered baseline commit; subsequent unrelated tasks SHALL use separate commits.
+The repository SHALL use protected `main` as its default reviewed source branch.
+Remote environment selection is explicit and approval-gated rather than
+inferred from that branch: a `main` push verifies only, while a manual workflow
+may promote one exact successful artifact run to `singapore-development`.
+Production deployment remains absent and requires its own approved Phase 2
+design and environment. Subsequent unrelated tasks SHALL use separate
+task-numbered commits.
 
 ## Consequences
 

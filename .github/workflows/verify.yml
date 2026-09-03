@@ -1,0 +1,219 @@
+name: Verify and build release artifacts
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+    inputs:
+      build_release_artifacts:
+        description: Build revision-pinned artifacts for a later approved promotion
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "24"
+
+jobs:
+  openspec:
+    name: OpenSpec
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the reviewed revision
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Validate every OpenSpec change
+        run: >-
+          npm exec --yes --package=@fission-ai/openspec@1.3.1 --
+          openspec validate --all --strict
+
+  web:
+    name: Web
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - name: Check out the reviewed revision
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+      - name: Audit runtime dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+  api:
+    name: API
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17.11-alpine
+        env:
+          POSTGRES_DB: uae_health_ci
+          POSTGRES_USER: uae_health_ci
+          POSTGRES_PASSWORD: synthetic-ci-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U uae_health_ci -d uae_health_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    defaults:
+      run:
+        working-directory: api
+    steps:
+      - name: Check out the reviewed revision
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: api/package-lock.json
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+      - name: Run unit tests
+        run: npm test -- --runInBand
+
+      - name: Run HTTP integration tests
+        run: npm run test:e2e -- --runInBand
+
+      - name: Run PostgreSQL migration and repository tests
+        env:
+          DATABASE_URL: postgresql://uae_health_ci:synthetic-ci-only@127.0.0.1:5432/uae_health_ci
+          DATABASE_SSL: "false"
+        run: npm run test:database
+
+      - name: Audit runtime dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+  release-artifacts:
+    name: Revision-pinned release artifacts
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.build_release_artifacts &&
+      github.ref == 'refs/heads/main'
+    needs:
+      - openspec
+      - web
+      - api
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the reviewed revision
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Validate public Singapore build configuration
+        shell: bash
+        env:
+          WORKFORCE_USER_POOL_ID: ${{ vars.SINGAPORE_WORKFORCE_COGNITO_USER_POOL_ID }}
+          WORKFORCE_USER_POOL_CLIENT_ID: ${{ vars.SINGAPORE_WORKFORCE_COGNITO_USER_POOL_CLIENT_ID }}
+        run: |
+          set -euo pipefail
+          test -n "$WORKFORCE_USER_POOL_ID"
+          test -n "$WORKFORCE_USER_POOL_CLIENT_ID"
+          [[ "$WORKFORCE_USER_POOL_ID" == ap-south-1_* ]]
+
+      - name: Build the Singapore web release
+        working-directory: web
+        env:
+          VITE_API_BASE_URL: https://api.uae-health.softdefine.com
+          VITE_COGNITO_USER_POOL_ID: ${{ vars.SINGAPORE_WORKFORCE_COGNITO_USER_POOL_ID }}
+          VITE_COGNITO_USER_POOL_CLIENT_ID: ${{ vars.SINGAPORE_WORKFORCE_COGNITO_USER_POOL_CLIENT_ID }}
+          VITE_PATIENT_COGNITO_USER_POOL_ID: ""
+          VITE_PATIENT_COGNITO_USER_POOL_CLIENT_ID: ""
+          VITE_PATIENT_PORTAL_HOSTS: patient-disabled.invalid
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+          printf '{"environment":"singapore-development","releaseId":"%s"}\n' "$GITHUB_SHA" > dist/release.json
+
+      - name: Package and checksum the web release
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -C web/dist -czf "uae-health-web-${GITHUB_SHA}.tar.gz" .
+          sha256sum "uae-health-web-${GITHUB_SHA}.tar.gz" > "uae-health-web-${GITHUB_SHA}.tar.gz.sha256"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build the API image archive
+        uses: docker/build-push-action@v6
+        with:
+          context: api
+          file: api/Dockerfile
+          target: production
+          push: false
+          tags: uae-health-api:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          outputs: type=docker,dest=/tmp/uae-health-api-${{ github.sha }}.tar
+
+      - name: Checksum the API image archive
+        shell: bash
+        run: sha256sum "/tmp/uae-health-api-${GITHUB_SHA}.tar" > "/tmp/uae-health-api-${GITHUB_SHA}.tar.sha256"
+
+      - name: Upload the web artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: uae-health-web-${{ github.sha }}
+          path: |
+            uae-health-web-${{ github.sha }}.tar.gz
+            uae-health-web-${{ github.sha }}.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload the API artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: uae-health-api-${{ github.sha }}
+          path: |
+            /tmp/uae-health-api-${{ github.sha }}.tar
+            /tmp/uae-health-api-${{ github.sha }}.tar.sha256
+          if-no-files-found: error
+          retention-days: 7
