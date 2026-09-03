@@ -2,7 +2,7 @@
 
 - [x] 0.1 Establish the OpenSpec document map, evolved-task tracking rule, and task-numbered commit-and-push workflow.
 - [x] 0.1a Require explicit user review and approval before every task commit or push.
-- [ ] 0.2 Configure protected `main` branch rules, required checks, and explicit development/production environment approvals without bypassing the documented release flow.
+- [ ] 0.2 Configure protected `main` branch rules, required checks, and explicit development/production environment approvals; after adding a second trusted reviewer, disable environment self-review and administrator bypass without breaking the documented release flow.
 - [x] 0.3 Re-scope the POC checklist to native workforce access plus basic patient identity and appointments, and move enterprise identity and real-data production work to the dedicated Phase 2 OpenSpec change.
 
 ## 1. Confirm and record the foundation
@@ -55,7 +55,7 @@
 ## 4. Deploy a disposable fake-data demonstration
 
 - [x] 4.0 Add GitHub Actions verification for pull requests and branch pushes, plus a manual source-revision-tagged web/API artifact build that performs no deployment.
-- [ ] 4.1 Configure the synthetic `singapore-development` GitHub environment, least-privilege environment secrets and public variables, protected manual promotion from an exact reviewed `main` artifact run, and review gates without production credentials or an automatic deployment.
+- [x] 4.1 Configure the synthetic `singapore-development` GitHub environment, least-privilege environment secrets and public variables, protected manual promotion from an exact reviewed `main` artifact run, and review gates without production credentials or an automatic deployment.
 - [ ] 4.2 Implement the Portal-style deployment to the existing Singapore Linux server using immutable artifacts, SSH, atomic activation, readiness checks, and rollback without compiling source on the server.
 - [ ] 4.3 Define the Singapore NestJS API and synthetic PostgreSQL 17 runtime in `/Users/niyazshafrina/Github/infrastructure`, with no database host port, a dedicated internal database network, an encrypted persistent host volume, and migration/seed gates.
 - [ ] 4.4 Publish the revision-tagged React artifact at `uae-health.softdefine.com` through the existing Singapore Nginx edge with HTTPS-only delivery, atomic activation, SPA fallback, security headers, and safe cache policies; proxy the API separately at `api.uae-health.softdefine.com` without caching it.

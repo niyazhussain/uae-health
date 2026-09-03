@@ -172,6 +172,23 @@ scripts. PostgreSQL SHALL have no published host port and SHALL be reachable
 only from the API on a dedicated internal Docker network. The API alone also
 joins the existing external `softdefine` proxy network.
 
+The `singapore-development` GitHub environment SHALL accept only the protected
+`main` branch and SHALL require a trusted reviewer. While the personal
+repository has only one trusted collaborator, that reviewer MAY approve their
+own manually initiated synthetic-development run and GitHub's administrator
+bypass remains technically available but outside the approved release
+procedure. Task 0.2 SHALL disable self-review and administrator bypass when a
+second trusted reviewer is available. Public Cognito pool and browser-client
+identifiers SHALL be repository variables rather than secrets. Task 4.1 SHALL
+add no environment secret because its approval workflow performs no deployment;
+later tasks may add only the SSH values consumed by their reviewed deployment
+job, while database and API runtime secrets remain server-side under
+infrastructure ownership. The approval workflow SHALL accept a workflow-run ID
+and exact commit SHA, prove that the successful manual artifact run used
+`.github/workflows/verify.yml` on `main`, verify both revision-named artifact
+checksums and the web release metadata, and emit a short-lived approval receipt
+without contacting the server.
+
 Terraform state mutation and cloud resource changes SHALL run only from the infrastructure repository's manually dispatched, commit-pinned GitHub Actions workflows. Developer workstations and agent sessions MAY run formatting, validation, planning, plan display, and read-only state inspection, but SHALL NOT run Terraform apply, destroy, import, or state mutation commands. A workflow apply SHALL consume the immutable plan artifact from its reviewed plan run and verify that the plan commit matches current `main`.
 
 The Singapore development frontend SHALL be served as an immutable static
