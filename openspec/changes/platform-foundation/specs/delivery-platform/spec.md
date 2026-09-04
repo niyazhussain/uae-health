@@ -148,6 +148,11 @@ The infrastructure repository SHALL define PostgreSQL 17 and the NestJS API for 
 - **WHEN** a reviewed API release starts after its approved migration and synthetic seed jobs complete
 - **THEN** it connects to the infrastructure-owned PostgreSQL volume without replacing or deleting that volume
 
+#### Scenario: Runtime gate fails before activation
+
+- **WHEN** the encrypted-volume preflight, database migration, synthetic seed, or private candidate API readiness check fails
+- **THEN** deployment stops before changing the active API container or frontend release pointer and records no successful deployment receipt
+
 ### Requirement: Stage deployment by data classification
 
 The platform SHALL permit a low-cost, disposable pre-customer environment on the existing Singapore server only when it contains synthetic data. It MAY use one self-managed API instance and PostgreSQL instance without a load balancer. Before any real customer health data is processed, the API and workers SHALL run in AWS UAE behind approved production-grade edge/load-balancing controls, and all health-data processing, storage, backups, and logs SHALL remain in the UAE.

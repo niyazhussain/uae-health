@@ -222,6 +222,29 @@ not proxy or cache API responses. The later production frontend remains a
 separate private-S3 and CloudFront design in AWS UAE and is not provisioned by
 this POC deployment.
 
+The Singapore runtime SHALL be defined in the infrastructure repository under
+`uae-health/`. PostgreSQL SHALL use the pinned PostgreSQL 17 Alpine image, an
+internal named Docker network, no published port, and the bind-mounted host
+path `/var/www/volumes/uae-health/postgres`. The deployment preflight SHALL
+resolve that path's backing block device and reject activation unless Linux
+reports a dm-crypt/LUKS mapping. The database password SHALL be read from
+`/var/www/secrets/uae-health/postgres_password`; it SHALL not appear in Compose,
+GitHub configuration, release artifacts, process arguments, or logs.
+
+The NestJS API SHALL use the exact locally loaded image tag
+`uae-health-api:<release-sha>`, join only the internal database network and the
+existing external `softdefine` reverse-proxy network, expose port 3000 to those
+networks without publishing a host port, and read its runtime configuration
+from `/var/www/secrets/uae-health/api.env`. That server-side file MAY contain a
+database URL and synthetic staging identity-adapter credentials, but SHALL
+never enter Git or a deployment artifact. Before replacing the active API, the
+deployment command SHALL run migrations to completion, run the explicitly
+enabled synthetic seed, start a short-lived candidate container on the private
+database network, and require its health check to pass. A migration, seed, or
+candidate-readiness failure SHALL leave the active API and web release pointer
+unchanged. The seed SHALL run only with the explicit synthetic gate and SHALL
+remain prohibited for the production deployment environment.
+
 All infrastructure SHALL be defined as code. Disposable AWS test resources SHALL be controlled as follows:
 
 - A stopped EC2 instance stops compute billing but can retain EBS-volume and allocated-IP charges.
