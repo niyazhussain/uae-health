@@ -125,6 +125,16 @@ Workforce and patient portal entry points SHALL use separate approved hostnames 
 - **WHEN** a Singapore development deployment occurs
 - **THEN** only `uae-health.softdefine.com` can expose the new synthetic static release and no production distribution or hostname changes
 
+#### Scenario: Workforce host receives a patient-portal route
+
+- **WHEN** a browser requests `/patient-portal` or a descendant route from `uae-health.softdefine.com`
+- **THEN** the Singapore edge returns not found instead of rendering either the patient portal or the workforce fallback document
+
+#### Scenario: Static release caching follows content mutability
+
+- **WHEN** the browser requests a fingerprinted asset, the application entry document, or release metadata
+- **THEN** fingerprinted assets receive immutable long-lived caching while `index.html` and `release.json` receive no-store or revalidation-safe headers
+
 ### Requirement: Proxy API traffic securely
 
 The API edge SHALL terminate TLS, forward trusted request context, propagate correlation, restrict request size and timeout according to endpoint policy, and route traffic only to the private API upstream.

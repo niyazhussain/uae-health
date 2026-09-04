@@ -222,6 +222,20 @@ not proxy or cache API responses. The later production frontend remains a
 separate private-S3 and CloudFront design in AWS UAE and is not provisioned by
 this POC deployment.
 
+The Singapore edge SHALL use two explicit shared-Nginx virtual hosts and one
+Let's Encrypt certificate containing both approved synthetic-development SANs.
+`uae-health.softdefine.com` SHALL serve only the active immutable workforce web
+release, return the SPA entry document for client routes, return `404` for the
+`/patient-portal` namespace, cache fingerprinted assets immutably, and prevent
+storage of `index.html` and `release.json`. `api.uae-health.softdefine.com`
+SHALL proxy only to `uae-health-api:3000` on the existing `softdefine` network,
+set bounded request/response timeouts and request size, forward the trusted edge
+scheme/host context, disable buffering/caching, and mark every response
+`no-store`. Both hosts SHALL redirect ordinary HTTP traffic to HTTPS while
+retaining an ACME challenge path and SHALL apply restrictive security headers.
+Certificate issuance SHALL occur through the existing shared webroot before
+Nginx loads a TLS virtual host that references the new certificate.
+
 The Singapore runtime SHALL be defined in the infrastructure repository under
 `uae-health/`. PostgreSQL SHALL use the pinned PostgreSQL 17 Alpine image, an
 internal named Docker network, no published port, and the bind-mounted host
