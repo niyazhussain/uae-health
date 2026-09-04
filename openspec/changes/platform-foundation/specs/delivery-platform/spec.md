@@ -89,6 +89,16 @@ GitHub Actions SHALL verify pull requests and branch pushes without deploying th
 - **WHEN** an authorized operator manually selects a successful artifact run for an exact reviewed `main` commit and the `singapore-development` environment approval is granted
 - **THEN** GitHub Actions deploys only those revision-tagged artifacts to the Singapore server, verifies health before activation, and does not access production resources
 
+#### Scenario: Deployment loses readiness after activation
+
+- **WHEN** the approved Singapore release is atomically activated but the public API readiness check or frontend release-identity check fails
+- **THEN** the deployment workflow invokes the infrastructure-owned rollback command, retains the failed release evidence for diagnosis, publishes no successful deployment receipt, and exits unsuccessfully
+
+#### Scenario: SSH server identity is not trusted
+
+- **WHEN** the Singapore server does not present a host key contained in the environment-scoped known-hosts value
+- **THEN** strict OpenSSH verification rejects the connection before any artifact is copied or remote command is invoked
+
 #### Scenario: Selected artifact run is not eligible for promotion
 
 - **WHEN** the selected run is unsuccessful, belongs to another workflow, repository, branch, event, or revision, or its artifact checksum or release metadata is invalid

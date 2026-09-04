@@ -1,6 +1,6 @@
-name: Approve Singapore development release
+name: Deploy Singapore development release
 
-run-name: Approve ${{ inputs.release_sha }} for Singapore development
+run-name: Deploy ${{ inputs.release_sha }} to Singapore development
 
 on:
   workflow_dispatch:
@@ -23,8 +23,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  approve-release:
-    name: Validate approved release artifacts
+  deploy-release:
+    name: Validate and deploy approved release
     runs-on: ubuntu-latest
     environment:
       name: singapore-development
@@ -133,7 +133,74 @@ jobs:
             '
           tar -tf "artifacts/api/uae-health-api-${RELEASE_SHA}.tar" >/dev/null
 
-      - name: Record the approved promotion
+      - name: Create the deployment manifest
+        shell: bash
+        env:
+          ARTIFACT_RUN_ID: ${{ inputs.artifact_run_id }}
+          RELEASE_SHA: ${{ inputs.release_sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p deployment
+          web_sha="$(sha256sum "artifacts/web/uae-health-web-${RELEASE_SHA}.tar.gz" | cut -d ' ' -f 1)"
+          api_sha="$(sha256sum "artifacts/api/uae-health-api-${RELEASE_SHA}.tar" | cut -d ' ' -f 1)"
+          jq --null-input \
+            --arg environment "singapore-development" \
+            --arg releaseId "$RELEASE_SHA" \
+            --arg artifactRunId "$ARTIFACT_RUN_ID" \
+            --arg deploymentRunId "$GITHUB_RUN_ID" \
+            --arg webArtifact "uae-health-web-${RELEASE_SHA}.tar.gz" \
+            --arg webSha256 "$web_sha" \
+            --arg apiArtifact "uae-health-api-${RELEASE_SHA}.tar" \
+            --arg apiSha256 "$api_sha" \
+            '{
+              environment: $environment,
+              releaseId: $releaseId,
+              artifactRunId: $artifactRunId,
+              deploymentRunId: $deploymentRunId,
+              web: {artifact: $webArtifact, sha256: $webSha256},
+              api: {artifact: $apiArtifact, sha256: $apiSha256}
+            }' > deployment/release.json
+
+      - name: Configure strict SSH identity
+        shell: bash
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SINGAPORE_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SINGAPORE_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$SSH_PRIVATE_KEY"
+          test -n "$SSH_KNOWN_HOSTS"
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/singapore_deploy"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/singapore_deploy" "$HOME/.ssh/known_hosts"
+          ssh-keygen -y -f "$HOME/.ssh/singapore_deploy" >/dev/null
+
+      - name: Stage and atomically activate the release
+        shell: bash
+        env:
+          RELEASE_SHA: ${{ inputs.release_sha }}
+          ARTIFACT_RUN_ID: ${{ inputs.artifact_run_id }}
+          APPROVAL_RUN_ID: ${{ github.run_id }}
+          APPROVAL_RUN_ATTEMPT: ${{ github.run_attempt }}
+          SINGAPORE_SSH_HOST: ${{ vars.SINGAPORE_SSH_HOST }}
+          SINGAPORE_SSH_PORT: ${{ vars.SINGAPORE_SSH_PORT }}
+          SINGAPORE_SSH_USER: ${{ vars.SINGAPORE_SSH_USER }}
+          SSH_IDENTITY_FILE: ${{ runner.temp }}/singapore_deploy
+          SSH_KNOWN_HOSTS_FILE: ${{ github.workspace }}/.ssh-known-hosts
+          WEB_ARTIFACT: ${{ github.workspace }}/artifacts/web/uae-health-web-${{ inputs.release_sha }}.tar.gz
+          WEB_CHECKSUM: ${{ github.workspace }}/artifacts/web/uae-health-web-${{ inputs.release_sha }}.tar.gz.sha256
+          API_ARTIFACT: ${{ github.workspace }}/artifacts/api/uae-health-api-${{ inputs.release_sha }}.tar
+          API_CHECKSUM: ${{ github.workspace }}/artifacts/api/uae-health-api-${{ inputs.release_sha }}.tar.sha256
+          RELEASE_MANIFEST: ${{ github.workspace }}/deployment/release.json
+        run: |
+          set -euo pipefail
+          cp "$HOME/.ssh/singapore_deploy" "$SSH_IDENTITY_FILE"
+          cp "$HOME/.ssh/known_hosts" "$SSH_KNOWN_HOSTS_FILE"
+          chmod 600 "$SSH_IDENTITY_FILE" "$SSH_KNOWN_HOSTS_FILE"
+          .github/scripts/deploy-singapore-release.sh
+
+      - name: Record the successful deployment
         shell: bash
         env:
           ARTIFACT_RUN_ID: ${{ inputs.artifact_run_id }}
@@ -145,15 +212,15 @@ jobs:
             --arg environment "singapore-development" \
             --arg releaseId "$RELEASE_SHA" \
             --arg artifactRunId "$ARTIFACT_RUN_ID" \
-            --arg approvalRunId "$GITHUB_RUN_ID" \
+            --arg deploymentRunId "$GITHUB_RUN_ID" \
             '{
               environment: $environment,
               releaseId: $releaseId,
               artifactRunId: $artifactRunId,
-              approvalRunId: $approvalRunId
+              deploymentRunId: $deploymentRunId
             }' > promotion/release.json
 
-      - name: Upload the approved promotion receipt
+      - name: Upload the successful deployment receipt
         uses: actions/upload-artifact@v4
         with:
           name: uae-health-singapore-promotion-${{ inputs.release_sha }}

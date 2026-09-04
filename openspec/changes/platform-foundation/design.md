@@ -189,6 +189,29 @@ and exact commit SHA, prove that the successful manual artifact run used
 checksums and the web release metadata, and emit a short-lived approval receipt
 without contacting the server.
 
+Task 4.2 extends that same approval job into the only application deployment
+entry point. The job SHALL use native OpenSSH with strict host-key checking,
+an environment-scoped private key, and non-secret host, port, and deployment
+user variables. It SHALL copy only the already verified web archive, API image
+archive, their checksums, and a workflow-generated release manifest into a unique
+incoming directory beneath `/var/www/releases/uae-health`. It SHALL never copy
+the source tree, runtime environment files, database credentials, certificates,
+or reusable browser/session material.
+
+The application workflow SHALL invoke the infrastructure-owned executable
+`/var/www/git/infrastructure/uae-health/bin/deploy-release` after staging. That
+executable is the sole server-side authority for revalidating the manifest and
+checksums, loading the revision-tagged image, running approved migration and
+seed gates, preparing the immutable web release, checking local readiness, and
+atomically activating the compatible API and web revision. The executable
+SHALL retain the previous compatible release and expose an idempotent
+`rollback --failed-release <sha>` command. The application workflow SHALL then
+verify `https://api.uae-health.softdefine.com/health/ready` and the exact
+`releaseId` in `https://uae-health.softdefine.com/release.json`; if either
+post-activation check fails, it SHALL request rollback and fail without writing
+a successful deployment receipt. Tasks 4.3 and 4.4 supply and validate the
+infrastructure-owned executable and the runtime/edge definitions it controls.
+
 Terraform state mutation and cloud resource changes SHALL run only from the infrastructure repository's manually dispatched, commit-pinned GitHub Actions workflows. Developer workstations and agent sessions MAY run formatting, validation, planning, plan display, and read-only state inspection, but SHALL NOT run Terraform apply, destroy, import, or state mutation commands. A workflow apply SHALL consume the immutable plan artifact from its reviewed plan run and verify that the plan commit matches current `main`.
 
 The Singapore development frontend SHALL be served as an immutable static
